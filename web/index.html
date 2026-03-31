@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MORPHON — 3D Topology Visualizer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #06080f;
+    --panel: rgba(10, 15, 28, 0.82);
+    --panel-border: rgba(80, 140, 255, 0.08);
+    --panel-border-hover: rgba(80, 140, 255, 0.18);
+    --text: #d4dced;
+    --text-dim: #5a6a88;
+    --text-bright: #f0f4ff;
+    --accent: #508cff;
+
+    --stem: #8890a4;
+    --sensory: #00d4ff;
+    --associative: #a78bfa;
+    --motor: #ff6b35;
+    --modulatory: #34d399;
+    --fused: #f472b6;
+
+    --reward-color: #fbbf24;
+    --novelty-color: #00d4ff;
+    --arousal-color: #ef4444;
+    --homeostasis-color: #34d399;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  #scene-container {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+
+  /* === OVERLAY PANELS === */
+  .overlay {
+    position: fixed;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .overlay > * { pointer-events: auto; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 14px 16px;
+    transition: border-color 0.3s;
+  }
+  .panel:hover { border-color: var(--panel-border-hover); }
+
+  /* === HEADER === */
+  #header {
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .logo-mark {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .logo h1 {
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 2.5px;
+    color: var(--text-bright);
+  }
+  .logo h1 span { color: var(--accent); font-weight: 600; }
+
+  .header-stats {
+    display: flex;
+    gap: 20px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .header-stat { display: flex; gap: 5px; align-items: center; }
+  .header-stat .label { color: var(--text-dim); }
+  .header-stat .value { color: var(--text-bright); font-weight: 500; }
+
+  .header-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  /* === BUTTONS === */
+  button {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 500;
+    background: rgba(80, 140, 255, 0.08);
+    border: 1px solid rgba(80, 140, 255, 0.15);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.3px;
+  }
+  button:hover {
+    background: rgba(80, 140, 255, 0.15);
+    border-color: rgba(80, 140, 255, 0.3);
+    color: var(--text-bright);
+  }
+  button.active {
+    background: rgba(80, 140, 255, 0.2);
+    border-color: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 12px rgba(80, 140, 255, 0.15);
+  }
+  button.signal {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 4px 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+  }
+  button.signal.reward { border-color: rgba(251, 191, 36, 0.3); color: var(--reward-color); }
+  button.signal.reward:hover { background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 14px rgba(251, 191, 36, 0.1); }
+  button.signal.novelty { border-color: rgba(0, 212, 255, 0.3); color: var(--novelty-color); }
+  button.signal.novelty:hover { background: rgba(0, 212, 255, 0.12); box-shadow: 0 0 14px rgba(0, 212, 255, 0.1); }
+  button.signal.arousal { border-color: rgba(239, 68, 68, 0.3); color: var(--arousal-color); }
+  button.signal.arousal:hover { background: rgba(239, 68, 68, 0.12); box-shadow: 0 0 14px rgba(239, 68, 68, 0.1); }
+
+  /* === LEFT PANEL === */
+  #left-panel {
+    top: 64px; left: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 220px;
+  }
+
+  .section-title {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+  }
+  .stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .stat-item .label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .stat-item .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--text-bright);
+  }
+  .stat-item .value.small {
+    font-size: 13px;
+  }
+
+  /* Cell type legend */
+  .cell-types {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .cell-type-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+  }
+  .cell-type-row .name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .cell-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .cell-type-row .count {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* Sparkline */
+  .sparkline-container {
+    margin-top: 6px;
+  }
+  .sparkline-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 3px;
+  }
+  .sparkline {
+    width: 100%;
+    height: 32px;
+    display: block;
+  }
+
+  /* === RIGHT PANEL === */
+  #right-panel {
+    top: 64px; right: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 230px;
+  }
+
+  /* Neuromodulation bars */
+  .mod-channel {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .mod-label {
+    width: 70px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+  .mod-bar-track {
+    flex: 1;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    overflow: hidden;
+  }
+  .mod-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.15s ease;
+    width: 0%;
+  }
+  .mod-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    width: 32px;
+    text-align: right;
+  }
+
+  /* Feed patterns */
+  .feed-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+  }
+
+  /* Morphon detail */
+  #detail-panel {
+    display: none;
+  }
+  #detail-panel.visible { display: block; }
+
+  .detail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .detail-id {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-bright);
+  }
+  .detail-type {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+  }
+  .detail-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+  }
+  .detail-row .label { color: var(--text-dim); }
+  .detail-row .value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-bright);
+  }
+  .mini-bar {
+    width: 60px;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden;
+    margin-left: 6px;
+  }
+  .mini-bar .fill {
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.15s;
+  }
+
+  /* === BOTTOM EVENT LOG === */
+  #event-log {
+    bottom: 16px; left: 16px; right: 16px;
+    max-height: 100px;
+  }
+  #event-log .panel {
+    padding: 10px 14px;
+  }
+  .events-scroll {
+    max-height: 70px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .events-scroll::-webkit-scrollbar { width: 3px; }
+  .events-scroll::-webkit-scrollbar-track { background: transparent; }
+  .events-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+
+  .event-item {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .event-item .event-step { color: var(--accent); }
+  .event-item .event-birth { color: var(--modulatory); }
+  .event-item .event-death { color: var(--arousal-color); }
+  .event-item .event-synapse { color: var(--sensory); }
+  .event-item .event-diff { color: var(--associative); }
+  .event-item .event-fuse { color: var(--fused); }
+
+  /* === SPEED SLIDER === */
+  input[type="range"] {
+    -webkit-appearance: none;
+    width: 80px;
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+    box-shadow: 0 0 6px rgba(80, 140, 255, 0.3);
+  }
+
+  /* === PROGRAM SELECTOR === */
+  select {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 11px;
+    background: rgba(80, 140, 255, 0.08);
+    border: 1px solid rgba(80, 140, 255, 0.15);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    outline: none;
+  }
+  select:hover {
+    border-color: rgba(80, 140, 255, 0.3);
+  }
+
+  /* === TOOLTIP === */
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--panel);
+    border: 1px solid var(--panel-border-hover);
+    border-radius: 8px;
+    padding: 8px 12px;
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    font-size: 11px;
+    z-index: 100;
+    display: none;
+    max-width: 200px;
+  }
+  #tooltip .tip-id {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 500;
+    color: var(--text-bright);
+  }
+  #tooltip .tip-type { color: var(--text-dim); font-size: 10px; }
+  #tooltip .tip-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 10px;
+    margin-top: 2px;
+  }
+  #tooltip .tip-row .label { color: var(--text-dim); }
+  #tooltip .tip-row .value { font-family: 'JetBrains Mono', monospace; color: var(--text-bright); }
+
+  /* === LOADING === */
+  #loading {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    transition: opacity 0.6s;
+  }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+  #loading h2 {
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 3px;
+    color: var(--text-dim);
+    margin-top: 20px;
+  }
+  .loader {
+    width: 40px; height: 40px;
+    border: 2px solid rgba(80, 140, 255, 0.1);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* === RESPONSIVE === */
+  @media (max-width: 900px) {
+    #left-panel, #right-panel { display: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="loader"></div>
+  <h2>INITIALIZING MORPHON ENGINE</h2>
+</div>
+
+<div id="scene-container"></div>
+<div id="tooltip"></div>
+
+<!-- HEADER -->
+<div id="header" class="overlay">
+  <div class="logo">
+    <div class="logo-mark">M</div>
+    <h1>MORPHON<span>ENGINE</span></h1>
+  </div>
+  <div class="header-stats">
+    <div class="header-stat"><span class="label">STEP</span><span class="value" id="h-step">0</span></div>
+    <div class="header-stat"><span class="label">MORPHONS</span><span class="value" id="h-morphons">0</span></div>
+    <div class="header-stat"><span class="label">SYNAPSES</span><span class="value" id="h-synapses">0</span></div>
+  </div>
+  <div class="header-controls">
+    <button id="btn-pause" class="active" title="Play / Pause">&#9654;</button>
+    <button id="btn-step" title="Single Step">&#9197;</button>
+    <span style="color:var(--text-dim);font-size:10px;margin:0 2px;">SPEED</span>
+    <input type="range" id="speed-slider" min="1" max="50" value="10">
+    <select id="program-select">
+      <option value="cortical">Cortical</option>
+      <option value="hippocampal">Hippocampal</option>
+      <option value="cerebellar">Cerebellar</option>
+    </select>
+    <button id="btn-reset">RESET</button>
+  </div>
+</div>
+
+<!-- LEFT PANEL -->
+<div id="left-panel" class="overlay">
+  <div class="panel">
+    <div class="section-title">System Overview</div>
+    <div class="stat-grid">
+      <div class="stat-item"><span class="label">Morphons</span><span class="value" id="s-morphons">-</span></div>
+      <div class="stat-item"><span class="label">Synapses</span><span class="value" id="s-synapses">-</span></div>
+      <div class="stat-item"><span class="label">Clusters</span><span class="value" id="s-clusters">-</span></div>
+      <div class="stat-item"><span class="label">Max Gen</span><span class="value" id="s-gen">-</span></div>
+      <div class="stat-item"><span class="label">Firing</span><span class="value small" id="s-firing">-</span></div>
+      <div class="stat-item"><span class="label">Avg Energy</span><span class="value small" id="s-energy">-</span></div>
+      <div class="stat-item"><span class="label">Pred Error</span><span class="value small" id="s-error">-</span></div>
+      <div class="stat-item"><span class="label">Working Mem</span><span class="value small" id="s-wmem">-</span></div>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Firing Rate</div>
+      <canvas class="sparkline" id="spark-firing" width="188" height="32"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">Cell Types</div>
+    <div class="cell-types" id="cell-types">
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--sensory)"></span>Sensory</span><span class="count" id="ct-Sensory">0</span></div>
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--associative)"></span>Associative</span><span class="count" id="ct-Associative">0</span></div>
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--motor)"></span>Motor</span><span class="count" id="ct-Motor">0</span></div>
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--modulatory)"></span>Modulatory</span><span class="count" id="ct-Modulatory">0</span></div>
+      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--fused)"></span>Fused</span><span class="count" id="ct-Fused">0</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- RIGHT PANEL -->
+<div id="right-panel" class="overlay">
+  <div class="panel">
+    <div class="section-title">Neuromodulation</div>
+    <div class="mod-channel"><span class="mod-label">Reward</span><div class="mod-bar-track"><div class="mod-bar-fill" id="mod-reward" style="background:var(--reward-color)"></div></div><span class="mod-value" id="mod-reward-v">0.00</span></div>
+    <div class="mod-channel"><span class="mod-label">Novelty</span><div class="mod-bar-track"><div class="mod-bar-fill" id="mod-novelty" style="background:var(--novelty-color)"></div></div><span class="mod-value" id="mod-novelty-v">0.00</span></div>
+    <div class="mod-channel"><span class="mod-label">Arousal</span><div class="mod-bar-track"><div class="mod-bar-fill" id="mod-arousal" style="background:var(--arousal-color)"></div></div><span class="mod-value" id="mod-arousal-v">0.00</span></div>
+    <div class="mod-channel"><span class="mod-label">Homeostasis</span><div class="mod-bar-track"><div class="mod-bar-fill" id="mod-homeo" style="background:var(--homeostasis-color)"></div></div><span class="mod-value" id="mod-homeo-v">0.50</span></div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">Inject Signal</div>
+    <div class="feed-grid">
+      <button class="signal reward" id="btn-reward">Reward</button>
+      <button class="signal novelty" id="btn-novelty">Novelty</button>
+      <button class="signal arousal" id="btn-arousal">Arousal</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">Feed Input</div>
+    <div class="feed-grid">
+      <button id="feed-burst">Burst</button>
+      <button id="feed-pulse">Pulse</button>
+      <button id="feed-wave">Wave</button>
+      <button id="feed-noise">Noise</button>
+    </div>
+  </div>
+
+  <div class="panel" id="detail-panel">
+    <div class="section-title">Selected Morphon</div>
+    <div class="detail-header">
+      <span class="detail-id" id="d-id">#0</span>
+      <span class="detail-type"><span class="cell-dot" id="d-dot"></span><span id="d-type">Stem</span></span>
+    </div>
+    <div class="detail-rows">
+      <div class="detail-row"><span class="label">Generation</span><span class="value" id="d-gen">0</span></div>
+      <div class="detail-row"><span class="label">Age</span><span class="value" id="d-age">0</span></div>
+      <div class="detail-row"><span class="label">Energy</span><div style="display:flex;align-items:center"><span class="value" id="d-energy">0</span><div class="mini-bar"><div class="fill" id="d-energy-bar"></div></div></div></div>
+      <div class="detail-row"><span class="label">Potential</span><span class="value" id="d-potential">0</span></div>
+      <div class="detail-row"><span class="label">Threshold</span><span class="value" id="d-threshold">0</span></div>
+      <div class="detail-row"><span class="label">Differentiation</span><div style="display:flex;align-items:center"><span class="value" id="d-diff">0</span><div class="mini-bar"><div class="fill" id="d-diff-bar"></div></div></div></div>
+      <div class="detail-row"><span class="label">Pred Error</span><span class="value" id="d-error">0</span></div>
+      <div class="detail-row"><span class="label">Desire</span><span class="value" id="d-desire">0</span></div>
+      <div class="detail-row"><span class="label">Connections</span><span class="value" id="d-conns">0</span></div>
+      <div class="detail-row"><span class="label">Fired</span><span class="value" id="d-fired">-</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- EVENT LOG -->
+<div id="event-log" class="overlay">
+  <div class="panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <div class="section-title" style="margin-bottom:0">Morphogenesis Events</div>
+      <button id="btn-clear-log" style="font-size:9px;padding:2px 8px;">CLEAR</button>
+    </div>
+    <div class="events-scroll" id="events"></div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.172.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.172.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

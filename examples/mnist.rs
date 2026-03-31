@@ -1,0 +1,190 @@
+//! MNIST Benchmark — MI system learns digit classification through self-organization.
+//!
+//! Full 28x28=784 pixel input, 10 output classes.
+//! Uses target_input_size/target_output_size for exact I/O matching.
+//!
+//! Setup: Download MNIST files to ./data/ (unzipped)
+//! Run: cargo run --example mnist --release
+
+use mnist::MnistBuilder;
+use morphon_core::developmental::DevelopmentalConfig;
+use morphon_core::homeostasis::HomeostasisParams;
+use morphon_core::learning::LearningParams;
+use morphon_core::morphogenesis::MorphogenesisParams;
+use morphon_core::scheduler::SchedulerConfig;
+use morphon_core::system::{System, SystemConfig};
+use morphon_core::types::LifecycleConfig;
+use rand::seq::SliceRandom;
+
+const IMG_PIXELS: usize = 28 * 28; // 784
+const NUM_CLASSES: usize = 10;
+
+/// Normalize pixels to [0, 1] and add bias for network activity.
+fn encode_pixels(raw: &[u8]) -> Vec<f64> {
+    raw.iter().map(|&p| 0.3 + (p as f64 / 255.0) * 2.0).collect()
+}
+
+fn create_system() -> System {
+    let config = SystemConfig {
+        developmental: DevelopmentalConfig {
+            // Large enough for 784 inputs + 10 outputs + interior
+            seed_size: 500,
+            dimensions: 6,
+            initial_connectivity: 0.02, // sparse — 500^2 * 0.02 = ~5000 connections
+            proliferation_rounds: 1,
+            target_input_size: Some(IMG_PIXELS),  // exactly 784 sensory morphons
+            target_output_size: Some(NUM_CLASSES), // exactly 10 motor morphons
+            ..DevelopmentalConfig::cortical()
+        },
+        scheduler: SchedulerConfig {
+            medium_period: 1,
+            slow_period: 20,
+            glacial_period: 500,
+            homeostasis_period: 10,
+            memory_period: 50,
+        },
+        learning: LearningParams {
+            tau_eligibility: 5.0,
+            tau_tag: 200.0,
+            tag_threshold: 0.5,
+            capture_threshold: 0.2,
+            capture_rate: 0.15,
+            weight_max: 3.0,
+            weight_min: 0.01,
+            alpha_reward: 2.5,
+            alpha_novelty: 0.5,
+            alpha_arousal: 1.0,
+            alpha_homeostasis: 0.1,
+        },
+        morphogenesis: MorphogenesisParams {
+            migration_rate: 0.05,
+            max_morphons: 2000,
+            ..Default::default()
+        },
+        homeostasis: HomeostasisParams::default(),
+        lifecycle: LifecycleConfig::default(),
+        dt: 1.0,
+        working_memory_capacity: 7,
+        episodic_memory_capacity: 500,
+    };
+    System::new(config)
+}
+
+/// Classify an image. Returns predicted digit (0-9).
+fn classify(system: &mut System, pixels: &[f64], steps: usize) -> usize {
+    let outputs = system.process_steps(pixels, steps);
+    if outputs.len() < NUM_CLASSES {
+        return 0;
+    }
+    // Each of the 10 motor morphons represents a digit class
+    outputs.iter()
+        .take(NUM_CLASSES)
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+fn train_one(system: &mut System, pixels: &[f64], label: usize, steps: usize) -> bool {
+    let pred = classify(system, pixels, steps);
+    let correct = pred == label;
+
+    if correct {
+        system.inject_reward(0.8);
+    } else {
+        system.inject_arousal(0.6);
+        system.inject_novelty(0.3);
+    }
+    correct
+}
+
+fn main() {
+    println!("=== MORPHON MNIST Benchmark (Full 784px) ===\n");
+    println!("Loading MNIST from ./data/ ...");
+
+    let mnist = MnistBuilder::new()
+        .label_format_digit()
+        .base_path("data")
+        .training_set_length(10_000)
+        .test_set_length(1_000)
+        .finalize();
+
+    let train_images: Vec<Vec<f64>> = (0..10_000)
+        .map(|i| encode_pixels(&mnist.trn_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
+        .collect();
+    let train_labels: Vec<usize> = mnist.trn_lbl.iter().map(|&l| l as usize).collect();
+    let test_images: Vec<Vec<f64>> = (0..1_000)
+        .map(|i| encode_pixels(&mnist.tst_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
+        .collect();
+    let test_labels: Vec<usize> = mnist.tst_lbl.iter().map(|&l| l as usize).collect();
+
+    println!("Train: {}, Test: {}, Input: {}px, Output: {} classes\n",
+        train_images.len(), test_images.len(), IMG_PIXELS, NUM_CLASSES);
+
+    let mut system = create_system();
+    let s = system.inspect();
+    println!("Initial: {} morphons, {} synapses, {} in, {} out",
+        s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
+    println!("Types: {:?}\n", s.differentiation_map);
+
+    // Warm up
+    let warmup = vec![1.0; IMG_PIXELS];
+    for _ in 0..5 { system.process_steps(&warmup, 3); }
+
+    let mut rng = rand::rng();
+    let steps_per_sample = 3;
+    let num_epochs = 3;
+    let samples_per_epoch = 2000;
+
+    for epoch in 0..num_epochs {
+        let mut indices: Vec<usize> = (0..train_images.len()).collect();
+        indices.shuffle(&mut rng);
+
+        let mut correct = 0;
+        let mut total = 0;
+
+        for (bi, &idx) in indices.iter().take(samples_per_epoch).enumerate() {
+            let hit = train_one(&mut system, &train_images[idx], train_labels[idx], steps_per_sample);
+            if hit { correct += 1; }
+            total += 1;
+
+            if (bi + 1) % 500 == 0 {
+                let s = system.inspect();
+                println!("  Ep {} [{:>4}/{}] acc={:.1}% m={} s={} fr={:.3} pe={:.3}",
+                    epoch + 1, bi + 1, samples_per_epoch,
+                    correct as f64 / total as f64 * 100.0,
+                    s.total_morphons, s.total_synapses, s.firing_rate, s.avg_prediction_error);
+            }
+        }
+
+        // Test
+        let mut test_correct = 0;
+        for i in 0..test_images.len().min(500) {
+            if classify(&mut system, &test_images[i], steps_per_sample) == test_labels[i] {
+                test_correct += 1;
+            }
+        }
+        let test_n = test_images.len().min(500);
+        let s = system.inspect();
+        println!("Epoch {} | train={:.1}% | test={:.1}% | m={} s={} gen={}\n",
+            epoch + 1,
+            correct as f64 / total as f64 * 100.0,
+            test_correct as f64 / test_n as f64 * 100.0,
+            s.total_morphons, s.total_synapses, s.max_generation);
+    }
+
+    // Per-class accuracy
+    println!("Per-class test accuracy:");
+    let mut cc = vec![0usize; 10];
+    let mut ct = vec![0usize; 10];
+    for i in 0..test_images.len().min(500) {
+        let p = classify(&mut system, &test_images[i], steps_per_sample);
+        ct[test_labels[i]] += 1;
+        if p == test_labels[i] { cc[test_labels[i]] += 1; }
+    }
+    for c in 0..10 {
+        if ct[c] > 0 {
+            println!("  {}: {:.1}% ({}/{})", c, cc[c] as f64 / ct[c] as f64 * 100.0, cc[c], ct[c]);
+        }
+    }
+}

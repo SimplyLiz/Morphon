@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "morphon"
+version = "0.1.0"
+description = "Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+keywords = ["ai", "neuromorphic", "morphogenic", "self-organizing", "edge-ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.maturin]
+features = ["python"]
