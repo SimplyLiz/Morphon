@@ -468,6 +468,71 @@ impl System {
         self.modulation.inject_arousal(strength);
     }
 
+    /// Inject a targeted reward at a specific output port's morphon.
+    ///
+    /// Instead of global broadcast, this directly boosts the eligibility traces
+    /// of all incoming synapses to the specified motor morphon. This provides
+    /// output-specific credit assignment within the three-factor framework:
+    /// the modulation is still local (eligibility × reward), but spatially targeted.
+    ///
+    /// Analogous to how dopaminergic projections target specific brain regions,
+    /// not the whole cortex uniformly.
+    pub fn inject_reward_at(&mut self, output_index: usize, strength: f64) {
+        if let Some(&id) = self.output_ports.get(output_index) {
+            // Boost eligibility traces on all incoming synapses to this motor morphon
+            let incoming = self.topology.incoming_synapses_mut(id);
+            for (_, edge_idx) in incoming {
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    syn.eligibility += strength;
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                }
+            }
+        }
+        // Also inject globally (but weaker) so interior paths benefit too
+        self.modulation.inject_reward(strength * 0.3);
+    }
+
+    /// Inject a targeted inhibition at a specific output port's morphon.
+    ///
+    /// Reduces eligibility traces on incoming synapses to the specified motor morphon,
+    /// making those paths less likely to be strengthened by future reward.
+    pub fn inject_inhibition_at(&mut self, output_index: usize, strength: f64) {
+        if let Some(&id) = self.output_ports.get(output_index) {
+            let incoming = self.topology.incoming_synapses_mut(id);
+            for (_, edge_idx) in incoming {
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    syn.eligibility -= strength;
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                }
+            }
+        }
+    }
+
+    /// Contrastive reward: reward the correct output, inhibit incorrect outputs.
+    ///
+    /// This is the key mechanism for breaking mode collapse in classification tasks.
+    /// The correct motor morphon gets boosted eligibility (→ strengthened by next reward),
+    /// while incorrect motors get reduced eligibility (→ weakened or unaffected).
+    ///
+    /// `correct_index`: the output port index that should have been selected
+    /// `reward_strength`: how much to reward the correct path (0.0-1.0)
+    /// `inhibit_strength`: how much to inhibit incorrect paths (0.0-1.0)
+    pub fn reward_contrastive(
+        &mut self,
+        correct_index: usize,
+        reward_strength: f64,
+        inhibit_strength: f64,
+    ) {
+        let n_outputs = self.output_ports.len();
+        for i in 0..n_outputs {
+            if i == correct_index {
+                self.inject_reward_at(i, reward_strength);
+            } else {
+                self.inject_inhibition_at(i, inhibit_strength);
+            }
+        }
+    }
+
     /// Process input and return output (single inference step with learning).
     pub fn process(&mut self, input: &[f64]) -> Vec<f64> {
         self.feed_input(input);

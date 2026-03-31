@@ -143,16 +143,27 @@ fn run_episode(system: &mut System, env: &mut CartPole, max_steps: usize, epsilo
         if alive {
             let angle_q = 1.0 - (env.theta / THETA_THRESHOLD).abs();
             let pos_q = 1.0 - (env.x / X_THRESHOLD).abs();
-            system.inject_reward(0.2 + 0.3 * angle_q + 0.1 * pos_q);
+            let reward = 0.2 + 0.3 * angle_q + 0.1 * pos_q;
+            // Contrastive: reward the action that was taken, mildly inhibit the other
+            // output[0] = left, output[1] = right; action 1.0 = right (index 1), -1.0 = left (index 0)
+            let chosen = if action > 0.0 { 1 } else { 0 };
+            system.reward_contrastive(chosen, reward, reward * 0.3);
         } else {
+            // Failure: arousal + penalize the action that caused the fall
             system.inject_arousal(0.9);
-            system.inject_novelty(0.4);
+            let wrong = if action > 0.0 { 1 } else { 0 };
+            system.inject_inhibition_at(wrong, 0.5);
+            system.inject_novelty(0.3);
             break;
         }
     }
 
     let survival = steps as f64 / max_steps as f64;
-    system.inject_reward(survival);
+    system.reward_contrastive(
+        if steps > 50 { 0 } else { 1 }, // arbitrary, just injects global reward
+        survival * 0.5,
+        0.0, // no inhibition on episode-end bonus
+    );
     steps
 }
 

@@ -91,12 +91,19 @@ fn train_one(system: &mut System, pixels: &[f64], label: usize, steps: usize) ->
     let pred = classify(system, pixels, steps);
     let correct = pred == label;
 
-    if correct {
-        system.inject_reward(0.8);
-    } else {
-        system.inject_arousal(0.6);
-        system.inject_novelty(0.3);
+    // Contrastive reward: boost the correct class, inhibit the predicted (wrong) class.
+    // This breaks mode collapse by giving output-specific credit.
+    system.reward_contrastive(
+        label,              // correct output port gets rewarded
+        if correct { 0.8 } else { 0.5 },  // reward strength
+        0.3,                // inhibit incorrect outputs
+    );
+
+    if !correct {
+        // Additional arousal on wrong predictions to boost plasticity
+        system.inject_arousal(0.4);
     }
+
     correct
 }
 

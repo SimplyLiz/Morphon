@@ -36,6 +36,9 @@ let prevFired = new Set();
 
 // Connected node IDs for context dimming
 let connectedToSelected = new Set();
+// Per-node dim factor: 0 = full color, 1 = dimmed. Lerped smoothly.
+const nodeDim = new Float32Array(MAX_NODES); // current
+const nodeDimTarget = new Float32Array(MAX_NODES); // target
 
 const firingHistory = [];
 const MAX_HISTORY = 120;
@@ -406,12 +409,18 @@ function updateScene() {
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
 
-    // === CONTEXT DIMMING ===
-    // When a node is selected, dim non-connected nodes to 20%
-    const isDimmed = hasSelection && !connectedToSelected.has(n.id);
+    // === SMOOTH CONTEXT DIMMING ===
+    const shouldDim = hasSelection && !connectedToSelected.has(n.id);
+    nodeDimTarget[i] = shouldDim ? 1.0 : 0.0;
+    // Lerp current toward target (smooth ease)
+    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.08;
+    const dim = nodeDim[i];
 
-    if (n.fired && !isDimmed) {
-      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.4);
+    // Base color with dim applied
+    tempColor.copy(color).lerp(dimColor.set(0x080810), dim * 0.85);
+
+    if (n.fired && dim < 0.5) {
+      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.4 * (1 - dim));
       nodesMesh.setColorAt(i, tempColor);
 
       if (glowCount < MAX_NODES) {
@@ -421,12 +430,8 @@ function updateScene() {
         glowMesh.setColorAt(glowCount, color);
         glowCount++;
       }
-    } else if (isDimmed) {
-      // Dim: desaturated and dark
-      dimColor.copy(color).multiplyScalar(0.15);
-      nodesMesh.setColorAt(i, dimColor);
     } else {
-      nodesMesh.setColorAt(i, color);
+      nodesMesh.setColorAt(i, tempColor);
     }
 
     // Selected node — bright highlight
@@ -502,19 +507,20 @@ function updateScene() {
     // Color
     const sourceColor = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
     const isHighlighted = hasSelection && (e.from === selectedNodeId || e.to === selectedNodeId);
-    const edgeDimmed = hasSelection && !isHighlighted;
+    // Smooth edge dimming: use the avg dim of both endpoints
+    const edgeDimFactor = (nodeDim[fromIdx] + nodeDim[toIdx]) * 0.5;
 
     let r, g, b;
     if (isHighlighted) {
       r = 0.5; g = 0.7; b = 1.0;
     } else {
-      const brightness = edgeDimmed ? 0.02 : (0.05 + w * 0.18);
+      const brightness = (0.05 + w * 0.18) * (1.0 - edgeDimFactor * 0.9);
       r = sourceColor.r * brightness;
       g = sourceColor.g * brightness;
       b = sourceColor.b * brightness;
     }
 
-    if (e.consolidated && !edgeDimmed) { r += 0.05; g += 0.04; b += 0.02; }
+    if (e.consolidated && edgeDimFactor < 0.3) { r += 0.05; g += 0.04; b += 0.02; }
 
     // Apply same color to all 4 vertices
     for (let v = 0; v < 4; v++) {

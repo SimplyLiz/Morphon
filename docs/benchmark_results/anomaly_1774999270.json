@@ -1,0 +1,67 @@
+{
+  "anomaly_rate": 0.05,
+  "benchmark": "anomaly",
+  "diagnostics": {
+    "active_tags": 48,
+    "total_captures": 201,
+    "weight_mean": -2.3387067228422636,
+    "weight_std": 1.1342108909106015
+  },
+  "learning_phase": 500,
+  "results": [
+    {
+      "f1": 0.03260869565217391,
+      "fn": 73,
+      "fp": 105,
+      "precision": 0.027777777777777776,
+      "recall": 0.039473684210526314,
+      "sigma": 1.5,
+      "threshold": 1.5893818949596834,
+      "tn": 1319,
+      "tp": 3
+    },
+    {
+      "f1": 0.0,
+      "fn": 76,
+      "fp": 52,
+      "precision": 0.0,
+      "recall": 0.0,
+      "sigma": 2.0,
+      "threshold": 1.7199219445554483,
+      "tn": 1372,
+      "tp": 0
+    },
+    {
+      "f1": 0.0,
+      "fn": 76,
+      "fp": 30,
+      "precision": 0.0,
+      "recall": 0.0,
+      "sigma": 2.5,
+      "threshold": 1.8504619941512135,
+      "tn": 1394,
+      "tp": 0
+    },
+    {
+      "f1": 0.0,
+      "fn": 76,
+      "fp": 17,
+      "precision": 0.0,
+      "recall": 0.0,
+      "sigma": 3.0,
+      "threshold": 1.9810020437469786,
+      "tn": 1407,
+      "tp": 0
+    }
+  ],
+  "series_length": 2000,
+  "system": {
+    "clusters": 0,
+    "firing_rate": 0.046875,
+    "morphons": 64,
+    "prediction_error": 1.3958225643784168,
+    "synapses": 539
+  },
+  "timestamp": 1774999270,
+  "total_anomalies": 102
+}
