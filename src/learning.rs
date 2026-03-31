@@ -57,13 +57,22 @@ impl Default for LearningParams {
 }
 
 /// Compute the Hebbian coincidence function H(pre, post).
-/// Returns a positive value when pre and post are correlated.
+///
+/// LTD magnitudes are calibrated so that at the homeostatic setpoint (10% firing),
+/// the expected H is approximately zero. This prevents systematic negative eligibility
+/// drift that would make all weight updates depressive regardless of reward.
+///
+/// At p = q = 0.1:
+///   E[H] = 0.01*(+1.0) + 0.09*(-0.06) + 0.09*(-0.05) + 0.81*(0.0) ≈ 0.0
+///
+/// Correlated pairs (both fire together more than chance) get net positive eligibility.
+/// Anti-correlated pairs get net negative. Uncorrelated pairs stay near zero.
 fn hebbian_coincidence(pre_fired: bool, post_fired: bool) -> f64 {
     match (pre_fired, post_fired) {
-        (true, true) => 1.0,    // LTP: both active
-        (true, false) => -0.5,  // mild LTD: pre without post
-        (false, true) => -0.3,  // mild LTD: post without pre
-        (false, false) => 0.0,  // no change
+        (true, true) => 1.0,     // LTP: both active — strong potentiation
+        (true, false) => -0.06,  // mild LTD: pre fired alone
+        (false, true) => -0.05,  // mild LTD: post fired alone
+        (false, false) => 0.0,   // no change
     }
 }
 

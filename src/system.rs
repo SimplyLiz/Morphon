@@ -194,8 +194,9 @@ impl System {
             let post_fired = self.morphons.get(&spike.target).map_or(false, |m| m.fired);
             if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
-                    // Spike arrival is direct evidence of pre-synaptic firing
-                    let h = if post_fired { 1.0 } else { -0.3 };
+                    // Spike arrival is direct evidence of pre-synaptic firing.
+                    // Uses same balanced LTD as hebbian_coincidence (pre=true case).
+                    let h = if post_fired { 1.0 } else { -0.06 };
                     synapse.eligibility +=
                         (-synapse.eligibility / self.config.learning.tau_eligibility + h) * dt;
                     synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
