@@ -13,6 +13,8 @@ use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
 use rand::Rng;
+use serde_json::json;
+use std::fs;
 
 const WINDOW_SIZE: usize = 8;
 const NUM_OUTPUTS: usize = 1;
@@ -141,12 +143,19 @@ fn main() {
         let pe = stats.avg_prediction_error;
         pe_history.push(pe);
 
-        // Reward for low PE (system is predicting well)
-        if pe < 0.3 {
-            system.inject_reward(0.3);
-        }
-        // Novelty on high PE
-        if pe > 0.5 {
+        // Reward/novelty relative to recent PE baseline (not absolute thresholds)
+        let recent_start = pe_history.len().saturating_sub(50);
+        let baseline_pe = if pe_history.len() > 10 {
+            pe_history[recent_start..].iter().sum::<f64>() / (pe_history.len() - recent_start) as f64
+        } else {
+            pe
+        };
+
+        if pe < baseline_pe * 0.8 {
+            // PE is below recent average — system is predicting well
+            system.inject_reward(0.5);
+        } else if pe > baseline_pe * 1.5 {
+            // PE spike — something unexpected
             system.inject_novelty(0.5);
             system.inject_arousal(0.3);
         }
@@ -207,6 +216,7 @@ fn main() {
         / det_pe.len() as f64)
         .sqrt();
 
+    let mut sigma_results = Vec::new();
     for sigma in [1.5, 2.0, 2.5, 3.0] {
         let threshold = mean_pe + sigma * std_pe;
 
@@ -253,6 +263,15 @@ fn main() {
             fn_,
             tn
         );
+
+        sigma_results.push(json!({
+            "sigma": sigma,
+            "threshold": threshold,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "tp": tp, "fp": fp, "fn": fn_, "tn": tn,
+        }));
     }
 
     println!("\n=== Final ===");
@@ -264,4 +283,42 @@ fn main() {
     );
     println!("Learning: {}", diag.summary());
     println!("Firing:   {}", diag.firing_summary());
+
+    // Save benchmark results
+    let version = env!("CARGO_PKG_VERSION");
+    let results = json!({
+        "benchmark": "anomaly",
+        "version": version,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        "series_length": series_len,
+        "anomaly_rate": anomaly_rate,
+        "total_anomalies": total_anomalies,
+        "learning_phase": learning_phase,
+        "results": sigma_results,
+        "system": {
+            "morphons": s.total_morphons,
+            "synapses": s.total_synapses,
+            "clusters": s.fused_clusters,
+            "firing_rate": s.firing_rate,
+            "prediction_error": s.avg_prediction_error,
+        },
+        "diagnostics": {
+            "weight_mean": diag.weight_mean,
+            "weight_std": diag.weight_std,
+            "active_tags": diag.active_tags,
+            "total_captures": diag.total_captures,
+        },
+    });
+
+    let dir = format!("docs/benchmark_results/v{}", version);
+    fs::create_dir_all(&dir).ok();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let run_path = format!("{}/anomaly_{}.json", dir, ts);
+    let latest_path = format!("{}/anomaly_latest.json", dir);
+    let json_str = serde_json::to_string_pretty(&results).unwrap();
+    fs::write(&run_path, &json_str).unwrap();
+    fs::write(&latest_path, &json_str).unwrap();
+    println!("\nResults saved to {}", run_path);
 }

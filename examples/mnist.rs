@@ -15,6 +15,8 @@ use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
 use rand::seq::SliceRandom;
+use serde_json::json;
+use std::fs;
 
 const IMG_PIXELS: usize = 28 * 28; // 784
 const NUM_CLASSES: usize = 10;
@@ -182,9 +184,58 @@ fn main() {
         ct[test_labels[i]] += 1;
         if p == test_labels[i] { cc[test_labels[i]] += 1; }
     }
+    let mut per_class = Vec::new();
     for c in 0..10 {
         if ct[c] > 0 {
-            println!("  {}: {:.1}% ({}/{})", c, cc[c] as f64 / ct[c] as f64 * 100.0, cc[c], ct[c]);
+            let acc = cc[c] as f64 / ct[c] as f64 * 100.0;
+            println!("  {}: {:.1}% ({}/{})", c, acc, cc[c], ct[c]);
+            per_class.push(json!({"digit": c, "accuracy": acc, "correct": cc[c], "total": ct[c]}));
         }
     }
+
+    // Save benchmark results
+    let version = env!("CARGO_PKG_VERSION");
+    let s = system.inspect();
+    let diag = system.diagnostics();
+    let test_n = test_images.len().min(500);
+    let test_correct: usize = cc.iter().sum();
+    let test_acc = test_correct as f64 / test_n as f64 * 100.0;
+    let results = json!({
+        "benchmark": "mnist",
+        "version": version,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        "train_samples": samples_per_epoch,
+        "test_samples": test_n,
+        "epochs": num_epochs,
+        "results": {
+            "test_accuracy": test_acc,
+            "per_class": per_class,
+        },
+        "system": {
+            "morphons": s.total_morphons,
+            "synapses": s.total_synapses,
+            "clusters": s.fused_clusters,
+            "generation": s.max_generation,
+            "firing_rate": s.firing_rate,
+            "prediction_error": s.avg_prediction_error,
+        },
+        "diagnostics": {
+            "weight_mean": diag.weight_mean,
+            "weight_std": diag.weight_std,
+            "active_tags": diag.active_tags,
+            "total_captures": diag.total_captures,
+        },
+    });
+
+    let dir = format!("docs/benchmark_results/v{}", version);
+    fs::create_dir_all(&dir).ok();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let run_path = format!("{}/mnist_{}.json", dir, ts);
+    let latest_path = format!("{}/mnist_latest.json", dir);
+    let json_str = serde_json::to_string_pretty(&results).unwrap();
+    fs::write(&run_path, &json_str).unwrap();
+    fs::write(&latest_path, &json_str).unwrap();
+    println!("\nResults saved to {}", run_path);
 }

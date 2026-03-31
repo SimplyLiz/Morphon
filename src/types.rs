@@ -134,6 +134,19 @@ impl ActivationFn {
         }
     }
 
+    /// Maximum output value this activation function can produce.
+    /// Used to clamp the homeostatic threshold so it never exceeds
+    /// the activation's output range (which would permanently silence the morphon).
+    pub fn max_output(&self) -> f64 {
+        match self {
+            ActivationFn::Sigmoid => 0.95,          // approaches 1.0 asymptotically
+            ActivationFn::HardThreshold => 0.95,     // outputs exactly 1.0
+            ActivationFn::LeakyIntegrator => 5.0,    // unbounded, use weight_max as proxy
+            ActivationFn::Burst => 1.4,              // tanh()+0.5, max ~1.5
+            ActivationFn::Oscillatory => 0.95,       // sin(), max 1.0
+        }
+    }
+
     /// Returns the default activation function for a given cell type.
     pub fn for_cell_type(cell_type: CellType) -> Self {
         match cell_type {

@@ -1,6 +1,6 @@
 [package]
 name = "morphon-core"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 description = "Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime"
 license = "Apache-2.0"

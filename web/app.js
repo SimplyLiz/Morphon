@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import init, { WasmSystem } from './pkg/morphon_core.js';
@@ -18,17 +19,8 @@ const CELL_COLORS = {
   Fused:       new THREE.Color(0xf472b6),
 };
 
-const CELL_EMISSIVE = {
-  Stem:        new THREE.Color(0x444a5a),
-  Sensory:     new THREE.Color(0x006a80),
-  Associative: new THREE.Color(0x543e7d),
-  Motor:       new THREE.Color(0x80361a),
-  Modulatory:  new THREE.Color(0x1a6a4d),
-  Fused:       new THREE.Color(0x7a395c),
-};
-
 const BALL_RADIUS = 12;
-const NODE_BASE_SIZE = 0.15;
+const NODE_BASE_SIZE = 0.25;
 const MAX_NODES = 2000;
 const MAX_EDGES = 20000;
 
@@ -42,32 +34,94 @@ let selectedNodeId = null;
 let hoveredNodeId = null;
 let prevFired = new Set();
 
+// Connected node IDs for context dimming
+let connectedToSelected = new Set();
+
 const firingHistory = [];
 const MAX_HISTORY = 120;
 
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
-let nodesMesh, edgesMesh, diskMesh;
+let nodesMesh, edgesMesh, diskMesh, fresnelBall;
 let nodePositions = new Float32Array(MAX_NODES * 3);
-let nodeData = [];      // current frame node data
-let nodeMap = new Map(); // id -> index
-let edgeData = [];       // current frame edge data
+let nodeData = [];
+let nodeMap = new Map();
+let edgeData = [];
 
 // Glow particles for fired nodes
 let glowMesh;
-const glowPositions = new Float32Array(MAX_NODES * 3);
-const glowScales = new Float32Array(MAX_NODES);
-const glowColors = new Float32Array(MAX_NODES * 3);
 
-// Spike particles — light pulses traveling along connections
+// Spike particles
 const MAX_SPIKES = 3000;
 let spikesMesh;
-const spikes = [];  // { fromIdx, toIdx, progress, color, speed }
+const spikes = [];
 
 // Raycasting
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
-raycaster.params.Points = { threshold: 0.5 };
+
+// ============================================================
+// CUSTOM SHADERS
+// ============================================================
+
+// Fresnel shader for the Poincare ball boundary — "force field" look
+const fresnelBallVertexShader = `
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vNormal = normalize(normalMatrix * normal);
+    vViewDir = normalize(cameraPosition - worldPos.xyz);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const fresnelBallFragmentShader = `
+  uniform vec3 rimColor;
+  uniform float rimPower;
+  uniform float rimIntensity;
+  uniform float time;
+  varying vec3 vNormal;
+  varying vec3 vViewDir;
+  void main() {
+    float rim = 1.0 - max(0.0, dot(vNormal, vViewDir));
+    rim = pow(rim, rimPower) * rimIntensity;
+    // Subtle pulse animation
+    float pulse = 1.0 + 0.08 * sin(time * 0.5);
+    float alpha = rim * pulse;
+    gl_FragColor = vec4(rimColor, alpha);
+  }
+`;
+
+// Vignette shader
+const vignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    darkness: { value: 0.45 },
+    offset: { value: 0.9 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float darkness;
+    uniform float offset;
+    varying vec2 vUv;
+    void main() {
+      vec4 texel = texture2D(tDiffuse, vUv);
+      vec2 center = vUv - 0.5;
+      float dist = length(center);
+      float vig = smoothstep(offset, offset - 0.5, dist);
+      texel.rgb *= mix(1.0 - darkness, 1.0, vig);
+      gl_FragColor = texel;
+    }
+  `,
+};
 
 // ============================================================
 // THREE.JS SETUP
@@ -76,19 +130,20 @@ function initScene() {
   const container = document.getElementById('scene-container');
 
   // Renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer.toneMappingExposure = 1.0;
+  renderer.setClearColor(0x050510);
   container.appendChild(renderer.domElement);
 
-  // Scene
   scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x06080f, 0.012);
+  // Subtle fog for depth — distant elements fade slightly
+  scene.fog = new THREE.FogExp2(0x050510, 0.006);
 
   // Camera
-  camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 500);
   camera.position.set(0, 8, 22);
 
   // Controls
@@ -100,27 +155,50 @@ function initScene() {
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.3;
 
-  // Post-processing
+  // === POST-PROCESSING ===
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    1.2,   // strength
-    0.5,   // radius
-    0.15   // threshold
+    0.8,   // strength
+    0.4,   // radius
+    0.82   // threshold — only bright/emissive objects bloom
   );
   composer.addPass(bloomPass);
+  // Vignette — draws eye to center
+  const vignettePass = new ShaderPass(vignetteShader);
+  composer.addPass(vignettePass);
   composer.addPass(new OutputPass());
 
-  // Lights
-  const ambient = new THREE.AmbientLight(0x1a2040, 0.6);
-  scene.add(ambient);
-  const point1 = new THREE.PointLight(0x508cff, 1.5, 50);
-  point1.position.set(10, 10, 10);
-  scene.add(point1);
-  const point2 = new THREE.PointLight(0xa78bfa, 0.8, 50);
-  point2.position.set(-10, -5, -10);
-  scene.add(point2);
+  // === 3-POINT LIGHTING ===
+  scene.add(new THREE.AmbientLight(0x111122, 0.4));
+  const keyLight = new THREE.DirectionalLight(0xffeedd, 0.7);
+  keyLight.position.set(50, 80, 50);
+  scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0x8888ff, 0.25);
+  fillLight.position.set(-50, -20, -50);
+  scene.add(fillLight);
+  const rimLight = new THREE.DirectionalLight(0xffffff, 0.35);
+  rimLight.position.set(0, -50, -80);
+  scene.add(rimLight);
+
+  // === STARFIELD ===
+  const starCount = 4000;
+  const starPos = new Float32Array(starCount * 3);
+  for (let i = 0; i < starCount; i++) {
+    const r = 50 + Math.random() * 150;
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    starPos[i * 3 + 2] = r * Math.cos(phi);
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+  scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({
+    color: 0x6688cc, size: 0.12, sizeAttenuation: true,
+    transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false,
+  })));
 
   // Poincare ball boundary (transparent sphere)
   const ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 64, 64);
@@ -140,89 +218,73 @@ function initScene() {
   for (const r of [0.33, 0.66, 1.0]) {
     const ringGeo = new THREE.RingGeometry(BALL_RADIUS * r - 0.02, BALL_RADIUS * r + 0.02, 80);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x508cff,
-      transparent: true,
+      color: 0x508cff, transparent: true,
       opacity: r === 1.0 ? 0.08 : 0.03,
-      side: THREE.DoubleSide,
-      depthWrite: false,
+      side: THREE.DoubleSide, depthWrite: false,
     });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     scene.add(ring);
-    // Add rotated copies for 3D effect
-    const ring2 = ring.clone();
-    ring2.rotation.x = Math.PI / 2;
-    scene.add(ring2);
-    const ring3 = ring.clone();
-    ring3.rotation.y = Math.PI / 2;
-    scene.add(ring3);
+    const r2 = ring.clone(); r2.rotation.x = Math.PI / 2; scene.add(r2);
+    const r3 = ring.clone(); r3.rotation.y = Math.PI / 2; scene.add(r3);
   }
 
-  // Node instanced mesh
-  const nodeGeo = new THREE.SphereGeometry(1, 12, 12);
+  // === NODE MESH — PBR with emissive for glow + 3D shading ===
+  const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
   const nodeMat = new THREE.MeshStandardMaterial({
-    roughness: 0.3,
-    metalness: 0.4,
-    emissive: 0x000000,
-    emissiveIntensity: 0.5,
+    color: 0xffffff,
+    emissive: 0xffffff,
+    emissiveIntensity: 0.4,
+    metalness: 0.25,
+    roughness: 0.4,
   });
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
   nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(nodesMesh);
 
-  // Glow instanced mesh (larger, emissive spheres for fired nodes)
-  const glowGeo = new THREE.SphereGeometry(1, 8, 8);
+  // === GLOW HALOS ===
+  const glowGeo = new THREE.IcosahedronGeometry(1, 2);
   const glowMat = new THREE.MeshBasicMaterial({
-    transparent: true,
-    opacity: 0.25,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
+    transparent: true, opacity: 0.15,
+    blending: THREE.AdditiveBlending, depthWrite: false,
   });
   glowMesh = new THREE.InstancedMesh(glowGeo, glowMat, MAX_NODES);
   glowMesh.count = 0;
   glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(glowMesh);
 
-  // Edge lines
-  const edgePositions = new Float32Array(MAX_EDGES * 6);
-  const edgeColors = new Float32Array(MAX_EDGES * 6);
+  // === EDGE LINES ===
+  // Allocate 4 vertices per edge (2 segments for slight curve via midpoint offset)
+  const edgePositions = new Float32Array(MAX_EDGES * 12); // 4 verts * 3 components
+  const edgeColors = new Float32Array(MAX_EDGES * 12);
   const edgeGeo = new THREE.BufferGeometry();
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3).setUsage(THREE.DynamicDrawUsage));
   edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
   const edgeMat = new THREE.LineBasicMaterial({
-    vertexColors: true,
-    transparent: true,
-    opacity: 0.6,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
+    vertexColors: true, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending, depthWrite: false,
   });
   edgesMesh = new THREE.LineSegments(edgeGeo, edgeMat);
   scene.add(edgesMesh);
 
-  // Spike particle mesh — small bright spheres that travel along edges
+  // === SPIKE PARTICLES ===
   const spikeGeo = new THREE.SphereGeometry(1, 6, 6);
   const spikeMat = new THREE.MeshBasicMaterial({
-    transparent: true,
-    opacity: 0.9,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
+    transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false,
   });
   spikesMesh = new THREE.InstancedMesh(spikeGeo, spikeMat, MAX_SPIKES);
   spikesMesh.count = 0;
   spikesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(spikesMesh);
 
-  // Resize handler
   window.addEventListener('resize', onResize);
-
-  // Mouse handlers
   renderer.domElement.addEventListener('mousemove', onMouseMove);
   renderer.domElement.addEventListener('click', onMouseClick);
 }
 
 function onResize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const w = window.innerWidth, h = window.innerHeight;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
@@ -241,49 +303,53 @@ function onMouseMove(e) {
 function onMouseClick() {
   if (hoveredNodeId !== null) {
     selectedNodeId = hoveredNodeId;
+    // Build set of connected node IDs for context dimming
+    connectedToSelected.clear();
+    connectedToSelected.add(selectedNodeId);
+    for (const e of edgeData) {
+      if (e.from === selectedNodeId) connectedToSelected.add(e.to);
+      if (e.to === selectedNodeId) connectedToSelected.add(e.from);
+    }
+    updateDetailPanel();
+  } else {
+    // Click empty space — deselect
+    selectedNodeId = null;
+    connectedToSelected.clear();
     updateDetailPanel();
   }
 }
 
 function updateRaycast() {
   if (!nodesMesh || nodesMesh.count === 0) return;
-
   raycaster.setFromCamera(mouse, camera);
 
-  // Manual sphere intersection for instanced mesh
-  const dummy = new THREE.Matrix4();
+  const mat4 = new THREE.Matrix4();
   const pos = new THREE.Vector3();
   let closest = null;
   let closestDist = Infinity;
 
   for (let i = 0; i < nodesMesh.count; i++) {
-    nodesMesh.getMatrixAt(i, dummy);
-    pos.setFromMatrixPosition(dummy);
-    const ray = raycaster.ray;
-    const d = ray.distanceToPoint(pos);
-    const scale = dummy.elements[0]; // x scale = radius
+    nodesMesh.getMatrixAt(i, mat4);
+    pos.setFromMatrixPosition(mat4);
+    const d = raycaster.ray.distanceToPoint(pos);
+    const scale = mat4.elements[0];
     if (d < scale * 2.5) {
       const camDist = camera.position.distanceTo(pos);
-      if (camDist < closestDist) {
-        closestDist = camDist;
-        closest = i;
-      }
+      if (camDist < closestDist) { closestDist = camDist; closest = i; }
     }
   }
 
   hoveredNodeId = closest !== null ? nodeData[closest]?.id ?? null : null;
   renderer.domElement.style.cursor = hoveredNodeId !== null ? 'pointer' : 'default';
 
-  // Show tooltip
   const tooltip = document.getElementById('tooltip');
   if (hoveredNodeId !== null) {
     const node = nodeData.find(n => n.id === hoveredNodeId);
     if (node) {
       tooltip.style.display = 'block';
-      const rect = renderer.domElement.getBoundingClientRect();
       const screenPos = pos.clone().project(camera);
-      const sx = (screenPos.x * 0.5 + 0.5) * rect.width;
-      const sy = (-screenPos.y * 0.5 + 0.5) * rect.height;
+      const sx = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
+      const sy = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
       tooltip.style.left = (sx + 16) + 'px';
       tooltip.style.top = (sy - 10) + 'px';
       tooltip.innerHTML = `
@@ -304,6 +370,7 @@ function updateRaycast() {
 // ============================================================
 const dummy = new THREE.Object3D();
 const tempColor = new THREE.Color();
+const dimColor = new THREE.Color();
 
 function updateScene() {
   if (!system) return;
@@ -313,23 +380,23 @@ function updateScene() {
   const edges = topo.edges;
 
   nodeData = nodes;
+  edgeData = edges;
   nodeMap.clear();
 
-  // === UPDATE NODES ===
   const nodeCount = Math.min(nodes.length, MAX_NODES);
   nodesMesh.count = nodeCount;
   let glowCount = 0;
+
+  const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
 
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
     nodeMap.set(n.id, i);
 
-    // Position in Poincare ball -> 3D scene
     const px = n.x * BALL_RADIUS;
     const py = n.y * BALL_RADIUS;
     const pz = n.z * BALL_RADIUS;
 
-    // Size based on energy
     const size = NODE_BASE_SIZE + n.energy * 0.2;
 
     dummy.position.set(px, py, pz);
@@ -337,33 +404,37 @@ function updateScene() {
     dummy.updateMatrix();
     nodesMesh.setMatrixAt(i, dummy.matrix);
 
-    // Color by cell type
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
-    const emissive = CELL_EMISSIVE[n.cell_type] || CELL_EMISSIVE.Stem;
 
-    if (n.fired) {
-      // Bright white-ish when firing
-      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.6);
+    // === CONTEXT DIMMING ===
+    // When a node is selected, dim non-connected nodes to 20%
+    const isDimmed = hasSelection && !connectedToSelected.has(n.id);
+
+    if (n.fired && !isDimmed) {
+      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.4);
       nodesMesh.setColorAt(i, tempColor);
 
-      // Add glow sphere
       if (glowCount < MAX_NODES) {
-        dummy.scale.setScalar(size * 4.0);
+        dummy.scale.setScalar(size * 3.0);
         dummy.updateMatrix();
         glowMesh.setMatrixAt(glowCount, dummy.matrix);
         glowMesh.setColorAt(glowCount, color);
         glowCount++;
       }
+    } else if (isDimmed) {
+      // Dim: desaturated and dark
+      dimColor.copy(color).multiplyScalar(0.15);
+      nodesMesh.setColorAt(i, dimColor);
     } else {
       nodesMesh.setColorAt(i, color);
     }
 
-    // Highlight selected
+    // Selected node — bright highlight
     if (n.id === selectedNodeId) {
-      tempColor.set(0xffffff);
+      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.5);
       nodesMesh.setColorAt(i, tempColor);
       if (glowCount < MAX_NODES) {
-        dummy.scale.setScalar(size * 3.0);
+        dummy.scale.setScalar(size * 2.5);
         dummy.updateMatrix();
         glowMesh.setMatrixAt(glowCount, dummy.matrix);
         tempColor.set(0x508cff);
@@ -384,8 +455,8 @@ function updateScene() {
   glowMesh.instanceMatrix.needsUpdate = true;
   if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
 
-  // === UPDATE EDGES ===
-  edgeData = edges;
+  // === CURVED EDGES ===
+  // Each edge becomes 2 line segments via a midpoint offset (subtle bezier approximation)
   const positions = edgesMesh.geometry.attributes.position.array;
   const colors = edgesMesh.geometry.attributes.color.array;
   let edgeIdx = 0;
@@ -396,87 +467,94 @@ function updateScene() {
     const toIdx = nodeMap.get(e.to);
     if (fromIdx === undefined || toIdx === undefined) continue;
 
+    const w = Math.min(Math.abs(e.weight), 2.0) / 2.0;
+    if (w < 0.04) continue;
+
     const fi = fromIdx * 3;
     const ti = toIdx * 3;
-    const ei = edgeIdx * 6;
+    const fx = nodePositions[fi], fy = nodePositions[fi+1], fz = nodePositions[fi+2];
+    const tx = nodePositions[ti], ty = nodePositions[ti+1], tz = nodePositions[ti+2];
 
-    positions[ei]     = nodePositions[fi];
-    positions[ei + 1] = nodePositions[fi + 1];
-    positions[ei + 2] = nodePositions[fi + 2];
-    positions[ei + 3] = nodePositions[ti];
-    positions[ei + 4] = nodePositions[ti + 1];
-    positions[ei + 5] = nodePositions[ti + 2];
+    // Midpoint with slight perpendicular offset for curve
+    const mx = (fx + tx) * 0.5;
+    const my = (fy + ty) * 0.5;
+    const mz = (fz + tz) * 0.5;
+    // Offset perpendicular to the edge and toward the ball center
+    const dx = tx - fx, dy = ty - fy, dz = tz - fz;
+    const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+    // Cross product with a "up-ish" vector for perpendicular offset
+    const cx = dy * 0.15 - dz * 0.05;
+    const cy = dz * 0.1 - dx * 0.15;
+    const cz = dx * 0.05 - dy * 0.1;
+    const curveAmount = 0.15;
+    const ox = mx + cx * curveAmount;
+    const oy = my + cy * curveAmount;
+    const oz = mz + cz * curveAmount;
 
-    // Color edges as light filaments
-    const w = Math.min(Math.abs(e.weight), 2.0) / 2.0;
-    const elig = Math.min(Math.abs(e.eligibility || 0), 1.0);
-    const baseBright = 0.06 + w * 0.2;
+    const ei = edgeIdx * 12;
+    // Segment 1: from -> midpoint
+    positions[ei] = fx;   positions[ei+1] = fy;   positions[ei+2] = fz;
+    positions[ei+3] = ox;  positions[ei+4] = oy;  positions[ei+5] = oz;
+    // Segment 2: midpoint -> to
+    positions[ei+6] = ox;  positions[ei+7] = oy;  positions[ei+8] = oz;
+    positions[ei+9] = tx;  positions[ei+10] = ty;  positions[ei+11] = tz;
 
-    // Eligibility makes edges "hot" — actively learning connections glow
-    const heatBoost = elig * 0.4;
-
-    // Highlight edges connected to selected/hovered node
-    const isHighlighted = (e.from === selectedNodeId || e.to === selectedNodeId ||
-                           e.from === hoveredNodeId || e.to === hoveredNodeId);
+    // Color
+    const sourceColor = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
+    const isHighlighted = hasSelection && (e.from === selectedNodeId || e.to === selectedNodeId);
+    const edgeDimmed = hasSelection && !isHighlighted;
 
     let r, g, b;
     if (isHighlighted) {
       r = 0.5; g = 0.7; b = 1.0;
-    } else if (e.weight >= 0) {
-      // Cool blue base + warm shift from eligibility
-      r = baseBright * 0.3 + heatBoost * 0.8;
-      g = baseBright * 0.5 + heatBoost * 0.3;
-      b = baseBright + heatBoost * 0.1;
     } else {
-      // Inhibitory: reddish
-      r = baseBright * 0.8 + heatBoost;
-      g = baseBright * 0.15;
-      b = baseBright * 0.2;
+      const brightness = edgeDimmed ? 0.02 : (0.05 + w * 0.18);
+      r = sourceColor.r * brightness;
+      g = sourceColor.g * brightness;
+      b = sourceColor.b * brightness;
     }
 
-    // Consolidated edges: steady warm glow (captured knowledge)
-    if (e.consolidated) {
-      r = r * 1.2 + 0.08;
-      g = g * 1.2 + 0.06;
-      b *= 1.1;
-    }
+    if (e.consolidated && !edgeDimmed) { r += 0.05; g += 0.04; b += 0.02; }
 
-    colors[ei] = r;     colors[ei + 1] = g;     colors[ei + 2] = b;
-    colors[ei + 3] = r; colors[ei + 4] = g; colors[ei + 5] = b;
+    // Apply same color to all 4 vertices
+    for (let v = 0; v < 4; v++) {
+      colors[ei + v*3] = r;
+      colors[ei + v*3 + 1] = g;
+      colors[ei + v*3 + 2] = b;
+    }
 
     edgeIdx++;
   }
 
   edgesMesh.geometry.attributes.position.needsUpdate = true;
   edgesMesh.geometry.attributes.color.needsUpdate = true;
-  edgesMesh.geometry.setDrawRange(0, edgeIdx * 2);
+  edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
-  // === Spawn spike particles for newly firing morphons ===
+  // === SPIKE SPAWNING ===
   const newFired = new Set();
-  for (const n of nodes) {
-    if (n.fired) newFired.add(n.id);
-  }
+  for (const n of nodes) { if (n.fired) newFired.add(n.id); }
 
-  // For each newly fired morphon, spawn particles along its outgoing edges
   for (const id of newFired) {
-    if (prevFired.has(id)) continue;  // only on rising edge
+    if (prevFired.has(id)) continue;
+    if (spikes.length >= MAX_SPIKES * 0.7) break;
     const fromIdx = nodeMap.get(id);
     if (fromIdx === undefined) continue;
     const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
 
+    let spawned = 0;
     for (const e of edges) {
       if (e.from !== id) continue;
+      if (spawned >= 6) break;
       const toIdx = nodeMap.get(e.to);
       if (toIdx === undefined) continue;
-      if (spikes.length >= MAX_SPIKES) break;
 
       spikes.push({
-        fromIdx,
-        toIdx,
+        fromIdx, toIdx,
         progress: 0,
-        speed: 0.03 + Math.random() * 0.03,
+        speed: 0.02 + Math.random() * 0.025,
         color: color.clone(),
       });
+      spawned++;
     }
   }
 
@@ -488,16 +566,13 @@ function updateScene() {
 // ============================================================
 function updatePanels() {
   if (!system) return;
-
   const stats = JSON.parse(system.inspect());
   const mod = JSON.parse(system.modulation_json());
 
-  // Header
   document.getElementById('h-step').textContent = stats.step_count;
   document.getElementById('h-morphons').textContent = stats.total_morphons;
   document.getElementById('h-synapses').textContent = stats.total_synapses;
 
-  // Stats
   document.getElementById('s-morphons').textContent = stats.total_morphons;
   document.getElementById('s-synapses').textContent = stats.total_synapses;
   document.getElementById('s-clusters').textContent = stats.fused_clusters;
@@ -507,25 +582,21 @@ function updatePanels() {
   document.getElementById('s-error').textContent = stats.avg_prediction_error.toFixed(3);
   document.getElementById('s-wmem').textContent = stats.working_memory_items;
 
-  // Cell type counts
   const counts = stats.differentiation_map || {};
   for (const type of ['Stem', 'Sensory', 'Associative', 'Motor', 'Modulatory', 'Fused']) {
     const el = document.getElementById('ct-' + type);
     if (el) el.textContent = counts[type] || 0;
   }
 
-  // Neuromodulation
   setModBar('mod-reward', 'mod-reward-v', mod.reward);
   setModBar('mod-novelty', 'mod-novelty-v', mod.novelty);
   setModBar('mod-arousal', 'mod-arousal-v', mod.arousal);
   setModBar('mod-homeo', 'mod-homeo-v', mod.homeostasis);
 
-  // Sparkline
   firingHistory.push(stats.firing_rate);
   if (firingHistory.length > MAX_HISTORY) firingHistory.shift();
   drawSparkline('spark-firing', firingHistory, '#508cff');
 
-  // Update detail panel if selected
   if (selectedNodeId !== null) updateDetailPanel();
 }
 
@@ -538,32 +609,25 @@ function drawSparkline(canvasId, data, color) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
+  const w = canvas.width, h = canvas.height;
 
   ctx.clearRect(0, 0, w, h);
   if (data.length < 2) return;
-
   const max = Math.max(...data, 0.01);
 
-  // Fill gradient
   ctx.beginPath();
   for (let i = 0; i < data.length; i++) {
     const x = (i / (data.length - 1)) * w;
     const y = h - (data[i] / max) * h * 0.85 - 2;
     i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   }
-  const lastX = ((data.length - 1) / (data.length - 1)) * w;
-  ctx.lineTo(lastX, h);
-  ctx.lineTo(0, h);
-  ctx.closePath();
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, color + '30');
   grad.addColorStop(1, color + '05');
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Stroke
   ctx.beginPath();
   for (let i = 0; i < data.length; i++) {
     const x = (i / (data.length - 1)) * w;
@@ -577,17 +641,9 @@ function drawSparkline(canvasId, data, color) {
 
 function updateDetailPanel() {
   const panel = document.getElementById('detail-panel');
-  if (selectedNodeId === null) {
-    panel.classList.remove('visible');
-    return;
-  }
-
+  if (selectedNodeId === null) { panel.classList.remove('visible'); return; }
   const node = nodeData.find(n => n.id === selectedNodeId);
-  if (!node) {
-    panel.classList.remove('visible');
-    selectedNodeId = null;
-    return;
-  }
+  if (!node) { panel.classList.remove('visible'); selectedNodeId = null; return; }
 
   panel.classList.add('visible');
   document.getElementById('d-id').textContent = '#' + node.id;
@@ -605,7 +661,6 @@ function updateDetailPanel() {
   document.getElementById('d-desire').textContent = node.desire.toFixed(3);
   document.getElementById('d-fired').textContent = node.fired ? 'YES' : '-';
 
-  // Count connections
   let inCount = 0, outCount = 0;
   for (const e of edgeData) {
     if (e.to === selectedNodeId) inCount++;
@@ -623,22 +678,16 @@ let lastSynapseCount = 0;
 function detectEvents() {
   if (!system) return;
   const stats = JSON.parse(system.inspect());
-  const eventsEl = document.getElementById('events');
-
   const step = stats.step_count;
-  const mc = stats.total_morphons;
-  const sc = stats.total_synapses;
+  const mc = stats.total_morphons, sc = stats.total_synapses;
 
   if (lastMorphonCount > 0) {
-    const mDiff = mc - lastMorphonCount;
-    const sDiff = sc - lastSynapseCount;
-
+    const mDiff = mc - lastMorphonCount, sDiff = sc - lastSynapseCount;
     if (mDiff > 0) addEvent(step, `+${mDiff} morphon(s) born`, 'event-birth');
     if (mDiff < 0) addEvent(step, `${mDiff} morphon(s) died`, 'event-death');
     if (sDiff > 5) addEvent(step, `+${sDiff} synapse(s) formed`, 'event-synapse');
     if (sDiff < -5) addEvent(step, `${sDiff} synapse(s) pruned`, 'event-synapse');
   }
-
   lastMorphonCount = mc;
   lastSynapseCount = sc;
 }
@@ -649,11 +698,7 @@ function addEvent(step, text, cssClass) {
   el.className = 'event-item';
   el.innerHTML = `<span class="${cssClass}">[${step}]</span> ${text}`;
   eventsEl.insertBefore(el, eventsEl.firstChild);
-
-  // Cap at 100 events
-  while (eventsEl.children.length > 100) {
-    eventsEl.removeChild(eventsEl.lastChild);
-  }
+  while (eventsEl.children.length > 100) eventsEl.removeChild(eventsEl.lastChild);
 }
 
 // ============================================================
@@ -663,24 +708,13 @@ function makeInput(pattern) {
   if (!system) return;
   const n = system.input_size();
   const input = new Array(n);
-
   switch (pattern) {
-    case 'burst':
-      for (let i = 0; i < n; i++) input[i] = 1.0;
-      break;
-    case 'pulse':
-      for (let i = 0; i < n; i++) input[i] = i % 2 === 0 ? 1.0 : 0.0;
-      break;
-    case 'wave':
-      for (let i = 0; i < n; i++) input[i] = Math.abs(Math.sin(i * 0.5));
-      break;
-    case 'noise':
-      for (let i = 0; i < n; i++) input[i] = Math.random();
-      break;
-    default:
-      for (let i = 0; i < n; i++) input[i] = 0.5 + Math.random() * 2.0;
+    case 'burst': for (let i = 0; i < n; i++) input[i] = 1.0; break;
+    case 'pulse': for (let i = 0; i < n; i++) input[i] = i % 2 === 0 ? 1.0 : 0.0; break;
+    case 'wave':  for (let i = 0; i < n; i++) input[i] = Math.abs(Math.sin(i * 0.5)); break;
+    case 'noise': for (let i = 0; i < n; i++) input[i] = Math.random(); break;
+    default:      for (let i = 0; i < n; i++) input[i] = 0.5 + Math.random() * 2.0;
   }
-
   system.feed_input(new Float64Array(input));
 }
 
@@ -698,11 +732,8 @@ function setupControls() {
 
   document.getElementById('btn-step').addEventListener('click', () => {
     if (system) {
-      makeInput('noise');
-      system.step();
-      updateScene();
-      updatePanels();
-      detectEvents();
+      makeInput('noise'); system.step();
+      updateScene(); updatePanels(); detectEvents();
     }
   });
 
@@ -713,21 +744,15 @@ function setupControls() {
   document.getElementById('btn-reset').addEventListener('click', () => {
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
-    selectedNodeId = null;
-    hoveredNodeId = null;
+    selectedNodeId = null; hoveredNodeId = null;
+    connectedToSelected.clear();
     firingHistory.length = 0;
-    lastMorphonCount = 0;
-    lastSynapseCount = 0;
+    lastMorphonCount = 0; lastSynapseCount = 0;
     document.getElementById('events').innerHTML = '';
     addEvent(0, `System reset [${program}]`, 'event-diff');
-    // Warm up
-    for (let i = 0; i < 20; i++) {
-      makeInput('noise');
-      system.step();
-    }
+    for (let i = 0; i < 20; i++) { makeInput('noise'); system.step(); }
   });
 
-  // Signal injection
   document.getElementById('btn-reward').addEventListener('click', () => {
     if (system) { system.inject_reward(0.8); addEvent('', 'Reward injected (0.8)', 'event-birth'); }
   });
@@ -738,13 +763,11 @@ function setupControls() {
     if (system) { system.inject_arousal(0.9); addEvent('', 'Arousal injected (0.9)', 'event-death'); }
   });
 
-  // Feed patterns
   document.getElementById('feed-burst').addEventListener('click', () => makeInput('burst'));
   document.getElementById('feed-pulse').addEventListener('click', () => makeInput('pulse'));
   document.getElementById('feed-wave').addEventListener('click', () => makeInput('wave'));
   document.getElementById('feed-noise').addEventListener('click', () => makeInput('noise'));
 
-  // Clear log
   document.getElementById('btn-clear-log').addEventListener('click', () => {
     document.getElementById('events').innerHTML = '';
   });
@@ -757,35 +780,24 @@ const spikeDummy = new THREE.Object3D();
 
 function updateSpikes() {
   let alive = 0;
-
   for (let i = spikes.length - 1; i >= 0; i--) {
     const s = spikes[i];
     s.progress += s.speed;
+    if (s.progress >= 1.0) { spikes.splice(i, 1); continue; }
 
-    if (s.progress >= 1.0) {
-      spikes.splice(i, 1);
-      continue;
-    }
-
-    // Interpolate position between source and target
-    const fi = s.fromIdx * 3;
-    const ti = s.toIdx * 3;
+    const fi = s.fromIdx * 3, ti = s.toIdx * 3;
     const t = s.progress;
-    const x = nodePositions[fi]     + (nodePositions[ti]     - nodePositions[fi])     * t;
-    const y = nodePositions[fi + 1] + (nodePositions[ti + 1] - nodePositions[fi + 1]) * t;
-    const z = nodePositions[fi + 2] + (nodePositions[ti + 2] - nodePositions[fi + 2]) * t;
+    const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
+    const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
+    const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
 
-    // Size: bright in the middle, fades at ends
     const sizeCurve = Math.sin(t * Math.PI);
-    const size = 0.06 + sizeCurve * 0.1;
-
     spikeDummy.position.set(x, y, z);
-    spikeDummy.scale.setScalar(size);
+    spikeDummy.scale.setScalar(0.05 + sizeCurve * 0.08);
     spikeDummy.updateMatrix();
 
     if (alive < MAX_SPIKES) {
       spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      // Brighter color at the leading edge
       tempColor.copy(s.color).lerp(new THREE.Color(0xffffff), sizeCurve * 0.5);
       spikesMesh.setColorAt(alive, tempColor);
       alive++;
@@ -803,46 +815,34 @@ function updateSpikes() {
 // ANIMATION LOOP
 // ============================================================
 let frameCount = 0;
+const clock = new THREE.Clock();
 
 function animate() {
   frameCount++;
+  const elapsed = clock.getElapsedTime();
 
-  // Simulation
   if (running && system) {
     for (let i = 0; i < stepsPerFrame; i++) {
-      // Feed random low-level stimulation to keep the system alive
-      if (frameCount % 3 === 0) {
-        makeInput('noise');
-      }
+      if (frameCount % 3 === 0) makeInput('noise');
       system.step();
     }
     updateScene();
-
-    // Update panels at lower rate (every 3rd frame)
-    if (frameCount % 3 === 0) {
-      updatePanels();
-      detectEvents();
-    }
+    if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }
   }
 
-  // Raycast at lower rate
-  if (frameCount % 2 === 0) {
-    updateRaycast();
-  }
-
-  // Animate spike particles every frame (even when paused, existing ones keep traveling)
+  if (frameCount % 2 === 0) updateRaycast();
   updateSpikes();
 
-  // Subtle ball rotation for ambient feel
+  // Subtle ball rotation
   if (diskMesh) {
-    diskMesh.rotation.y += 0.0003;
-    diskMesh.rotation.x += 0.0001;
+    diskMesh.rotation.y = elapsed * 0.02;
+    diskMesh.rotation.x = elapsed * 0.008;
   }
 
-  // Adjust bloom based on spike activity (cheap proxy: spike count)
+  // Dynamic bloom
   if (bloomPass) {
-    const activity = Math.min(spikes.length / 100, 1.0);
-    bloomPass.strength = 0.8 + activity * 1.5;
+    const activity = Math.min(spikes.length / 80, 1.0);
+    bloomPass.strength = 0.7 + activity * 0.8;
   }
 
   controls.update();
@@ -855,27 +855,19 @@ function animate() {
 async function main() {
   initScene();
   setupControls();
-
   await init();
 
   system = new WasmSystem(60, 'cortical', 3);
-
-  // Warm up
-  for (let i = 0; i < 30; i++) {
-    makeInput('noise');
-    system.step();
-  }
+  for (let i = 0; i < 30; i++) { makeInput('noise'); system.step(); }
 
   updateScene();
   updatePanels();
 
-  // Hide loading screen
   const loading = document.getElementById('loading');
   loading.classList.add('hidden');
   setTimeout(() => loading.remove(), 600);
 
   addEvent(0, 'System initialized [cortical, 60 seed, 3D]', 'event-diff');
-
   renderer.setAnimationLoop(animate);
 }
 

@@ -10,6 +10,8 @@ use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
 use rand::Rng;
+use serde_json::json;
+use std::fs;
 
 const GRAVITY: f64 = 9.8;
 const CART_MASS: f64 = 1.0;
@@ -196,7 +198,51 @@ fn main() {
 
     println!("\n=== Final ===");
     let s = system.inspect();
+    let diag = system.diagnostics();
     println!("Morphons: {} | Synapses: {} | Clusters: {} | Gen: {} | FR: {:.3}",
         s.total_morphons, s.total_synapses, s.fused_clusters, s.max_generation, s.firing_rate);
     println!("Types: {:?}", s.differentiation_map);
+
+    // Save benchmark results
+    let avg_100 = recent.iter().sum::<usize>() as f64 / recent.len().max(1) as f64;
+    let solved = recent.len() >= 100 && avg_100 >= 195.0;
+    let version = env!("CARGO_PKG_VERSION");
+    let results = json!({
+        "benchmark": "cartpole",
+        "version": version,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
+        "episodes": num_episodes,
+        "max_steps_per_episode": max_steps,
+        "results": {
+            "best_steps": best,
+            "avg_last_100": avg_100,
+            "solved": solved,
+        },
+        "system": {
+            "morphons": s.total_morphons,
+            "synapses": s.total_synapses,
+            "clusters": s.fused_clusters,
+            "generation": s.max_generation,
+            "firing_rate": s.firing_rate,
+            "prediction_error": s.avg_prediction_error,
+        },
+        "diagnostics": {
+            "weight_mean": diag.weight_mean,
+            "weight_std": diag.weight_std,
+            "active_tags": diag.active_tags,
+            "total_captures": diag.total_captures,
+        },
+    });
+
+    let dir = format!("docs/benchmark_results/v{}", version);
+    fs::create_dir_all(&dir).ok();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let run_path = format!("{}/cartpole_{}.json", dir, ts);
+    let latest_path = format!("{}/cartpole_latest.json", dir);
+    let json = serde_json::to_string_pretty(&results).unwrap();
+    fs::write(&run_path, &json).unwrap();
+    fs::write(&latest_path, &json).unwrap();
+    println!("\nResults saved to {}", run_path);
 }

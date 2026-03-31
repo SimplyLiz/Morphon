@@ -203,7 +203,9 @@ impl Morphon {
         // Update potential with leaky integration + spontaneous noise
         // Noise ensures baseline Hebbian coincidences even without external input
         let leak_rate = 0.1;
-        let noise = (self.id.wrapping_mul(self.age) % 1000) as f64 / 1000.0 * 0.1;
+        // Pseudo-random noise centered at zero (range [-0.05, +0.05])
+        let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
+        let noise = (noise_raw - 0.5) * 0.1;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
 
@@ -228,10 +230,13 @@ impl Morphon {
         let desire_alpha = 0.01;
         self.desire = self.desire * (1.0 - desire_alpha) + self.prediction_error * desire_alpha;
 
-        // Homeostatic threshold regulation (10x rate for fast convergence)
+        // Homeostatic threshold regulation
+        // Upper clamp respects the activation function's output range — without this,
+        // threshold can exceed max activation output, permanently silencing the morphon.
         let actual_rate = self.activity_history.mean();
         self.threshold += 0.01 * (actual_rate - self.homeostatic_setpoint);
-        self.threshold = self.threshold.clamp(0.05, 5.0);
+        let max_threshold = self.activation_fn.max_output();
+        self.threshold = self.threshold.clamp(0.05, max_threshold);
 
         // Division pressure accumulates when chronically overloaded
         if actual_rate > 0.5 {
