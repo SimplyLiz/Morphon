@@ -28,7 +28,8 @@ pub struct MorphogenesisParams {
     pub division_threshold: f64,
     /// Minimum energy to allow division.
     pub division_min_energy: f64,
-    /// Correlation threshold for cluster fusion (Pearson r).
+    /// Correlation threshold for cluster fusion.
+    /// Lowered from 0.95 to 0.75 to allow functional cluster formation earlier.
     pub fusion_correlation_threshold: f64,
     /// Minimum cluster size for fusion.
     pub fusion_min_size: usize,
@@ -49,7 +50,7 @@ impl Default for MorphogenesisParams {
             pruning_min_age: 100,
             division_threshold: 1.0,
             division_min_energy: 0.3,
-            fusion_correlation_threshold: 0.95,
+            fusion_correlation_threshold: 0.75,
             fusion_min_size: 3,
             migration_rate: 0.05,
             apoptosis_min_age: 1000,

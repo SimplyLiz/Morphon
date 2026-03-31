@@ -99,6 +99,7 @@ impl System {
             next_morphon_id: snapshot.next_morphon_id,
             next_cluster_id: snapshot.next_cluster_id,
             step_count: snapshot.step_count,
+            diag: crate::diagnostics::Diagnostics::default(),
         }
     }
 

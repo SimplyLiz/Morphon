@@ -102,13 +102,14 @@ pub fn update_eligibility(
 ///   - Modulatory morphons (Homeostasis receptors) learn from stability signals
 ///
 /// Also handles Tag-and-Capture for delayed reward.
+/// Returns `true` if a tag-and-capture consolidation event occurred.
 pub fn apply_weight_update(
     synapse: &mut Synapse,
     modulation: &Neuromodulation,
     params: &LearningParams,
     plasticity_rate: f64,
     post_receptors: &ReceptorSet,
-) {
+) -> bool {
     // Receptor-gated modulation: only include channels the post-synaptic morphon responds to
     let r = if post_receptors.contains(&ModulatorType::Reward) {
         params.alpha_reward * modulation.reward
@@ -137,11 +138,12 @@ pub fn apply_weight_update(
     synapse.weight += delta_w;
 
     // Tag-and-Capture: only if morphon has Reward receptor
-    if post_receptors.contains(&ModulatorType::Reward)
+    let captured = post_receptors.contains(&ModulatorType::Reward)
         && synapse.tag > 0.1
         && modulation.reward > params.capture_threshold
-        && !synapse.consolidated
-    {
+        && !synapse.consolidated;
+
+    if captured {
         synapse.weight += params.capture_rate * synapse.tag_strength * modulation.reward;
         synapse.consolidated = true;
         synapse.tag = 0.0;
@@ -153,6 +155,8 @@ pub fn apply_weight_update(
         synapse.usage_count += 1;
     }
     synapse.age += 1;
+
+    captured
 }
 
 /// Determine if a synapse should be pruned based on activity.

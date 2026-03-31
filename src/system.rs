@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::developmental::{self, DevelopmentalConfig};
+use crate::diagnostics::Diagnostics;
 use crate::lineage::{self, LineageTree};
 use crate::homeostasis::{self, HomeostasisParams};
 use crate::learning::{self, LearningParams};
@@ -33,6 +34,22 @@ pub struct SystemConfig {
     pub episodic_memory_capacity: usize,
     /// Timestep size for simulation.
     pub dt: f64,
+}
+
+impl SystemConfig {
+    /// Save this configuration to a JSON file for reproducibility and sweeps.
+    pub fn save_json(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
+    }
+
+    /// Load a configuration from a JSON file.
+    pub fn load_json(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        serde_json::from_str(&json)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    }
 }
 
 impl Default for SystemConfig {
@@ -98,6 +115,9 @@ pub struct System {
     pub(crate) next_cluster_id: ClusterId,
     /// Current simulation step.
     pub(crate) step_count: u64,
+
+    /// Learning pipeline diagnostics (updated every step).
+    pub(crate) diag: Diagnostics,
 }
 
 impl System {
@@ -139,6 +159,7 @@ impl System {
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
+            diag: Diagnostics::default(),
         }
     }
 
@@ -163,9 +184,33 @@ impl System {
         self.resonance.propagate(&self.morphons, &self.topology);
 
         // 2. Deliver spikes that have reached their targets
-        let _delivered = self.resonance.deliver(&mut self.morphons, dt);
+        let delivered = self.resonance.deliver(&mut self.morphons, dt);
 
-        // 3. Update all Morphon states (integrate input, fire/not-fire)
+        // 3. Spike-timing eligibility: update eligibility traces at the moment
+        //    of spike delivery for precise pre->post timing information.
+        //    This uses the actual spike arrival (not just the coarse "fired" flag)
+        //    to provide STDP-like precision to the three-factor learning rule.
+        for spike in &delivered {
+            let post_fired = self.morphons.get(&spike.target).map_or(false, |m| m.fired);
+            if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
+                if let Some(synapse) = self.topology.synapse_mut(ei) {
+                    // Spike arrival is direct evidence of pre-synaptic firing
+                    let h = if post_fired { 1.0 } else { -0.3 };
+                    synapse.eligibility +=
+                        (-synapse.eligibility / self.config.learning.tau_eligibility + h) * dt;
+                    synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
+
+                    // Tag on strong coincidence (spike arrived AND post fired)
+                    if h > self.config.learning.tag_threshold && !synapse.consolidated {
+                        synapse.tag = 1.0;
+                        synapse.tag_strength = h;
+                    }
+                }
+            }
+        }
+        let spikes_delivered = delivered.len();
+
+        // 4. Update all Morphon states (integrate input, fire/not-fire)
         #[cfg(feature = "parallel")]
         self.morphons.par_iter_mut().for_each(|(_, m)| m.step(dt));
         #[cfg(not(feature = "parallel"))]
@@ -173,6 +218,7 @@ impl System {
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
 
         // === MEDIUM PATH ===
+        let mut captures_this_step = 0_u64;
         if tick.medium {
             // Update eligibility traces and apply receptor-gated weight changes
             for &id in &morphon_ids {
@@ -194,13 +240,16 @@ impl System {
                         );
 
                         let plasticity = self.modulation.plasticity_rate();
-                        learning::apply_weight_update(
+                        let captured = learning::apply_weight_update(
                             synapse,
                             &self.modulation,
                             &self.config.learning,
                             plasticity,
                             &post_receptors,
                         );
+                        if captured {
+                            captures_this_step += 1;
+                        }
                     }
                 }
             }
@@ -262,6 +311,8 @@ impl System {
                 &self.config.homeostasis,
             ) {
                 homeostasis::rollback_synapses(&checkpoint, &mut self.topology);
+                self.diag.rollback_triggered = true;
+                self.diag.total_rollbacks += 1;
             }
         }
 
@@ -325,6 +376,19 @@ impl System {
                 );
             }
         }
+
+        // === DIAGNOSTICS ===
+        // Compute learning pipeline diagnostics for observability.
+        let prev_total_captures = self.diag.total_captures;
+        let prev_total_rollbacks = self.diag.total_rollbacks;
+        let rollback_triggered = self.diag.rollback_triggered;
+        self.diag = Diagnostics::snapshot(&self.morphons, &self.topology);
+        self.diag.spikes_delivered_this_step = spikes_delivered;
+        self.diag.spikes_pending = self.resonance.pending_count();
+        self.diag.captures_this_step = captures_this_step;
+        self.diag.total_captures = prev_total_captures + captures_this_step;
+        self.diag.total_rollbacks = prev_total_rollbacks;
+        self.diag.rollback_triggered = rollback_triggered;
 
         // Curvature learning: regions with high prediction error get stronger curvature
         // (more space for fine-grained distinctions). Runs on slow schedule.
@@ -471,6 +535,14 @@ impl System {
     /// Get the current simulation step.
     pub fn step_count(&self) -> u64 {
         self.step_count
+    }
+
+    /// Get the current learning pipeline diagnostics.
+    ///
+    /// Updated every step. Use `diagnostics().summary()` for a concise log line,
+    /// or `diagnostics().firing_summary()` for per-type firing rates.
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diag
     }
 
     /// Average prediction error across all Morphons.

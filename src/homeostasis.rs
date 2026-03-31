@@ -27,6 +27,8 @@ pub struct HomeostasisParams {
     /// Migration cooldown duration after a migration event.
     pub migration_cooldown_duration: f64,
     /// Prediction error increase threshold that triggers checkpoint rollback.
+    /// Lowered from 0.5 to 0.2 so rollback actually protects against
+    /// destabilizing structural changes.
     pub rollback_pe_threshold: f64,
 }
 
@@ -37,7 +39,7 @@ impl Default for HomeostasisParams {
             inhibition_strength: 0.3,
             inhibition_correlation_threshold: 0.9,
             migration_cooldown_duration: 20.0,
-            rollback_pe_threshold: 0.5,
+            rollback_pe_threshold: 0.2,
         }
     }
 }

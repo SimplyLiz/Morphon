@@ -53,6 +53,7 @@ pub mod scheduler;
 pub mod system;
 pub mod snapshot;
 pub mod lineage;
+pub mod diagnostics;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "wasm")]
@@ -65,4 +66,5 @@ pub use types::{
 };
 pub use developmental::DevelopmentalConfig;
 pub use lineage::LineageTree;
+pub use diagnostics::Diagnostics;
 pub use neuromodulation::Neuromodulation;
