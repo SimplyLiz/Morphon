@@ -439,7 +439,7 @@ function updateScene() {
       shouldDim = n.cell_type !== filterCellType;
     }
     nodeDimTarget[i] = shouldDim ? 1.0 : 0.0;
-    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.02;
+    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.1;
     const dim = nodeDim[i];
     const bright = 1.0 - dim * 0.85;
     const glow = nodeGlow[i];
@@ -693,7 +693,7 @@ function drawSparkline(canvasId, data, color) {
 function updateDetailPanel() {
   const panel = document.getElementById('detail-panel');
   if (selectedNodeId === null) { panel.classList.remove('visible'); return; }
-  const node = nodeData.find(n => n.id === selectedNodeId);
+  const node = nodeData[nodeMap.get(selectedNodeId)];
   if (!node) { panel.classList.remove('visible'); selectedNodeId = null; return; }
 
   panel.classList.add('visible');
@@ -796,11 +796,12 @@ function setupControls() {
   function resetSystem() {
     filterCellType = null;
     clearCellTypeActive();
+    if (system) { try { system.free(); } catch(_) {} } // free WASM memory
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
-    nodeDim.fill(0); nodeDimTarget.fill(0);
+    nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
     spikes.length = 0;
@@ -893,7 +894,7 @@ function setupControls() {
   // Keyboard shortcuts
   window.addEventListener('keydown', (e) => {
     // Don't capture when typing in inputs
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(e.target.tagName)) return;
 
     switch (e.key) {
       case ' ':
@@ -962,7 +963,7 @@ function updateSpikes() {
 
     const sizeCurve = Math.sin(t * Math.PI);
     spikeDummy.position.set(x, y, z);
-    spikeDummy.scale.setScalar(0.05 + sizeCurve * 0.08);
+    spikeDummy.scale.setScalar(0.08 + sizeCurve * 0.12);
     spikeDummy.updateMatrix();
 
     if (alive < MAX_SPIKES) {
@@ -1015,7 +1016,7 @@ function animate() {
   // Dynamic bloom
   if (bloomPass) {
     const activity = Math.min(spikes.length / 80, 1.0);
-    bloomPass.strength = 0.7 + activity * 0.8;
+    bloomPass.strength = 0.7 + activity * 0.5;
   }
 
   controls.update();

@@ -101,6 +101,7 @@ impl System {
             step_count: snapshot.step_count,
             critic_ports: Vec::new(),
             prev_critic_value: 0.0,
+            last_td_error: 0.0,
             diag: crate::diagnostics::Diagnostics::default(),
             total_born: 0,
             total_died: 0,

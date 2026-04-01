@@ -116,6 +116,8 @@ pub struct System {
     pub(crate) critic_ports: Vec<MorphonId>,
     /// Previous critic value — for TD error computation.
     pub(crate) prev_critic_value: f64,
+    /// Last computed TD error — used by critic morphons' TD-LTP learning rule.
+    pub(crate) last_td_error: f64,
 
     /// Next available Morphon ID.
     pub(crate) next_morphon_id: MorphonId,
@@ -194,6 +196,7 @@ impl System {
             output_ports: motor_ids,
             critic_ports: critic_ids,
             prev_critic_value: 0.0,
+            last_td_error: 0.0,
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
@@ -300,51 +303,77 @@ impl System {
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
 
         // === MEDIUM PATH ===
+        // Two learning regimes (Frémaux et al. 2013):
+        // - Critic morphons: TD-LTP — Δw = lr × δ × pre_trace (direct value learning)
+        // - Actor morphons: Three-factor STDP — Δw = eligibility × M(t) × plasticity
+        // This breaks the circular dependency where critic and actor share learning rules.
         let mut captures_this_step = 0_u64;
         if tick.medium {
-            // Update eligibility traces and apply receptor-gated weight changes
+            let critic_set: std::collections::HashSet<MorphonId> =
+                self.critic_ports.iter().copied().collect();
+            let td_err = self.last_td_error;
+            let wmax = self.config.learning.weight_max;
+
             for &id in &morphon_ids {
-                let (post_activity, post_receptors) = self.morphons.get(&id)
-                    .map(|m| {
-                        // Motor morphons use potential-based readout (non-spiking).
-                        // Activity = sigmoid(potential) - 0.5, centered at zero.
-                        // Above-average potential → positive activity → LTP eligible.
-                        // Below-average potential → negative/zero → no LTP.
-                        // This provides discrimination: only inputs that push the
-                        // motor above its resting state generate positive eligibility.
-                        let activity = if m.cell_type == CellType::Motor {
-                            let sig = 1.0 / (1.0 + (-m.potential).exp());
-                            (sig - 0.5) * 2.0 // map [0,1] → [-1,1], centered at 0
-                        } else {
-                            if m.fired { 1.0 } else { 0.0 }
-                        };
-                        (activity, m.receptors.clone())
-                    })
-                    .unwrap_or_default();
-                let incoming = self.topology.incoming_synapses_mut(id);
+                if critic_set.contains(&id) {
+                    // === CRITIC: TD-LTP ===
+                    // The critic learns to predict V(s) by minimizing TD error.
+                    // Weight update depends only on TD error × pre-synaptic trace,
+                    // independent of the actor's eligibility computation.
+                    let incoming = self.topology.incoming_synapses_mut(id);
+                    for (_, edge_idx) in incoming {
+                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                            // Decay traces (same as actor)
+                            let trace_decay = (-dt / self.config.learning.tau_trace).exp();
+                            synapse.pre_trace *= trace_decay;
+                            synapse.post_trace *= trace_decay;
 
-                for (pre_id, edge_idx) in incoming {
-                    let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
+                            // TD-LTP: Δw = lr × δ × pre_trace
+                            // Only LTP direction — critic converges to value estimate
+                            let td_lr = 0.01;
+                            let delta_w = td_lr * td_err * synapse.pre_trace;
+                            synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
+                            synapse.age += 1;
+                        }
+                    }
+                } else {
+                    // === ACTOR: Three-factor STDP ===
+                    let (post_activity, post_receptors) = self.morphons.get(&id)
+                        .map(|m| {
+                            let activity = if m.cell_type == CellType::Motor {
+                                let sig = 1.0 / (1.0 + (-m.potential).exp());
+                                (sig - 0.5) * 2.0
+                            } else {
+                                if m.fired { 1.0 } else { 0.0 }
+                            };
+                            (activity, m.receptors.clone())
+                        })
+                        .unwrap_or_default();
+                    let incoming = self.topology.incoming_synapses_mut(id);
 
-                    if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
-                        learning::update_eligibility(
-                            synapse,
-                            pre_fired,
-                            post_activity,
-                            &self.config.learning,
-                            dt,
-                        );
+                    for (pre_id, edge_idx) in incoming {
+                        let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
-                        let plasticity = self.modulation.plasticity_rate();
-                        let captured = learning::apply_weight_update(
-                            synapse,
-                            &self.modulation,
-                            &self.config.learning,
-                            plasticity,
-                            &post_receptors,
-                        );
-                        if captured {
-                            captures_this_step += 1;
+                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                            learning::update_eligibility(
+                                synapse,
+                                pre_fired,
+                                post_activity,
+                                &self.config.learning,
+                                dt,
+                            );
+
+                            let plasticity = self.modulation.plasticity_rate();
+                            let captured = learning::apply_weight_update(
+                                synapse,
+                                &self.modulation,
+                                &self.config.learning,
+                                plasticity,
+                                &post_receptors,
+                            );
+                            if captured {
+                                captures_this_step += 1;
+                            }
                         }
                     }
                 }
@@ -770,6 +799,92 @@ impl System {
         }
     }
 
+    /// Direct supervised learning — bypasses three-factor entirely.
+    ///
+    /// Applies the delta rule directly to weights:
+    ///   Δw_ij = learning_rate × pre_activity_i × (target_j - output_j)
+    ///
+    /// This is what SADP effectively does. No eligibility traces, no modulation.
+    /// If this works and three-factor doesn't, the problem is in the modulation
+    /// pipeline, not the architecture.
+    ///
+    /// `correct_index`: which output should be 1.0 (others should be 0.0)
+    /// `learning_rate`: step size (0.001-0.1 typical)
+    pub fn teach_supervised(&mut self, correct_index: usize, learning_rate: f64) {
+        if correct_index >= self.output_ports.len() { return; }
+
+        // Build target vector: 1.0 for correct, 0.0 for others
+        let n_out = self.output_ports.len();
+        let targets: Vec<f64> = (0..n_out).map(|i| if i == correct_index { 1.0 } else { 0.0 }).collect();
+
+        // Get actual outputs (sigmoid of potential)
+        let outputs: Vec<f64> = self.output_ports.iter()
+            .filter_map(|id| self.morphons.get(id))
+            .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+            .collect();
+
+        if outputs.len() != n_out { return; }
+
+        // Delta rule on ALL synapses feeding into each motor morphon
+        for j in 0..n_out {
+            let error_j = targets[j] - outputs[j];
+            if error_j.abs() < 0.001 { continue; }
+
+            let motor_id = self.output_ports[j];
+            let incoming = self.topology.incoming_synapses_mut(motor_id);
+            for (pre_id, edge_idx) in incoming {
+                // Pre-synaptic activity: use potential (continuous) for graded signal
+                let pre_act = self.morphons.get(&pre_id)
+                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+                    .unwrap_or(0.0);
+
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    let delta_w = learning_rate * pre_act * error_j;
+                    syn.weight += delta_w;
+                    syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
+                }
+            }
+        }
+
+        // Hidden layer: delta rule on sensory→hidden synapses using error
+        // backpropagated one hop (not backprop — just the output error weighted
+        // by the hidden→motor weight, which is a local quantity).
+        for j in 0..n_out {
+            let error_j = targets[j] - outputs[j];
+            if error_j.abs() < 0.001 { continue; }
+
+            let motor_id = self.output_ports[j];
+            let motor_incoming: Vec<(MorphonId, f64)> = self.topology.incoming(motor_id)
+                .into_iter()
+                .map(|(pre_id, syn)| (pre_id, syn.weight))
+                .collect();
+
+            for (hidden_id, w_hj) in motor_incoming {
+                let hidden_act = self.morphons.get(&hidden_id)
+                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+                    .unwrap_or(0.0);
+                // Local error for this hidden neuron from this output
+                let hidden_error = error_j * w_hj * hidden_act * (1.0 - hidden_act);
+
+                let hidden_incoming = self.topology.incoming_synapses_mut(hidden_id);
+                for (sens_id, edge_idx) in hidden_incoming {
+                    let sens_act = self.morphons.get(&sens_id)
+                        .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+                        .unwrap_or(0.0);
+
+                    if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                        let delta_w = learning_rate * sens_act * hidden_error;
+                        syn.weight += delta_w;
+                        syn.weight = syn.weight.clamp(
+                            -self.config.learning.weight_max,
+                            self.config.learning.weight_max,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Process input and return output (single inference step with learning).
     pub fn process(&mut self, input: &[f64]) -> Vec<f64> {
         self.feed_input(input);
@@ -883,6 +998,7 @@ impl System {
         let v_new = self.critic_value();
         let td_error = reward + gamma * v_new - self.prev_critic_value;
         self.prev_critic_value = v_new;
+        self.last_td_error = td_error;
 
         // Inject TD error as the reward signal — positive = better than expected,
         // negative = worse than expected. Scale to [0, 1] for the modulation channel.

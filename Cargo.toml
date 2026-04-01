@@ -30,6 +30,10 @@ criterion = "0.5"
 cmaes = "0.2"
 mnist = "0.6"
 
+[[bin]]
+name = "bench_report"
+path = "src/bin/bench_report.rs"
+
 [[bench]]
 name = "benchmarks"
 harness = false
