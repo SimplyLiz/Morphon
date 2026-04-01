@@ -167,20 +167,11 @@ fn main() {
             let input = make_sample(label, &mut rng);
             let pred = classify(&mut system, &input);
 
-            // SADP-inspired hidden teaching: tell the associative layer which
-            // output is correct BEFORE applying reward. This gives hidden neurons
-            // class-specific credit.
-            system.teach_hidden(label, 0.5);
-
-            // Contrastive reward at the motor layer
-            system.reward_contrastive(
-                label,
-                if pred == label { 1.0 } else { 0.8 },
-                0.5,
-            );
-            if pred != label {
-                system.inject_arousal(0.3);
-            }
+            // CMA-ES optimal: strong teaching (1.92), minimal contrastive (0.1/0.0),
+            // novelty-driven learning, no arousal
+            system.teach_hidden(label, 1.92);
+            system.reward_contrastive(label, 0.1, 0.0);
+            system.inject_novelty(0.3);
 
             // Let teaching + reward propagate through the weight update path
             system.step();
