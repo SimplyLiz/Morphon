@@ -159,6 +159,11 @@ pub struct Morphon {
     pub feedback_signal: f64,
     /// Target firing rate for synaptic scaling (homeostatic anchor).
     pub homeostatic_setpoint: f64,
+    /// Plasticity rate — scales all weight updates for this morphon's synapses.
+    /// "Anchor" morphons (low plasticity) provide stable features for the readout.
+    /// "Sail" morphons (high plasticity) explore the state space.
+    /// Initialized from log-normal distribution; modulated by readout importance (H2).
+    pub plasticity_rate: f64,
 }
 
 impl Morphon {
@@ -190,6 +195,7 @@ impl Morphon {
             migration_cooldown: 0.0,
             homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
+            plasticity_rate: 1.0, // default; overwritten by developmental program
         }
     }
 
@@ -231,6 +237,8 @@ impl Morphon {
             migration_cooldown: 0.0,
             homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
+            // Child inherits parent's plasticity with mutation — anchors beget anchors
+            plasticity_rate: (self.plasticity_rate + rng.random_range(-0.1..0.1)).clamp(0.1, 2.0),
         }
     }
 
