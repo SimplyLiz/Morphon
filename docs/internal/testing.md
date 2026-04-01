@@ -70,5 +70,7 @@ cargo run --example cartpole --release
 
 | Example | Description |
 |---------|-------------|
-| `cartpole` | CartPole control task: 1000 episodes, epsilon-greedy exploration, graded reward shaping. Demonstrates all engine features end-to-end. |
-| `mnist` | MNIST digit classification: 7x7 downsampled input, 10-class output, 5 epochs. Requires MNIST data in `./data/`. |
+| `cartpole` | CartPole control task: epsilon-greedy exploration, graded reward shaping. Demonstrates all engine features end-to-end. Supports --quick/--standard/--extended profiles. |
+| `anomaly` | Sensor anomaly detection: learns normal patterns, detects anomalous input. Uses contrastive reward. |
+| `mnist` | MNIST digit classification: full 784px input (no downsampling), 10-class output, auto-scaled seed. Requires MNIST data in `./data/`. |
+| `classify_tiny` | Minimal classification sanity check. Quick validation of contrastive reward and learning pipeline. |

@@ -209,6 +209,13 @@ impl System {
         system.resonance.clear();
         for m in system.morphons.values_mut() {
             m.division_pressure = 0.0;
+            m.potential = 0.0;
+            m.prev_potential = 0.0;
+            m.prediction_error = 0.0;
+            m.desire = 0.0;
+            m.fired = false;
+            m.input_accumulator = 0.0;
+            m.refractory_timer = 0.0;
         }
 
         system
@@ -633,6 +640,82 @@ impl System {
                 self.inject_reward_at(i, reward_strength);
             } else {
                 self.inject_inhibition_at(i, inhibit_strength);
+            }
+        }
+    }
+
+    /// SADP-inspired hidden layer teaching signal.
+    ///
+    /// For classification tasks, this provides output-specific credit to the
+    /// associative (hidden) layer without backpropagation. Based on Supervised
+    /// SADP (arXiv:2601.08526) which achieves 99.1% MNIST using population-based
+    /// agreement between hidden neurons and target outputs.
+    ///
+    /// For each associative morphon:
+    /// 1. Compute agreement with the correct output (did this hidden neuron fire
+    ///    when the correct motor morphon was active?)
+    /// 2. Boost eligibility on incoming synapses proportional to agreement
+    /// 3. Decay eligibility for anti-correlated hidden neurons
+    ///
+    /// Call this after `process_steps()` and before `reward_contrastive()`.
+    /// `correct_index`: which output class is the target.
+    /// `strength`: teaching signal magnitude (0.0-1.0).
+    pub fn teach_hidden(&mut self, correct_index: usize, strength: f64) {
+        let Some(&correct_motor_id) = self.output_ports.get(correct_index) else { return };
+
+        // Get the correct motor morphon's recent activity level
+        let correct_motor_active = self.morphons.get(&correct_motor_id)
+            .map(|m| {
+                // Use potential-based readout (same as motor post_activity)
+                let sig = 1.0 / (1.0 + (-m.potential).exp());
+                (sig - 0.5) * 2.0 // [-1, 1]
+            })
+            .unwrap_or(0.0);
+
+        // Get incorrect motor activities for anti-correlation
+        let incorrect_motor_activity: f64 = self.output_ports.iter()
+            .enumerate()
+            .filter(|(i, _)| *i != correct_index)
+            .filter_map(|(_, id)| self.morphons.get(id))
+            .map(|m| {
+                let sig = 1.0 / (1.0 + (-m.potential).exp());
+                (sig - 0.5) * 2.0
+            })
+            .sum::<f64>() / (self.output_ports.len().max(1) - 1).max(1) as f64;
+
+        // For each associative morphon, compute agreement with correct output
+        let assoc_ids: Vec<MorphonId> = self.morphons.values()
+            .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            .map(|m| m.id)
+            .collect();
+
+        for assoc_id in assoc_ids {
+            let assoc_active = self.morphons.get(&assoc_id)
+                .map(|m| if m.fired { 1.0 } else { m.activity_history.mean() })
+                .unwrap_or(0.0);
+
+            // Agreement: hidden fires when correct output is active
+            // Anti-agreement: hidden fires when incorrect outputs are active
+            // Kappa-like: agreement - chance_agreement
+            let agreement = assoc_active * correct_motor_active;
+            let anti_agreement = assoc_active * incorrect_motor_activity;
+            let teaching_signal = (agreement - anti_agreement) * strength;
+
+            if teaching_signal.abs() < 0.001 { continue; }
+
+            // Modulate incoming synapses to this associative morphon
+            let incoming = self.topology.incoming_synapses_mut(assoc_id);
+            for (_, edge_idx) in incoming {
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    if teaching_signal > 0.0 {
+                        // Positive agreement: boost eligibility
+                        syn.eligibility += teaching_signal;
+                    } else {
+                        // Negative agreement: decay eligibility toward zero
+                        syn.eligibility *= (1.0 + teaching_signal).max(0.0);
+                    }
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                }
             }
         }
     }

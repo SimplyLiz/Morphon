@@ -171,6 +171,10 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Total born/died tracking | Observability | `system.rs`: SystemStats.total_born/total_died |
 | classify_tiny example | 6.2 | `examples/classify_tiny.rs`: minimal classification sanity check |
 | Run profiles | Usability | Examples support --quick/--standard/--extended CLI flags |
+| Weight-dependent STDP | 3.4A | `learning.rs`: multiplicative LTP/LTD scaling (Gilson & Fukai 2011). Prevents bimodal weight collapse |
+| Centered motor readout | 3.4A | `system.rs`: (sigmoid(potential) - 0.5) * 2 ∈ [-1,1] for input discrimination |
+| Potential-based post_activity | 3.4A | `system.rs`/`learning.rs`: Motor morphons use graded potential, not binary firing |
+| Excitatory-only feedforward init | 4.1 | `developmental.rs`: Sensory→Associative weights [0.3, 0.8], not mixed-sign Xavier |
 
 ## What's Not Yet Implemented
 

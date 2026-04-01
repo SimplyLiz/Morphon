@@ -97,9 +97,11 @@ Morphon/
 │   ├── scheduler.rs        # dual-clock architecture
 │   ├── developmental.rs    # bootstrapping with I/O pathway guarantees
 │   ├── lineage.rs          # lineage tree export for visualization
+│   ├── diagnostics.rs      # Learning pipeline observability
 │   ├── snapshot.rs         # JSON serialization
 │   ├── system.rs           # top-level orchestration
-│   └── python.rs           # PyO3 bindings (optional)
+│   ├── python.rs           # PyO3 bindings (optional)
+│   └── wasm.rs             # wasm-bindgen bindings (optional)
 ├── tests/
 │   └── integration_test.rs
 ├── examples/

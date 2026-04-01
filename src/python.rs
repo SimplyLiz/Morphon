@@ -155,6 +155,11 @@ mod bindings {
             self.inner.reward_contrastive(correct_index, reward_strength, inhibit_strength);
         }
 
+        /// SADP-inspired hidden layer teaching signal for classification.
+        fn teach_hidden(&mut self, correct_index: usize, strength: f64) {
+            self.inner.teach_hidden(correct_index, strength);
+        }
+
         /// Get system inspection statistics.
         fn inspect(&self) -> PySystemStats {
             let stats = self.inner.inspect();

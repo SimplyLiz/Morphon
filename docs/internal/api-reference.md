@@ -216,14 +216,15 @@ Methods:
 
 **`update_eligibility(synapse, pre_fired, post_activity, params, dt)`**
 
-Trace-based STDP (Frémaux & Gerstner 2016). Updates pre/post traces and eligibility:
+Weight-dependent trace-based STDP (Frémaux & Gerstner 2016, Gilson & Fukai 2011). Updates pre/post traces and eligibility:
 1. Decay `pre_trace` and `post_trace` by `exp(-dt/τ_trace)`
-2. If pre fired: `stdp += a_minus * post_trace` (LTD), then `pre_trace += 1.0`
-3. If post active (>0.01): `stdp += a_plus * pre_trace * post_activity` (LTP), then `post_trace += post_activity`
-4. Eligibility: `e += (-e/τ_e + stdp) * dt`, clamped to [-1, 1]
-5. Slow tag: if `eligibility > tag_threshold` and not consolidated, `tag = 1.0`, `tag_strength = eligibility`
+2. Compute multiplicative bounds: `ltp_scale = (w_max - w) / w_max`, `ltd_scale = (w + w_max) / (2 * w_max)`
+3. If pre fired: `stdp += a_minus * post_trace * ltd_scale` (LTD), then `pre_trace += 1.0`
+4. If post active (>0.01): `stdp += a_plus * pre_trace * post_activity * ltp_scale` (LTP), then `post_trace += post_activity`
+5. Eligibility: `e += (-e/τ_e + stdp) * dt`, clamped to [-1, 1]
+6. Slow tag: if `eligibility > tag_threshold` and not consolidated, `tag = 1.0`, `tag_strength = eligibility`
 
-`post_activity` is continuous: 1.0 for spiking morphons, normalized membrane potential for Motor morphons (graded readout, matches DSQN/SpikeGym pattern).
+`post_activity` is continuous: 1.0 for spiking morphons. For Motor morphons: `(sigmoid(potential) - 0.5) * 2 ∈ [-1, 1]` — centered at zero so only above-average potential generates positive post_trace.
 
 **`apply_weight_update(synapse, modulation, params, plasticity_rate, post_receptors)`**
 

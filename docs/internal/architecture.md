@@ -105,9 +105,16 @@ All Morphon positions live in a hyperbolic space rather than Euclidean. Points n
 
 The scheduler separates processes into four temporal scales to prevent structural changes from destabilizing fast inference. All periods are configurable via `SchedulerConfig`.
 
-### Trace-Based STDP + Advantage Modulation
+### Weight-Dependent STDP + Advantage Modulation
 
-Learning uses trace-based STDP (Frémaux & Gerstner 2016) instead of binary coincidence detection. Each synapse carries `pre_trace` and `post_trace` — decaying memory of recent spikes (τ=10). When pre fires, `post_trace` determines LTD; when post fires, `pre_trace` determines LTP. This widens the effective STDP window from 1 timestep to ~10 steps, solving the co-firing problem caused by refractory periods and spike delays.
+Learning uses trace-based STDP (Frémaux & Gerstner 2016) with **multiplicative (weight-dependent) bounds** (Gilson & Fukai 2011). Each synapse carries `pre_trace` and `post_trace` — decaying memory of recent spikes (τ=10). When pre fires, `post_trace` determines LTD; when post fires, `pre_trace` determines LTP. This widens the effective STDP window from 1 timestep to ~10 steps.
+
+Weight-dependent scaling prevents bimodal weight collapse:
+- **LTP** scales as `(w_max - w) / w_max` — easy to strengthen weak synapses, hard to over-strengthen strong ones
+- **LTD** scales as `(w + w_max) / (2 * w_max)` — easy to weaken strong synapses, protects weak ones
+- Produces stable long-tail weight distributions instead of all-or-nothing
+
+**Motor readout**: Motor morphons use centered sigmoid-normalized membrane potential as `post_activity`: `(sigmoid(potential) - 0.5) * 2 ∈ [-1, 1]`. Only above-average potential generates positive post_trace, providing input discrimination. Non-spiking readout matches the DSQN/SpikeGym pattern.
 
 The reward channel uses **advantage modulation** (reward - baseline EMA) instead of raw reward. This eliminates the unsupervised bias where `mean(reward) × mean(eligibility)` causes systematic weight drift (Frémaux et al. 2010). Advantage is clamped to non-negative: absence of reward is sufficient signal, active depression from negative advantage kills activity in sparse-reward environments.
 
@@ -126,6 +133,8 @@ Four mechanisms prevent the "stable-dynamic paradox":
 ### I/O Pathway Guarantees
 
 The developmental program (Phase 4) creates guaranteed feedforward connections: Sensory → Associative → Motor, plus direct Sensory → Motor shortcuts. This ensures signal flow from input to output regardless of random connectivity. Developmental differentiation sets `differentiation_level = 0.6` so I/O morphons resist dedifferentiation under stress.
+
+Feedforward Sensory→Associative connections use **excitatory-only initialization** (weights in [0.3, 0.8]) instead of Xavier-style mixed signs. Mixed-sign feedforward creates dead pathways that never activate — signal propagation needs positive weights above the firing threshold.
 
 ### Parallelization
 

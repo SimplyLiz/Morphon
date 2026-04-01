@@ -147,11 +147,12 @@ pub fn apply_weight_update(
     post_receptors: &ReceptorSet,
 ) -> bool {
     // Receptor-gated modulation: only include channels the post-synaptic morphon responds to.
-    // Reward channel uses ADVANTAGE (reward - baseline) instead of raw reward.
-    // This eliminates the unsupervised bias that causes systematic weight drift
-    // (Frémaux et al. 2010: mean(reward) × mean(eligibility) term dominates otherwise).
+    // Reward channel uses DELTA (reward change) as a pseudo-TD error signal.
+    // This provides bidirectional modulation that never converges to zero:
+    // improving → positive, worsening → negative, steady → zero.
+    // (Frémaux et al. 2013: critic/TD-error signal is necessary for RL convergence)
     let r = if post_receptors.contains(&ModulatorType::Reward) {
-        params.alpha_reward * modulation.reward_advantage()
+        params.alpha_reward * modulation.reward_delta()
     } else {
         0.0
     };

@@ -384,62 +384,27 @@ function updateScene() {
   const nodeCount = Math.min(nodes.length, MAX_NODES);
   nodesMesh.count = nodeCount;
 
-  // --- Overlap separation pass ---
-  // Compute display positions, then push apart nodes that are too close.
+  // --- Position setup with NaN guard and deterministic jitter for coincident nodes ---
   const dispPos = new Float32Array(nodeCount * 3);
   const sizes = new Float32Array(nodeCount);
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
     let x = n.x * BALL_RADIUS, y = n.y * BALL_RADIUS, z = n.z * BALL_RADIUS;
-    // Guard against NaN/Infinity from the engine — place at origin if bad
     if (!isFinite(x)) x = 0;
     if (!isFinite(y)) y = 0;
     if (!isFinite(z)) z = 0;
+    // Deterministic per-node jitter (seeded by morphon id) to separate coincident nodes
+    // Golden-angle spherical spread ensures unique directions even for sequential ids
+    const id = n.id;
+    const phi = id * 2.399963; // golden angle
+    const cosTheta = 1.0 - 2.0 * ((id * 0.618034) % 1.0);
+    const sinTheta = Math.sqrt(1.0 - cosTheta * cosTheta);
+    const jitter = 0.35; // world-unit offset — enough to separate but not distort layout
+    x += Math.cos(phi) * sinTheta * jitter;
+    y += Math.sin(phi) * sinTheta * jitter;
+    z += cosTheta * jitter;
     dispPos[i*3] = x; dispPos[i*3+1] = y; dispPos[i*3+2] = z;
     sizes[i] = NODE_BASE_SIZE + (isFinite(n.energy) ? n.energy : 0) * 0.2;
-  }
-  // Run a few relaxation iterations — O(n²) is fine for n < 2000
-  const MIN_SEP = 0.9;
-  for (let iter = 0; iter < 3; iter++) {
-    for (let i = 0; i < nodeCount; i++) {
-      for (let j = i + 1; j < nodeCount; j++) {
-        const ix = i*3, jx = j*3;
-        let dx = dispPos[jx]   - dispPos[ix];
-        let dy = dispPos[jx+1] - dispPos[ix+1];
-        let dz = dispPos[jx+2] - dispPos[ix+2];
-        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        const minDist = (sizes[i] + sizes[j]) * MIN_SEP;
-        if (dist < minDist) {
-          if (dist < 0.001) {
-            // Deterministic spread for coincident nodes (seeded by index)
-            const ang1 = (i * 2.399 + j * 0.618) % 6.283;
-            const ang2 = (j * 1.571 + i * 0.382) % 3.142;
-            dx = Math.sin(ang2) * Math.cos(ang1);
-            dy = Math.sin(ang2) * Math.sin(ang1);
-            dz = Math.cos(ang2);
-          } else {
-            dx /= dist; dy /= dist; dz /= dist;
-          }
-          const push = (minDist - dist) * 0.5;
-          dispPos[ix]   -= dx * push;
-          dispPos[ix+1] -= dy * push;
-          dispPos[ix+2] -= dz * push;
-          dispPos[jx]   += dx * push;
-          dispPos[jx+1] += dy * push;
-          dispPos[jx+2] += dz * push;
-        }
-      }
-    }
-  }
-  // Clamp all positions back inside the ball so nothing flies off-screen
-  const maxR = BALL_RADIUS * 0.95;
-  for (let i = 0; i < nodeCount; i++) {
-    const ix = i*3;
-    const r = Math.sqrt(dispPos[ix]*dispPos[ix] + dispPos[ix+1]*dispPos[ix+1] + dispPos[ix+2]*dispPos[ix+2]);
-    if (r > maxR) {
-      const s = maxR / r;
-      dispPos[ix] *= s; dispPos[ix+1] *= s; dispPos[ix+2] *= s;
-    }
   }
 
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
@@ -624,6 +589,8 @@ function updatePanels() {
   document.getElementById('s-energy').textContent = stats.avg_energy.toFixed(2);
   document.getElementById('s-error').textContent = stats.avg_prediction_error.toFixed(3);
   document.getElementById('s-wmem').textContent = stats.working_memory_items;
+  document.getElementById('s-born').textContent = stats.total_born || 0;
+  document.getElementById('s-died').textContent = stats.total_died || 0;
 
   const counts = stats.differentiation_map || {};
   for (const type of ['Stem', 'Sensory', 'Associative', 'Motor', 'Modulatory', 'Fused']) {

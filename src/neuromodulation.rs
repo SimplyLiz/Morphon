@@ -20,11 +20,12 @@ pub struct Neuromodulation {
     pub homeostasis: f64,
 
     /// Running average of reward signal — used for advantage computation.
-    /// M(t) = reward - reward_baseline creates bidirectional modulation:
-    /// better-than-average → positive (LTP), worse-than-average → negative (LTD).
-    /// Without this, raw positive reward + any eligibility bias = systematic drift.
-    /// (Frémaux et al. 2010, J Neurosci)
     pub reward_baseline: f64,
+    /// Previous step's reward — used for reward delta (pseudo-TD error).
+    /// Frémaux et al. 2013 showed a critic (TD error) is necessary for RL tasks.
+    /// The reward delta R(t) - R(t-1) is the simplest approximation: it tracks
+    /// instantaneous improvement/deterioration without needing a value function.
+    pub prev_reward: f64,
 
     /// Decay rates for each channel.
     reward_decay: f64,
@@ -41,6 +42,7 @@ impl Default for Neuromodulation {
             arousal: 0.0,
             homeostasis: 0.5, // baseline stability
             reward_baseline: 0.0,
+            prev_reward: 0.0,
             reward_decay: 0.95,
             novelty_decay: 0.90,
             arousal_decay: 0.85,
@@ -51,20 +53,31 @@ impl Default for Neuromodulation {
 
 impl Neuromodulation {
     /// Inject a reward signal (0.0 to 1.0).
-    /// Also updates the reward baseline (exponential moving average).
+    /// Tracks previous reward for delta computation and updates EMA baseline.
     pub fn inject_reward(&mut self, strength: f64) {
+        self.prev_reward = self.reward;
         self.reward = (self.reward + strength).clamp(0.0, 1.0);
-        // Update baseline with slow EMA (alpha=0.01)
         self.reward_baseline += 0.01 * (strength - self.reward_baseline);
     }
 
-    /// The advantage signal: reward minus expected reward.
-    /// Positive = better than average → strengthen eligible synapses.
-    /// Zero = at or below average → no reward-driven weight change.
-    /// Clamped to [0, ∞) because negative advantage (worse-than-average)
-    /// should suppress reward, not actively depress weights — the absence
-    /// of reward is sufficient signal. Active depression from negative
-    /// advantage kills activity in sparse-reward environments.
+    /// Reward delta: pseudo-TD error approximating the critic signal.
+    ///
+    /// R(t) - R(t-1) tracks instantaneous improvement/deterioration:
+    /// - Positive: situation improving → strengthen active pathways
+    /// - Negative: situation worsening → weaken active pathways
+    /// - Zero: steady state → no change (nothing to learn)
+    ///
+    /// Unlike advantage (reward - baseline), this NEVER converges to zero
+    /// because it tracks change, not level. This is the simplest approximation
+    /// to a TD error signal without requiring a separate value function.
+    /// (Frémaux et al. 2013 showed a critic signal is necessary for RL tasks)
+    pub fn reward_delta(&self) -> f64 {
+        self.reward - self.prev_reward
+    }
+
+    /// The advantage signal (reward - baseline), clamped non-negative.
+    /// Used for classification tasks where reward is sparse and binary.
+    /// For RL tasks, prefer reward_delta() which provides bidirectional signal.
     pub fn reward_advantage(&self) -> f64 {
         (self.reward - self.reward_baseline).max(0.0)
     }

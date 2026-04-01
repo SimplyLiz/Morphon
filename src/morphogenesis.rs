@@ -599,13 +599,47 @@ pub fn migration(
         .collect();
 
     for morphon in morphons.values_mut() {
+        let dim = morphon.position.coords.len();
+
+        // --- Radial anchoring (always applied, no cooldown) ---
+        // Each cell type has a target radius; push morphons back when they drift.
+        let target_radius = match morphon.cell_type {
+            CellType::Sensory => 0.6,
+            CellType::Motor => 0.6,
+            CellType::Associative => 0.35,
+            CellType::Modulatory => 0.5,
+            _ => 0.3, // Stem, Fused
+        };
+        let current_radius = morphon.position.specificity();
+        let radial_error = target_radius - current_radius;
+        // Only correct if meaningfully off-target (> 10% of target)
+        if radial_error.abs() > target_radius * 0.1 {
+            let radial_strength = 0.15 * radial_error;
+            let mut radial_tangent = vec![0.0; dim];
+            if current_radius > 1e-6 {
+                for (i, t) in radial_tangent.iter_mut().enumerate() {
+                    *t = morphon.position.coords[i] / current_radius * radial_strength;
+                }
+            } else {
+                // At exact origin — use morphon id to pick a unique outward direction
+                let phi = (morphon.id as f64) * 2.399963;
+                let cos_theta = 1.0 - 2.0 * (((morphon.id as f64) * 0.618034) % 1.0);
+                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+                if dim >= 1 { radial_tangent[0] = phi.cos() * sin_theta * radial_strength; }
+                if dim >= 2 { radial_tangent[1] = phi.sin() * sin_theta * radial_strength; }
+                if dim >= 3 { radial_tangent[2] = cos_theta * radial_strength; }
+            }
+            morphon.position = morphon.position.exp_map(&radial_tangent);
+            migrated += 1;
+        }
+
+        // --- Neighbor-chasing migration (gated by desire, cooldown, etc.) ---
         if morphon.desire < 0.3 {
             continue;
         }
         if morphon.fused_with.is_some() && morphon.autonomy < 0.5 {
             continue;
         }
-        // Migration damping: respect cooldown
         if !crate::homeostasis::can_migrate(morphon) {
             continue;
         }
@@ -615,14 +649,12 @@ pub fn migration(
             continue;
         }
 
-        // Compute tangent vector in hyperbolic space via log_map
-        let mut tangent = vec![0.0; morphon.position.coords.len()];
+        let mut tangent = vec![0.0; dim];
         let mut count = 0;
 
         for (nid, _) in &neighbors {
             if let Some((pos, pe)) = positions.get(nid) {
                 if *pe < morphon.prediction_error {
-                    // Log map: tangent vector from morphon's position to neighbor
                     let log_v = morphon.position.log_map(pos);
                     for (i, t) in tangent.iter_mut().enumerate() {
                         if i < log_v.len() {
@@ -636,12 +668,22 @@ pub fn migration(
 
         if count > 0 {
             let scale = params.migration_rate * morphon.desire * system_migration_mod;
+            // Project tangent onto tangential component only (remove radial part)
+            // so neighbor-chasing moves laterally, not inward
+            let current_radius = morphon.position.specificity();
+            if current_radius > 1e-6 {
+                let radial_dot: f64 = tangent.iter().enumerate()
+                    .map(|(i, t)| t * morphon.position.coords[i] / current_radius)
+                    .sum();
+                for (i, t) in tangent.iter_mut().enumerate() {
+                    *t -= radial_dot * morphon.position.coords[i] / current_radius;
+                }
+            }
             for t in &mut tangent {
                 *t = *t / count as f64 * scale;
             }
-            // Exponential map: project tangent onto hyperbolic manifold
             morphon.position = morphon.position.exp_map(&tangent);
-            morphon.migration_cooldown = 20.0; // set cooldown
+            morphon.migration_cooldown = 20.0;
             migrated += 1;
         }
     }
