@@ -49,8 +49,9 @@ const firingHistory = [];
 const morphonHistory = [];
 const MAX_HISTORY = 120;
 
-// === RASTER PLOT STATE ===
-const RASTER_WINDOW = 600; // rolling window in simulation steps
+// === HEATMAP STATE ===
+const HEATMAP_BINS = 300;    // number of time bins visible
+const HEATMAP_BIN_SIZE = 5;  // steps per bin (adjustable via UI)
 const CELL_TYPE_ORDER = ['Sensory', 'Associative', 'Motor', 'Modulatory', 'Stem', 'Fused'];
 const RASTER_COLORS = {
   Stem:        [0x88, 0x90, 0xa4],
@@ -63,9 +64,14 @@ const RASTER_COLORS = {
 let morphonOrder = [];       // sorted [{id, cellType}] for Y-axis
 let morphonYMap = new Map(); // id → Y row
 let rasterCanvas, rasterCtx;
-let rasterScrollX = 0;
+let rasterScrollX = 0;       // total steps seen
 let rasterMorphonCount = 0;  // cached to detect topology changes
 let stepAccumulator = 0;     // for sub-1x speed
+let heatmapBinSize = HEATMAP_BIN_SIZE;
+let heatmapPaused = false;   // pause-on-hover
+// Per-group accumulators for current bin
+let heatmapBinAccum = [];    // [groupIdx] = count of firings in current bin
+let heatmapBinSteps = 0;     // steps accumulated in current bin
 
 // Cached stats to avoid double inspect() calls
 let cachedStats = null;
@@ -980,7 +986,7 @@ function setupControls() {
     nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
     lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0; spikeCooldowns.clear();
     rasterScrollX = 0; rasterMorphonCount = 0;
-    rasterHistory.fill(null); groupRateHistory = [];
+    groupRateHistory = []; heatmapBinAccum = []; heatmapBinSteps = 0;
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
@@ -1020,6 +1026,23 @@ function setupControls() {
       resizeRasterCanvas(); // re-measure after layout change
     });
   });
+
+  // Heatmap resolution buttons
+  document.querySelectorAll('.heatmap-res-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.heatmap-res-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      heatmapBinSize = parseInt(btn.dataset.res);
+      // Reset accumulators for clean transition
+      heatmapBinAccum = new Array(rasterGroups.length).fill(0);
+      heatmapBinSteps = 0;
+    });
+  });
+
+  // Pause heatmap on hover
+  document.getElementById('raster-canvas')?.addEventListener('mouseenter', () => { heatmapPaused = true; });
+  document.getElementById('raster-canvas')?.addEventListener('mouseleave', () => { heatmapPaused = false; });
+
   // Maximize / restore
   document.getElementById('btn-panel-maximize')?.addEventListener('click', () => {
     const panel = document.getElementById('bottom-panel');
@@ -1035,8 +1058,8 @@ function setupControls() {
     const activeTab = document.querySelector('#bottom-panel .tab-btn.active')?.dataset.tab;
     if (activeTab === 'tab-raster') {
       rasterScrollX = 0;
-      rasterHistory.fill(null);
       groupRateHistory.forEach(arr => arr.fill(0));
+      heatmapBinAccum.fill(0); heatmapBinSteps = 0;
     } else if (activeTab === 'tab-log') {
       document.getElementById('events').innerHTML = '';
     }
@@ -1357,13 +1380,10 @@ function resizeRasterCanvas() {
 
 // Group info: { type, startRow, count } — built by rebuildMorphonOrder
 let rasterGroups = [];
-// Spike history ring buffer: each slot = Uint32Array of fired IDs for that step
-const rasterHistory = new Array(RASTER_WINDOW).fill(null);
-// Per-group firing rate history: groupRateHistory[groupIdx][step % RASTER_WINDOW] = fraction
+// Per-group firing rate ring buffer: groupRateHistory[groupIdx][bin % HEATMAP_BINS] = rate
 let groupRateHistory = [];
 
 function rebuildMorphonOrder() {
-  // Save old group types before rebuilding
   const oldGroupTypes = rasterGroups.map(g => g.type);
   const oldRateHistory = groupRateHistory;
 
@@ -1391,32 +1411,38 @@ function rebuildMorphonOrder() {
   for (let i = 0; i < oldGroupTypes.length; i++) {
     if (oldRateHistory[i]) oldByType[oldGroupTypes[i]] = oldRateHistory[i];
   }
-  groupRateHistory = rasterGroups.map(g => oldByType[g.type] || new Float32Array(RASTER_WINDOW));
+  groupRateHistory = rasterGroups.map(g => oldByType[g.type] || new Float32Array(HEATMAP_BINS));
+  heatmapBinAccum = new Array(rasterGroups.length).fill(0);
+  heatmapBinSteps = 0;
 }
 
 function rasterStampStep(firedIds) {
-  if (morphonOrder.length === 0 || rasterGroups.length === 0) return;
-  const col = rasterScrollX % RASTER_WINDOW;
-  rasterHistory[col] = firedIds;
+  if (morphonOrder.length === 0 || rasterGroups.length === 0 || heatmapPaused) return;
 
-  // Compute per-group firing rate for this step
-  const groupCounts = new Array(rasterGroups.length).fill(0);
+  // Accumulate firings per group within the current bin
   for (const id of firedIds) {
     const row = morphonYMap.get(id);
     if (row === undefined) continue;
     for (let gi = 0; gi < rasterGroups.length; gi++) {
       const g = rasterGroups[gi];
       if (row >= g.startRow && row < g.startRow + g.count) {
-        groupCounts[gi]++;
+        heatmapBinAccum[gi]++;
         break;
       }
     }
   }
-  for (let gi = 0; gi < rasterGroups.length; gi++) {
-    groupRateHistory[gi][col] = groupCounts[gi] / rasterGroups[gi].count;
-  }
+  heatmapBinSteps++;
 
-  rasterScrollX++;
+  // When bin is full, flush averaged rate into the ring buffer
+  if (heatmapBinSteps >= heatmapBinSize) {
+    const col = rasterScrollX % HEATMAP_BINS;
+    for (let gi = 0; gi < rasterGroups.length; gi++) {
+      groupRateHistory[gi][col] = heatmapBinAccum[gi] / (heatmapBinSize * rasterGroups[gi].count);
+      heatmapBinAccum[gi] = 0;
+    }
+    heatmapBinSteps = 0;
+    rasterScrollX++;
+  }
 }
 
 function drawRasterPlot() {
@@ -1426,15 +1452,16 @@ function drawRasterPlot() {
   if (canvasW <= 0 || canvasH <= 0) return;
 
   const labelW = 40;
-  const plotW = canvasW - labelW - 8;
+  const rightW = 36;
+  const plotW = canvasW - labelW - rightW;
   const nGroups = rasterGroups.length;
-  const bandGap = 3;
-  const bandH = (canvasH - (nGroups - 1) * bandGap) / nGroups;
+  const bandGap = 2;
+  const bandH = Math.max(8, (canvasH - (nGroups - 1) * bandGap) / nGroups);
 
   rasterCtx.clearRect(0, 0, canvasW, canvasH);
 
-  const stepsVisible = Math.min(rasterScrollX, RASTER_WINDOW);
-  const colW = plotW / RASTER_WINDOW;
+  const binsUsed = Math.min(rasterScrollX, HEATMAP_BINS);
+  const colW = plotW / HEATMAP_BINS;
 
   for (let gi = 0; gi < nGroups; gi++) {
     const g = rasterGroups[gi];
@@ -1443,63 +1470,79 @@ function drawRasterPlot() {
     const rates = groupRateHistory[gi];
 
     // Background band
-    rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.06)`;
+    rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.04)`;
     rasterCtx.fillRect(labelW, bandY, plotW, bandH);
 
-    // Heatmap: each column colored by firing rate intensity
-    for (let s = 0; s < stepsVisible; s++) {
-      const bufIdx = ((rasterScrollX - stepsVisible + s) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+    // Heatmap columns
+    for (let s = 0; s < binsUsed; s++) {
+      const bufIdx = ((rasterScrollX - binsUsed + s) % HEATMAP_BINS + HEATMAP_BINS) % HEATMAP_BINS;
       const rate = rates[bufIdx];
       if (rate <= 0) continue;
 
-      const x = labelW + (s / RASTER_WINDOW) * plotW;
-      // Intensity: sqrt for perceptual linearity, cap at 1
-      const intensity = Math.min(Math.sqrt(rate * 3), 1.0);
-      const alpha = 0.15 + intensity * 0.85;
+      const x = labelW + (s / HEATMAP_BINS) * plotW;
+      const intensity = Math.min(Math.sqrt(rate * 4), 1.0);
+      const alpha = 0.12 + intensity * 0.88;
       rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(2)})`;
       rasterCtx.fillRect(x, bandY, Math.max(colW, 1.2), bandH);
     }
 
-    // Firing rate line trace (overlaid)
-    rasterCtx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.9)`;
+    // Rate line trace
+    rasterCtx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.8)`;
     rasterCtx.lineWidth = 1.5;
     rasterCtx.beginPath();
     let started = false;
-    for (let s = 0; s < stepsVisible; s++) {
-      const bufIdx = ((rasterScrollX - stepsVisible + s) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+    for (let s = 0; s < binsUsed; s++) {
+      const bufIdx = ((rasterScrollX - binsUsed + s) % HEATMAP_BINS + HEATMAP_BINS) % HEATMAP_BINS;
       const rate = rates[bufIdx];
-      const x = labelW + (s / RASTER_WINDOW) * plotW;
-      const y = bandY + bandH - rate * bandH * 0.9; // 0% at bottom, 100% at top
+      const x = labelW + (s / HEATMAP_BINS) * plotW;
+      const y = bandY + bandH - rate * bandH * 0.85;
       if (!started) { rasterCtx.moveTo(x, y); started = true; }
       else rasterCtx.lineTo(x, y);
     }
     rasterCtx.stroke();
 
-    // Group label + count
+    // Group label
     rasterCtx.font = '9px "JetBrains Mono", monospace';
     rasterCtx.textBaseline = 'middle';
     rasterCtx.textAlign = 'right';
     rasterCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-    rasterCtx.fillText(`${g.type.substring(0, 3).toUpperCase()}`, labelW - 4, bandY + bandH / 2);
-    // Current rate % on the right
-    if (stepsVisible > 0) {
-      const lastBuf = ((rasterScrollX - 1) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+    rasterCtx.fillText(g.type.substring(0, 3).toUpperCase(), labelW - 4, bandY + bandH / 2);
+
+    // Current rate %
+    if (binsUsed > 0) {
+      const lastBuf = ((rasterScrollX - 1) % HEATMAP_BINS + HEATMAP_BINS) % HEATMAP_BINS;
       const lastRate = rates[lastBuf];
       rasterCtx.textAlign = 'left';
       rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.7)`;
-      rasterCtx.fillText(`${(lastRate * 100).toFixed(0)}%`, labelW + plotW + 3, bandY + bandH / 2);
+      rasterCtx.fillText(`${(lastRate * 100).toFixed(0)}%`, labelW + plotW + 4, bandY + bandH / 2);
     }
   }
 
   // Time cursor
-  if (stepsVisible > 0) {
-    const cursorX = labelW + (stepsVisible / RASTER_WINDOW) * plotW;
-    rasterCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+  if (binsUsed > 0 && binsUsed < HEATMAP_BINS) {
+    const cursorX = labelW + (binsUsed / HEATMAP_BINS) * plotW;
+    rasterCtx.strokeStyle = 'rgba(255,255,255,0.2)';
     rasterCtx.lineWidth = 1;
     rasterCtx.beginPath();
     rasterCtx.moveTo(cursorX, 0);
     rasterCtx.lineTo(cursorX, canvasH);
     rasterCtx.stroke();
+  }
+
+  // Resolution label
+  rasterCtx.font = '8px "JetBrains Mono", monospace';
+  rasterCtx.textAlign = 'right';
+  rasterCtx.textBaseline = 'bottom';
+  rasterCtx.fillStyle = 'rgba(255,255,255,0.2)';
+  rasterCtx.fillText(`${heatmapBinSize}x`, canvasW - 4, canvasH - 2);
+
+  // Pause indicator
+  if (heatmapPaused) {
+    rasterCtx.fillStyle = 'rgba(251,191,36,0.6)';
+    rasterCtx.font = '9px "JetBrains Mono", monospace';
+    rasterCtx.textAlign = 'left';
+    rasterCtx.textBaseline = 'top';
+    rasterCtx.fillText('PAUSED', labelW + 4, 3);
   }
 }
 

@@ -416,6 +416,25 @@
   #tab-raster {
     padding: 4px 8px;
   }
+  .heatmap-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 3px;
+    flex-shrink: 0;
+  }
+  .heatmap-res-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 1px 5px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .heatmap-res-btn.active { color: var(--text-bright); border-color: var(--panel-border-hover); }
+  .heatmap-res-btn:hover { color: var(--text); }
   #raster-canvas-wrap {
     flex: 1;
     position: relative;
@@ -424,6 +443,7 @@
   #raster-canvas {
     width: 100%;
     height: 100%;
+    cursor: crosshair;
   }
   #tab-log {
     padding: 4px 10px 6px;
@@ -889,7 +909,7 @@
 <div id="bottom-panel">
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
-    <button class="tab-btn" data-tab="tab-raster">RASTER</button>
+    <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -918,6 +938,13 @@
     <div id="log-status"></div>
   </div>
   <div id="tab-raster" class="tab-content">
+    <div class="heatmap-toolbar">
+      <span style="color:var(--text-dim);font-size:9px">RES</span>
+      <button class="heatmap-res-btn" data-res="1" title="1 step per bin">1x</button>
+      <button class="heatmap-res-btn active" data-res="5" title="5 steps per bin">5x</button>
+      <button class="heatmap-res-btn" data-res="20" title="20 steps per bin">20x</button>
+      <button class="heatmap-res-btn" data-res="50" title="50 steps per bin">50x</button>
+    </div>
     <div id="raster-canvas-wrap">
       <canvas id="raster-canvas"></canvas>
     </div>

@@ -311,12 +311,11 @@ impl Morphon {
         self.threshold = self.threshold.clamp(0.05, max_threshold);
 
         // Division pressure accumulates from two sources:
-        // 1. Active morphons (activity > 20%) accumulate division pressure.
-        //    Only consistent k-WTA winners should reproduce — not every morphon
-        //    that fires once. With k capped at 20 and 300+ morphons, ~7% win per
-        //    step. Only morphons that win frequently (20%+) get to divide.
+        // 1. Active morphons accumulate division pressure.
+        //    With k-WTA capped at 20 winners out of ~300, the max firing rate
+        //    for any morphon is ~7%. Gate at 3% so consistent winners can divide.
         // 2. High DFA feedback error — "error-driven proliferation"
-        if actual_rate > 0.20 {
+        if actual_rate > 0.03 {
             self.division_pressure += 0.005;
         } else {
             self.division_pressure = (self.division_pressure - 0.003).max(0.0);
