@@ -416,9 +416,12 @@ impl System {
                 .collect();
 
             if !assoc_potentials.is_empty() {
-                // k = configurable fraction of population for competitive specialization.
+                // k = configurable fraction of population, CAPPED at 20.
+                // Without cap: 500 morphons × 5% = 25 winners. Over 100 steps,
+                // most morphons win at least once → nobody qualifies as "silent"
+                // for apoptosis → dead neurons never die → population explodes.
                 let k = (assoc_potentials.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
-                let k = k.max(3).min(assoc_potentials.len());
+                let k = k.max(3).min(20).min(assoc_potentials.len());
 
                 // Sort by potential descending — top-k winners survive
                 assoc_potentials.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

@@ -732,14 +732,14 @@ function updatePanels() {
   const mod = JSON.parse(system.modulation_json());
 
   document.getElementById('h-step').textContent = stats.step_count;
-  document.getElementById('h-morphons').textContent = stats.total_morphons;
-  document.getElementById('h-synapses').textContent = stats.total_synapses;
+  document.getElementById('h-fired').textContent = frameFired.size;
 
   document.getElementById('s-morphons').textContent = stats.total_morphons;
   document.getElementById('s-synapses').textContent = stats.total_synapses;
   document.getElementById('s-clusters').textContent = stats.fused_clusters;
   document.getElementById('s-gen').textContent = stats.max_generation;
   document.getElementById('s-firing').textContent = (stats.firing_rate * 100).toFixed(1) + '%';
+  document.getElementById('s-fired').textContent = frameFired.size;
   document.getElementById('s-energy').textContent = stats.avg_energy.toFixed(2);
   document.getElementById('s-error').textContent = stats.avg_prediction_error.toFixed(3);
   document.getElementById('s-wmem').textContent = stats.working_memory_items;
@@ -1135,13 +1135,18 @@ function setupControls() {
     document.getElementById('log-menu')?.classList.add('hidden');
   });
 
-  // Copy filtered to clipboard
-  document.getElementById('btn-log-copy-filtered')?.addEventListener('click', () => {
+  // Export as .txt file download
+  document.getElementById('btn-log-export')?.addEventListener('click', () => {
     const lines = [];
-    document.querySelectorAll('#events .event-item:not(.hidden)').forEach(el => lines.push(el.textContent.trim()));
-    navigator.clipboard.writeText(lines.join('\n')).then(() => {
-      addEvent('', `Copied ${lines.length} filtered entries to clipboard`, 'event-diff');
-    });
+    document.querySelectorAll('#events .event-item').forEach(el => lines.push(el.textContent.trim()));
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `morphon-log-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addEvent('', `Exported ${lines.length} log entries`, 'event-diff');
     document.getElementById('log-menu')?.classList.add('hidden');
   });
 
