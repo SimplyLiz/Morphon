@@ -1090,7 +1090,7 @@ impl System {
             let max_imp = importance.values().cloned().fold(0.01_f64, f64::max);
 
             // Update plasticity_rate: high importance → lower plasticity (anchor)
-            let anchoring_rate = 0.005; // slow EMA — takes ~200 readout updates to converge
+            let anchoring_rate = 0.01; // EMA — takes ~100 readout updates to converge
             for (&id, &imp) in &importance {
                 if let Some(m) = self.morphons.get_mut(&id) {
                     if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {

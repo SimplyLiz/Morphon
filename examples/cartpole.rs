@@ -30,7 +30,7 @@ const FORCE_MAG: f64 = 10.0;
 const DT: f64 = 0.02;
 const X_THRESHOLD: f64 = 2.4;
 const THETA_THRESHOLD: f64 = 12.0 * std::f64::consts::PI / 180.0;
-const INTERNAL_STEPS: usize = 4;
+const INTERNAL_STEPS: usize = 6;
 const GAMMA: f64 = 0.99;
 
 struct CartPole {
@@ -220,7 +220,7 @@ fn run_episode(
         let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
-        // Train analog readout
+        // Train analog readout — both positive and negative TD
         let base_lr = 0.15;
         if td_error > 0.0 {
             system.train_readout(chosen, td_error.min(1.0) * base_lr);

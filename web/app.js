@@ -74,7 +74,7 @@ let savedState = null;
 
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
-let nodesMesh, edgesMesh, diskMesh, fresnelBall;
+let nodesMesh, glowMesh, edgesMesh, diskMesh, fresnelBall;
 let nodePositions = new Float32Array(MAX_NODES * 3);
 let nodeData = [];
 let nodeMap = new Map();
@@ -205,8 +205,8 @@ function initScene() {
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     0.45,  // strength
-    0.35,  // radius
-    0.55   // threshold — lowered so PBR-attenuated firing colors still bloom
+    0.4,   // radius — soft halos
+    0.75   // threshold
   );
   composer.addPass(bloomPass);
   // Vignette — draws eye to center
@@ -272,21 +272,34 @@ function initScene() {
     const r3 = ring.clone(); r3.rotation.y = Math.PI / 2; scene.add(r3);
   }
 
-  // === NODE MESH ===
+  // === NODE MESH (diffuse — 3D shading, no bloom) ===
   const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
-  // Hybrid: high emissive (self-lit, hides z-fighting) + subtle diffuse (3D depth).
-  // Instance color drives the diffuse channel; emissive is a dim version of it.
   const nodeMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,         // instance color multiplies this
-    emissive: 0x0a0a0e,     // very subtle self-illumination — just enough for 3D depth
+    color: 0xffffff,
+    emissive: 0x080810,
     metalness: 0.0,
-    roughness: 0.75,
+    roughness: 0.7,
   });
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
   nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  nodesMesh.frustumCulled = false; // instances spread across ball — don't cull by base geometry bounds
+  nodesMesh.frustumCulled = false;
   scene.add(nodesMesh);
+
+  // === GLOW MESH (emissive overlay — drives bloom for active nodes) ===
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.6,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: false,
+  });
+  glowMesh = new THREE.InstancedMesh(nodeGeo, glowMat, MAX_NODES);
+  glowMesh.count = 0;
+  glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  glowMesh.frustumCulled = false;
+  scene.add(glowMesh);
 
   // === EDGE LINES ===
   // Allocate 4 vertices per edge (2 segments for slight curve via midpoint offset)
@@ -482,11 +495,11 @@ function updateScene() {
     const bright = 1.0 - dim * 0.85;
 
     if (n.id === selectedNodeId) {
-      tempColor.copy(color).multiplyScalar(2.5);
+      tempColor.copy(color).multiplyScalar(2.0);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Resting: low (below bloom 0.55). Firing: clearly above for visible glow.
-      const intensity = bright * (0.25 + glow * 2.0);
+      // Diffuse layer: natural cell color with subtle brightening on fire
+      const intensity = bright * (0.55 + glow * 0.4);
       tempColor.copy(color).multiplyScalar(intensity);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -494,6 +507,36 @@ function updateScene() {
     nodePositions[i * 3] = px;
     nodePositions[i * 3 + 1] = py;
     nodePositions[i * 3 + 2] = pz;
+  }
+
+  // === GLOW OVERLAY — additive emissive layer for active/near-active nodes ===
+  let glowCount = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    const n = nodes[i];
+    const glow = nodeGlow.get(n.id) || 0;
+    if (glow < 0.02) continue; // skip fully resting nodes
+
+    const px = nodePositions[i * 3];
+    const py = nodePositions[i * 3 + 1];
+    const pz = nodePositions[i * 3 + 2];
+    const energy = Math.max(0, Math.min(2, isFinite(n.energy) ? n.energy : 0));
+    const baseSize = (NODE_BASE_SIZE + energy * 0.2) * popScale;
+
+    // Glow sphere: slightly larger than the node, intensity = glow level
+    dummy.position.set(px, py, pz);
+    dummy.scale.setScalar(baseSize * (1.0 + glow * 0.4)); // swell slightly when glowing
+    dummy.updateMatrix();
+    glowMesh.setMatrixAt(glowCount, dummy.matrix);
+
+    const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
+    tempColor.copy(color).multiplyScalar(glow * 1.5); // drives bloom when glow > ~0.5
+    glowMesh.setColorAt(glowCount, tempColor);
+    glowCount++;
+  }
+  glowMesh.count = glowCount;
+  if (glowCount > 0) {
+    glowMesh.instanceMatrix.needsUpdate = true;
+    if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
   }
 
   nodesMesh.instanceMatrix.needsUpdate = true;

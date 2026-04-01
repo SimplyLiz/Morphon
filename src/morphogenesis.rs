@@ -845,8 +845,13 @@ pub fn apoptosis(
         .filter(|m| {
             m.age > params.apoptosis_min_age
                 && m.fused_with.is_none()
-                && topology.degree(m.id) < 3
-                // Eligible if EITHER energy-starved OR chronically inactive
+                // Two paths to apoptosis:
+                // (a) Isolated: low degree + low energy/activity (original)
+                // (b) Silent: chronically inactive regardless of connectivity.
+                //     A well-connected neuron that never fires is wasting resources.
+                //     Without this, dense networks (MNIST 784→370) never apoptose.
+                && (topology.degree(m.id) < 3
+                    || m.activity_history.mean() < 0.005) // silent for ~200 steps
                 && (m.energy < params.apoptosis_energy_threshold
                     || m.activity_history.mean() < 0.01)
 
