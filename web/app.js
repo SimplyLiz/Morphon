@@ -283,6 +283,12 @@ function initScene() {
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
   nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  // Pre-init instance colors so the shader includes USE_INSTANCING_COLOR from
+  // the first render and newly-grown indices never read zero-initialized (black) data.
+  nodesMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(MAX_NODES * 3).fill(1), 3
+  );
+  nodesMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   nodesMesh.frustumCulled = false;
   scene.add(nodesMesh);
 
@@ -298,6 +304,10 @@ function initScene() {
   glowMesh = new THREE.InstancedMesh(nodeGeo, glowMat, MAX_NODES);
   glowMesh.count = 0;
   glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  glowMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(MAX_NODES * 3), 3
+  );
+  glowMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   glowMesh.frustumCulled = false;
   scene.add(glowMesh);
 
@@ -324,6 +334,10 @@ function initScene() {
   spikesMesh = new THREE.InstancedMesh(spikeGeo, spikeMat, MAX_SPIKES);
   spikesMesh.count = 0;
   spikesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  spikesMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(MAX_SPIKES * 3), 3
+  );
+  spikesMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   scene.add(spikesMesh);
 
   window.addEventListener('resize', onResize);
@@ -536,11 +550,11 @@ function updateScene() {
   glowMesh.count = glowCount;
   if (glowCount > 0) {
     glowMesh.instanceMatrix.needsUpdate = true;
-    if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
+    glowMesh.instanceColor.needsUpdate = true;
   }
 
   nodesMesh.instanceMatrix.needsUpdate = true;
-  if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
+  nodesMesh.instanceColor.needsUpdate = true;
 
   // === CURVED EDGES ===
   // Each edge becomes 2 line segments via a midpoint offset (subtle bezier approximation)
@@ -1269,7 +1283,7 @@ function updateSpikes() {
   spikesMesh.count = alive;
   if (alive > 0) {
     spikesMesh.instanceMatrix.needsUpdate = true;
-    if (spikesMesh.instanceColor) spikesMesh.instanceColor.needsUpdate = true;
+    spikesMesh.instanceColor.needsUpdate = true;
   }
 }
 

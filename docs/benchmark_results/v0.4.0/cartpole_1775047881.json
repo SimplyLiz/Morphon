@@ -1,0 +1,27 @@
+{
+  "benchmark": "cartpole",
+  "diagnostics": {
+    "active_tags": 1357,
+    "total_captures": 0,
+    "weight_mean": 0.17964611737613262,
+    "weight_std": 0.2499970632547509
+  },
+  "episodes": 1000,
+  "max_steps_per_episode": 500,
+  "profile": "standard",
+  "results": {
+    "avg_last_100": 12.33,
+    "best_steps": 73,
+    "solved": false
+  },
+  "system": {
+    "clusters": 13,
+    "firing_rate": 0.10367892976588629,
+    "generation": 6,
+    "morphons": 299,
+    "prediction_error": 1.014217169239124,
+    "synapses": 4420
+  },
+  "timestamp": 1775047881,
+  "version": "0.4.0"
+}

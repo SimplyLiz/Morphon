@@ -30,8 +30,8 @@ const FORCE_MAG: f64 = 10.0;
 const DT: f64 = 0.02;
 const X_THRESHOLD: f64 = 2.4;
 const THETA_THRESHOLD: f64 = 12.0 * std::f64::consts::PI / 180.0;
-const INTERNAL_STEPS: usize = 6;
-const GAMMA: f64 = 0.99;
+const INTERNAL_STEPS: usize = 4;
+const GAMMA: f64 = 0.9; // short horizon — CartPole episodes are ~15 steps
 
 struct CartPole {
     x: f64, x_dot: f64, theta: f64, theta_dot: f64,
@@ -99,7 +99,7 @@ struct Critic {
 
 impl Critic {
     fn new() -> Self {
-        Self { weights: [0.0; 8], bias: 0.0, lr: 0.05 }
+        Self { weights: [0.0; 8], bias: 0.0, lr: 0.1 }
     }
 
     fn features(env: &CartPole) -> [f64; 8] {
@@ -173,7 +173,13 @@ fn create_system() -> System {
             migration_cooldown_duration: 5.0,
             ..Default::default()
         },
-        lifecycle: LifecycleConfig::default(),
+        lifecycle: LifecycleConfig {
+            division: false,     // fixed topology — no structural changes during training
+            differentiation: true,
+            fusion: false,
+            apoptosis: false,
+            migration: false,
+        },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 7,
@@ -221,9 +227,11 @@ fn run_episode(
         let chosen = if action > 0.0 { 1 } else { 0 };
 
         // Train analog readout — both positive and negative TD
-        let base_lr = 0.2;
+        let base_lr = 0.15;
         if td_error > 0.0 {
             system.train_readout(chosen, td_error.min(1.0) * base_lr);
+            // Contrastive reward: reinforce correct motor, inhibit wrong one
+            system.reward_contrastive(chosen, td_error.min(1.0) * 0.3, 0.1);
         } else {
             let other = 1 - chosen;
             system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
@@ -290,12 +298,11 @@ fn main() {
         if (ep + 1) % 100 == 0 || steps >= 200 {
             let s = system.inspect();
             let diag = system.diagnostics();
-            // Probe: run a test observation to see output differentiation
+            let critic_v = critic.predict(&env); // external critic's value estimate
             let test_out = system.read_output();
             let out_diff = if test_out.len() >= 2 { (test_out[0] - test_out[1]).abs() } else { 0.0 };
-            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | m {} s {} fr {:.3} pe {:.3} Δout {:.3} | {}",
-                ep + 1, steps, avg, best, s.total_morphons, s.total_synapses, s.firing_rate, s.avg_prediction_error,
-                out_diff, diag.summary());
+            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | V={:.2} Δout {:.3} | {}",
+                ep + 1, steps, avg, best, critic_v, out_diff, diag.summary());
         }
 
         if recent.len() >= 100 && avg >= 195.0 {
