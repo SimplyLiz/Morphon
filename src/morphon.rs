@@ -121,6 +121,10 @@ pub struct Morphon {
     // === Homeostatic Protection ===
     /// Cooldown timer after migration — prevents topological instability.
     pub migration_cooldown: f64,
+    /// Direct Feedback Alignment signal — neuron-specific modulation from
+    /// output error projected through fixed random weights. Replaces global
+    /// reward broadcast for hidden layer credit assignment.
+    pub feedback_signal: f64,
     /// Target firing rate for synaptic scaling (homeostatic anchor).
     pub homeostatic_setpoint: f64,
 }
