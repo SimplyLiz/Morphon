@@ -72,6 +72,15 @@ const spikes = [];
 // Raycasting
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
+// Reusable objects to avoid per-frame allocations
+const _mat4 = new THREE.Matrix4();
+const _pos = new THREE.Vector3();
+const _closestPos = new THREE.Vector3();
+const WHITE = new THREE.Color(0xffffff);
+// Track mouse drag to distinguish click from orbit drag
+let mouseDownPos = { x: 0, y: 0 };
+// Track last user input time to avoid noise overwrite
+let lastUserInputTime = 0;
 
 // ============================================================
 // CUSTOM SHADERS
@@ -282,6 +291,7 @@ function initScene() {
 
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
+  renderer.domElement.addEventListener('mousedown', (e) => { mouseDownPos.x = e.clientX; mouseDownPos.y = e.clientY; });
   renderer.domElement.addEventListener('click', onMouseClick);
 }
 
@@ -302,7 +312,10 @@ function onMouseMove(e) {
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
 }
 
-function onMouseClick() {
+function onMouseClick(e) {
+  // Ignore clicks that were actually orbit drags
+  const dx = e.clientX - mouseDownPos.x, dy = e.clientY - mouseDownPos.y;
+  if (dx * dx + dy * dy > 25) return; // moved more than 5px = drag
   if (hoveredNodeId !== null) {
     selectedNodeId = hoveredNodeId;
     // Build set of connected node IDs for context dimming
@@ -325,19 +338,21 @@ function updateRaycast() {
   if (!nodesMesh || nodesMesh.count === 0) return;
   raycaster.setFromCamera(mouse, camera);
 
-  const mat4 = new THREE.Matrix4();
-  const pos = new THREE.Vector3();
   let closest = null;
   let closestDist = Infinity;
 
   for (let i = 0; i < nodesMesh.count; i++) {
-    nodesMesh.getMatrixAt(i, mat4);
-    pos.setFromMatrixPosition(mat4);
-    const d = raycaster.ray.distanceToPoint(pos);
-    const scale = mat4.elements[0];
+    nodesMesh.getMatrixAt(i, _mat4);
+    _pos.setFromMatrixPosition(_mat4);
+    const d = raycaster.ray.distanceToPoint(_pos);
+    const scale = _mat4.elements[0];
     if (d < scale * 2.5) {
-      const camDist = camera.position.distanceTo(pos);
-      if (camDist < closestDist) { closestDist = camDist; closest = i; }
+      const camDist = camera.position.distanceTo(_pos);
+      if (camDist < closestDist) {
+        closestDist = camDist;
+        closest = i;
+        _closestPos.copy(_pos); // save position of the actual closest node
+      }
     }
   }
 
@@ -346,10 +361,10 @@ function updateRaycast() {
 
   const tooltip = document.getElementById('tooltip');
   if (hoveredNodeId !== null) {
-    const node = nodeData.find(n => n.id === hoveredNodeId);
+    const node = nodeData[nodeMap.get(hoveredNodeId)]; // O(1) lookup via nodeMap
     if (node) {
       tooltip.style.display = 'block';
-      const screenPos = pos.clone().project(camera);
+      const screenPos = _closestPos.clone().project(camera);
       const sx = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
       const sy = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
       tooltip.style.left = (sx + 16) + 'px';
@@ -451,7 +466,6 @@ function updateScene() {
 
   nodesMesh.instanceMatrix.needsUpdate = true;
   if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
-  nodesMesh.computeBoundingSphere();
 
   // === CURVED EDGES ===
   // Each edge becomes 2 line segments via a midpoint offset (subtle bezier approximation)
@@ -557,7 +571,7 @@ function updateScene() {
     }
   }
 
-  prevFired = newFired;
+  prevFired = new Set(newFired); // copy — newFired aliases frameFired which gets cleared
 }
 
 // ============================================================
@@ -809,10 +823,10 @@ function setupControls() {
     if (system) { system.inject_arousal(0.9); addEvent('', 'Arousal injected (0.9)', 'event-death'); }
   });
 
-  document.getElementById('feed-burst').addEventListener('click', () => makeInput('burst'));
-  document.getElementById('feed-pulse').addEventListener('click', () => makeInput('pulse'));
-  document.getElementById('feed-wave').addEventListener('click', () => makeInput('wave'));
-  document.getElementById('feed-noise').addEventListener('click', () => makeInput('noise'));
+  document.getElementById('feed-burst').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('burst'); });
+  document.getElementById('feed-pulse').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('pulse'); });
+  document.getElementById('feed-wave').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('wave'); });
+  document.getElementById('feed-noise').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('noise'); });
 
   document.getElementById('btn-clear-log').addEventListener('click', () => {
     document.getElementById('events').innerHTML = '';
@@ -953,7 +967,7 @@ function updateSpikes() {
 
     if (alive < MAX_SPIKES) {
       spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      tempColor.copy(s.color).lerp(new THREE.Color(0xffffff), sizeCurve * 0.5);
+      tempColor.copy(s.color).lerp(WHITE, sizeCurve * 0.5);
       spikesMesh.setColorAt(alive, tempColor);
       alive++;
     }
@@ -979,7 +993,8 @@ function animate() {
   if (running && system) {
     frameFired.clear();
     for (let i = 0; i < stepsPerFrame; i++) {
-      if (frameCount % 3 === 0) makeInput('noise');
+      // Auto-inject noise unless user sent input recently (500ms grace period)
+      if (frameCount % 3 === 0 && performance.now() - lastUserInputTime > 500) makeInput('noise');
       system.step();
       // Collect fired IDs after each sub-step so we don't miss transient firings
       for (const id of system.fired_ids()) frameFired.add(id);

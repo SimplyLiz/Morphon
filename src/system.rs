@@ -691,30 +691,33 @@ impl System {
     /// Call this after `process_steps()` and before `reward_contrastive()`.
     /// `correct_index`: which output class is the target.
     /// `strength`: teaching signal magnitude (0.0-1.0).
+    /// SADP-inspired hidden layer teaching signal.
+    ///
+    /// Uses the TARGET output (what the correct class SHOULD fire) instead of
+    /// actual motor activity. This is critical: at the start of training all
+    /// motors have similar potential, so agreement with ACTUAL output is ~zero.
+    /// Using the TARGET provides a non-zero teaching signal from step 1.
+    ///
+    /// Based on SADP (arXiv:2601.08526): "Hidden layers are trained using spike
+    /// agreement-dependent plasticity, which reinforces neurons whose spike trains
+    /// agree with the correct-class output neuron beyond chance."
+    ///
+    /// For each associative morphon, the teaching signal is:
+    ///   kappa_j = activity_j × target_correct - activity_j × target_incorrect
+    ///           = activity_j × (1.0 - 0.0) = activity_j   (for active hidden neurons)
+    ///           = 0.0                                        (for inactive hidden neurons)
+    ///
+    /// Active hidden neurons get their incoming synapses boosted (they should
+    /// help fire the correct output). Inactive ones get no signal (not penalized).
     pub fn teach_hidden(&mut self, correct_index: usize, strength: f64) {
-        let Some(&correct_motor_id) = self.output_ports.get(correct_index) else { return };
+        if correct_index >= self.output_ports.len() { return; }
 
-        // Get the correct motor morphon's recent activity level
-        let correct_motor_active = self.morphons.get(&correct_motor_id)
-            .map(|m| {
-                // Use potential-based readout (same as motor post_activity)
-                let sig = 1.0 / (1.0 + (-m.potential).exp());
-                (sig - 0.5) * 2.0 // [-1, 1]
-            })
-            .unwrap_or(0.0);
+        // TARGET signal: 1.0 for correct class, 0.0 for incorrect.
+        // This is the supervised signal — what the output SHOULD be.
+        let target_correct: f64 = 1.0;
+        let target_incorrect: f64 = 0.0;
+        let n_incorrect = (self.output_ports.len() - 1).max(1) as f64;
 
-        // Get incorrect motor activities for anti-correlation
-        let incorrect_motor_activity: f64 = self.output_ports.iter()
-            .enumerate()
-            .filter(|(i, _)| *i != correct_index)
-            .filter_map(|(_, id)| self.morphons.get(id))
-            .map(|m| {
-                let sig = 1.0 / (1.0 + (-m.potential).exp());
-                (sig - 0.5) * 2.0
-            })
-            .sum::<f64>() / (self.output_ports.len().max(1) - 1).max(1) as f64;
-
-        // For each associative morphon, compute agreement with correct output
         let assoc_ids: Vec<MorphonId> = self.morphons.values()
             .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
             .map(|m| m.id)
@@ -722,30 +725,46 @@ impl System {
 
         for assoc_id in assoc_ids {
             let assoc_active = self.morphons.get(&assoc_id)
-                .map(|m| if m.fired { 1.0 } else { m.activity_history.mean() })
+                .map(|m| if m.fired { 1.0 } else { 0.0 })
                 .unwrap_or(0.0);
 
-            // Agreement: hidden fires when correct output is active
-            // Anti-agreement: hidden fires when incorrect outputs are active
-            // Kappa-like: agreement - chance_agreement
-            let agreement = assoc_active * correct_motor_active;
-            let anti_agreement = assoc_active * incorrect_motor_activity;
-            let teaching_signal = (agreement - anti_agreement) * strength;
+            if assoc_active < 0.01 { continue; } // inactive neurons get no signal
 
-            if teaching_signal.abs() < 0.001 { continue; }
+            // Kappa-like agreement: how well does this hidden neuron's activity
+            // correlate with the TARGET output pattern?
+            // agreement = activity × target_correct = activity × 1.0
+            // anti_agreement = activity × mean(target_incorrect) = activity × 0.0
+            // teaching_signal = agreement - anti_agreement = activity
+            let teaching_signal = assoc_active * (target_correct - target_incorrect) * strength;
 
-            // Modulate incoming synapses to this associative morphon
+            // Boost eligibility on incoming synapses to this active hidden neuron.
+            // These sensory→hidden connections carried the input that made this
+            // hidden neuron fire during the correct class presentation.
             let incoming = self.topology.incoming_synapses_mut(assoc_id);
             for (_, edge_idx) in incoming {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    if teaching_signal > 0.0 {
-                        // Positive agreement: boost eligibility
-                        syn.eligibility += teaching_signal;
-                    } else {
-                        // Negative agreement: decay eligibility toward zero
-                        syn.eligibility *= (1.0 + teaching_signal).max(0.0);
-                    }
+                    syn.eligibility += teaching_signal;
                     syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                }
+            }
+
+            // Also modulate the outgoing synapses from this hidden neuron
+            // to the CORRECT motor morphon (strengthen the correct path).
+            let correct_motor_id = self.output_ports[correct_index];
+            if let Some((ei, _)) = self.topology.synapse_between(assoc_id, correct_motor_id) {
+                if let Some(syn) = self.topology.synapse_mut(ei) {
+                    syn.eligibility += teaching_signal;
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                }
+            }
+
+            // Decay eligibility on outgoing synapses to INCORRECT motor morphons.
+            for (i, &motor_id) in self.output_ports.iter().enumerate() {
+                if i == correct_index { continue; }
+                if let Some((ei, _)) = self.topology.synapse_between(assoc_id, motor_id) {
+                    if let Some(syn) = self.topology.synapse_mut(ei) {
+                        syn.eligibility *= 0.5; // decay, don't go negative
+                    }
                 }
             }
         }
