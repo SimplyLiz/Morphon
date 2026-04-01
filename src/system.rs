@@ -247,7 +247,11 @@ impl System {
             if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
                     // Spike arrival is direct evidence of pre-synaptic firing.
-                    let h = if post_fired { 1.0 } else { -0.06 };
+                    // Only apply LTP (positive). Skip LTD here — the medium path
+                    // handles the balanced Hebbian update. Applying LTD at spike
+                    // delivery causes runaway weight decay when post rarely fires,
+                    // silencing motor morphons permanently.
+                    let h = if post_fired { 1.0 } else { 0.0 };
                     synapse.eligibility +=
                         (-synapse.eligibility / self.config.learning.tau_eligibility + h) * dt;
                     synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
@@ -267,8 +271,8 @@ impl System {
         if tick.medium {
             // Update eligibility traces and apply receptor-gated weight changes
             for &id in &morphon_ids {
-                let (post_fired, post_receptors) = self.morphons.get(&id)
-                    .map(|m| (m.fired, m.receptors.clone()))
+                let (post_fired, post_receptors, post_activity) = self.morphons.get(&id)
+                    .map(|m| (m.fired, m.receptors.clone(), m.activity_history.mean()))
                     .unwrap_or_default();
                 let incoming = self.topology.incoming_synapses_mut(id);
 
@@ -276,9 +280,17 @@ impl System {
                     let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
                     if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                        // Protect cold morphons: skip LTD if post has near-zero activity.
+                        // This prevents the vicious cycle where LTD kills weights before
+                        // the morphon ever gets a chance to fire.
+                        let effective_pre = if post_activity < 0.02 && !post_fired {
+                            false // suppress LTD by pretending pre didn't fire
+                        } else {
+                            pre_fired
+                        };
                         learning::update_eligibility(
                             synapse,
-                            pre_fired,
+                            effective_pre,
                             post_fired,
                             &self.config.learning,
                             dt,
@@ -562,33 +574,36 @@ impl System {
     }
 
     /// Inject a targeted inhibition at a specific output port's morphon.
-    /// Same two-hop propagation as inject_reward_at but negative.
+    /// Inhibit an output port by decaying its eligibility traces toward zero.
+    ///
+    /// Unlike inject_reward_at which ADDS positive eligibility, inhibition
+    /// DECAYS existing eligibility toward zero. This prevents incorrect outputs
+    /// from being strengthened by subsequent reward, without driving weights
+    /// negative (which would permanently silence the motor morphon).
     pub fn inject_inhibition_at(&mut self, output_index: usize, strength: f64) {
         let Some(&motor_id) = self.output_ports.get(output_index) else { return };
+        let decay_factor = (1.0 - strength).max(0.0); // strength=0.3 → keep 70% of eligibility
 
         let motor_incoming = self.topology.incoming_synapses_mut(motor_id);
-        let pre_ids_and_weights: Vec<(MorphonId, f64)> = motor_incoming
+        let pre_ids: Vec<MorphonId> = motor_incoming
             .into_iter()
             .filter_map(|(pre_id, edge_idx)| {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    syn.eligibility -= strength;
-                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
-                    Some((pre_id, syn.weight))
+                    syn.eligibility *= decay_factor; // decay toward zero, don't go negative
+                    Some(pre_id)
                 } else {
                     None
                 }
             })
             .collect();
 
-        let decay = 0.5;
-        for (pre_id, weight) in pre_ids_and_weights {
-            let hop1_strength = strength * decay * weight.abs();
-            if hop1_strength < 0.01 { continue; }
+        // Hop 1: also decay eligibility on paths feeding into the motor's sources
+        let hop1_decay = (1.0 - strength * 0.5).max(0.0);
+        for pre_id in pre_ids {
             let pre_incoming = self.topology.incoming_synapses_mut(pre_id);
             for (_, edge_idx) in pre_incoming {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    syn.eligibility -= hop1_strength;
-                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                    syn.eligibility *= hop1_decay;
                 }
             }
         }

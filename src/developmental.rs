@@ -138,20 +138,10 @@ pub fn develop(
         morphons.insert(id, morphon);
     }
 
-    // Create initial random connectivity
-    let ids: Vec<MorphonId> = morphons.keys().copied().collect();
-    for &from in &ids {
-        for &to in &ids {
-            if from == to {
-                continue;
-            }
-            if rng.random_range(0.0..1.0) < config.initial_connectivity {
-                let weight = rng.random_range(-0.5..0.5);
-                let delay = rng.random_range(0.1..1.0);
-                topology.add_synapse(from, to, Synapse::new(weight).with_delay(delay));
-            }
-        }
-    }
+    // Skip random connectivity before differentiation — it creates connections
+    // that violate the cell type hierarchy (e.g. into Sensory, out of Motor).
+    // The I/O pathway phase (Phase 4) creates the feedforward structure,
+    // and synaptogenesis grows additional connections during runtime.
 
     // === Phase 2: Proliferation ===
     // Controlled cell division to reach target size

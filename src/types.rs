@@ -127,8 +127,11 @@ impl ActivationFn {
             ActivationFn::HardThreshold => if x > 0.0 { 1.0 } else { 0.0 },
             ActivationFn::LeakyIntegrator => x.max(0.01 * x), // leaky ReLU variant
             ActivationFn::Burst => {
-                // Burst: high output when above threshold, rapid falloff
-                if x > 0.5 { (2.0 * (x - 0.5)).tanh() + 0.5 } else { 0.1 * x }
+                // Burst: sigmoid-like baseline with amplified response above 0.5.
+                // Below 0.5: gentle sigmoid (still responsive, unlike the old 0.1x dead zone).
+                // Above 0.5: rapid ramp to saturation (burst behavior).
+                let base = 1.0 / (1.0 + (-x).exp()); // sigmoid baseline
+                if x > 0.5 { base + (x - 0.5).tanh() * 0.5 } else { base }
             }
             ActivationFn::Oscillatory => (x * std::f64::consts::PI).sin(),
         }
@@ -142,7 +145,7 @@ impl ActivationFn {
             ActivationFn::Sigmoid => 0.95,          // approaches 1.0 asymptotically
             ActivationFn::HardThreshold => 0.95,     // outputs exactly 1.0
             ActivationFn::LeakyIntegrator => 5.0,    // unbounded, use weight_max as proxy
-            ActivationFn::Burst => 1.4,              // tanh()+0.5, max ~1.5
+            ActivationFn::Burst => 1.4,              // sigmoid() + tanh()*0.5, max ~1.5
             ActivationFn::Oscillatory => 0.95,       // sin(), max 1.0
         }
     }

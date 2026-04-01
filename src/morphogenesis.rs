@@ -106,11 +106,18 @@ pub fn synaptogenesis(
                 continue;
             }
 
-            // Create with probability proportional to proximity
+            // Respect cell type hierarchy:
+            // - Don't create connections INTO Sensory (they're input-only)
+            // - Don't create connections OUT OF Motor (they're output-only)
+            let (from, to) = (a, b);
+            let valid_direction = to.cell_type != CellType::Sensory
+                && from.cell_type != CellType::Motor;
+            if !valid_direction { continue; }
+
             let prob = (1.0 - distance / 2.0) * 0.1;
             if rng.random_range(0.0..1.0) < prob {
                 let weight = rng.random_range(-0.5..0.5);
-                topology.add_synapse(a.id, b.id, Synapse::new(weight));
+                topology.add_synapse(from.id, to.id, Synapse::new(weight));
                 created += 1;
             }
         }

@@ -384,17 +384,60 @@ function updateScene() {
   const nodeCount = Math.min(nodes.length, MAX_NODES);
   nodesMesh.count = nodeCount;
 
+  // --- Overlap separation pass ---
+  // Compute display positions, then push apart nodes that are too close.
+  const dispPos = new Float32Array(nodeCount * 3);
+  const sizes = new Float32Array(nodeCount);
+  for (let i = 0; i < nodeCount; i++) {
+    const n = nodes[i];
+    dispPos[i*3]   = n.x * BALL_RADIUS;
+    dispPos[i*3+1] = n.y * BALL_RADIUS;
+    dispPos[i*3+2] = n.z * BALL_RADIUS;
+    sizes[i] = NODE_BASE_SIZE + n.energy * 0.2;
+  }
+  // Run a few relaxation iterations — O(n²) is fine for n < 2000
+  const MIN_SEP = 0.9; // minimum distance between node centers (in world units)
+  for (let iter = 0; iter < 3; iter++) {
+    for (let i = 0; i < nodeCount; i++) {
+      for (let j = i + 1; j < nodeCount; j++) {
+        const ix = i*3, jx = j*3;
+        let dx = dispPos[jx]   - dispPos[ix];
+        let dy = dispPos[jx+1] - dispPos[ix+1];
+        let dz = dispPos[jx+2] - dispPos[ix+2];
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const minDist = (sizes[i] + sizes[j]) * MIN_SEP;
+        if (dist < minDist) {
+          // Push apart along their connecting vector (or random if coincident)
+          if (dist < 0.001) {
+            dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); dz = (Math.random() - 0.5);
+            const rn = Math.sqrt(dx*dx+dy*dy+dz*dz) || 1;
+            dx /= rn; dy /= rn; dz /= rn;
+          } else {
+            dx /= dist; dy /= dist; dz /= dist;
+          }
+          const push = (minDist - dist) * 0.5;
+          dispPos[ix]   -= dx * push;
+          dispPos[ix+1] -= dy * push;
+          dispPos[ix+2] -= dz * push;
+          dispPos[jx]   += dx * push;
+          dispPos[jx+1] += dy * push;
+          dispPos[jx+2] += dz * push;
+        }
+      }
+    }
+  }
+
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
 
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
     nodeMap.set(n.id, i);
 
-    const px = n.x * BALL_RADIUS;
-    const py = n.y * BALL_RADIUS;
-    const pz = n.z * BALL_RADIUS;
+    const px = dispPos[i*3];
+    const py = dispPos[i*3+1];
+    const pz = dispPos[i*3+2];
 
-    const size = NODE_BASE_SIZE + n.energy * 0.2;
+    const size = sizes[i];
 
     dummy.position.set(px, py, pz);
     dummy.scale.setScalar(size);
