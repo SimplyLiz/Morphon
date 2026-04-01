@@ -2,3 +2,4 @@
 /data
 /web/pkg
 .DS_Store
+.ckb/
