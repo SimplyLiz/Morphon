@@ -261,10 +261,14 @@ fn differentiate_by_position(
     let n_motor = config.target_output_size
         .unwrap_or((total as f64 * config.type_ratios.motor) as usize)
         .min(total.saturating_sub(n_sensory));
-    let n_modulatory = ((total.saturating_sub(n_sensory).saturating_sub(n_motor)) as f64
-        * config.type_ratios.modulatory
-        / (config.type_ratios.associative + config.type_ratios.modulatory).max(0.01))
-        as usize;
+    let n_modulatory = {
+        let raw = ((total.saturating_sub(n_sensory).saturating_sub(n_motor)) as f64
+            * config.type_ratios.modulatory
+            / (config.type_ratios.associative + config.type_ratios.modulatory).max(0.01))
+            as usize;
+        // V3 guard: cap Modulatory at 15% of total to prevent over-representation
+        raw.min((total as f64 * 0.15) as usize)
+    };
     let n_associative = total.saturating_sub(n_sensory).saturating_sub(n_motor).saturating_sub(n_modulatory);
 
     let sensory_end = n_sensory;
