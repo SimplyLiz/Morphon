@@ -167,6 +167,11 @@ pub struct Morphon {
     /// Initialized from log-normal distribution; modulated by readout importance (H2).
     #[serde(default = "default_plasticity_rate")]
     pub plasticity_rate: f64,
+
+    // === V2: Frustration-Driven Exploration ===
+    /// Per-morphon frustration state for escaping local minima via adaptive noise.
+    #[serde(default)]
+    pub frustration: FrustrationState,
 }
 
 impl Morphon {
@@ -199,6 +204,7 @@ impl Morphon {
             homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
             plasticity_rate: 1.0, // default; overwritten by developmental program
+            frustration: FrustrationState::default(),
         }
     }
 
@@ -242,6 +248,7 @@ impl Morphon {
             feedback_signal: 0.0,
             // Child inherits parent's plasticity with mutation — anchors beget anchors
             plasticity_rate: (self.plasticity_rate + rng.random_range(-0.1..0.1)).clamp(0.1, 2.0),
+            frustration: FrustrationState::default(),
         }
     }
 
@@ -249,7 +256,7 @@ impl Morphon {
     ///
     /// `synapse_count`: number of outgoing synapses (for metabolic maintenance cost).
     /// `metabolic`: V3 metabolic budget configuration.
-    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig) {
+    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig, frustration_config: &FrustrationConfig) {
         self.age += 1;
 
         // Refractory period
@@ -269,7 +276,7 @@ impl Morphon {
         // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
         // Other types get standard noise (0.1) for baseline activity.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise_scale = if self.cell_type == CellType::Motor { 0.0 } else { 0.1 };
+        let noise_scale = if self.cell_type == CellType::Motor { 0.0 } else { 0.1 * self.frustration.noise_amplitude };
         let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
@@ -301,6 +308,26 @@ impl Morphon {
         // Update desire (exponential moving average of prediction error)
         let desire_alpha = 0.01;
         self.desire = self.desire * (1.0 - desire_alpha) + self.prediction_error * desire_alpha;
+
+        // V2: Update frustration state — detect PE stagnation and scale noise
+        if frustration_config.enabled {
+            let pe_delta = (self.prediction_error - self.frustration.prev_pe).abs();
+            self.frustration.prev_pe = self.prediction_error;
+
+            if pe_delta < frustration_config.stagnation_threshold && self.desire > 0.1 {
+                self.frustration.stagnation_counter = self.frustration.stagnation_counter.saturating_add(1);
+            } else {
+                // Fast decay on improvement — 5:1 ratio means recovery is quick
+                self.frustration.stagnation_counter = self.frustration.stagnation_counter.saturating_sub(5);
+            }
+
+            let ratio = self.frustration.stagnation_counter as f64 / frustration_config.saturation_steps as f64;
+            self.frustration.frustration_level = (ratio * 3.0).tanh();
+            self.frustration.noise_amplitude = 1.0 + self.frustration.frustration_level
+                * (frustration_config.max_noise_multiplier - 1.0);
+            self.frustration.exploration_mode =
+                self.frustration.frustration_level > frustration_config.exploration_threshold;
+        }
 
         // Homeostatic threshold regulation
         // Upper clamp respects the activation function's output range — without this,
