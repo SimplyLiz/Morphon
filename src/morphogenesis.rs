@@ -39,6 +39,11 @@ pub struct MorphogenesisParams {
     pub apoptosis_min_age: u64,
     /// Apoptosis — energy threshold below which death is possible.
     pub apoptosis_energy_threshold: f64,
+    /// Transdifferentiation — minimum desire (chronic prediction error) to trigger
+    /// direct A→B cell type conversion without passing through Stem.
+    pub transdifferentiation_desire_threshold: f64,
+    /// Transdifferentiation — minimum age before a morphon is eligible.
+    pub transdifferentiation_min_age: u64,
     /// Maximum number of morphons (prevent unbounded growth).
     pub max_morphons: usize,
     /// V3 Governor: minimum morphon count — apoptosis stops below this.
@@ -63,6 +68,8 @@ impl Default for MorphogenesisParams {
             migration_rate: 0.05,
             apoptosis_min_age: 1000,
             apoptosis_energy_threshold: 0.1,
+            transdifferentiation_desire_threshold: 0.5,
+            transdifferentiation_min_age: 500,
             max_morphons: 10_000,
             min_morphons: 10,
             min_sensory_fraction: 0.05,
@@ -82,6 +89,7 @@ pub struct MorphogenesisReport {
     pub differentiations: usize,
     pub fusions: usize,
     pub defusions: usize,
+    pub transdifferentiations: usize,
     pub migrations: usize,
 }
 
@@ -196,6 +204,16 @@ pub fn division(
         return 0;
     }
 
+    // V3 Governor: count cell types for diversity guard during division.
+    // Children start as Stem, but if Stem already exceeds max_single_type_fraction,
+    // block further division to prevent Stem/Modulatory explosion.
+    let total = morphons.len() as f64;
+    let stem_count = morphons.values().filter(|m| m.cell_type == CellType::Stem).count();
+    let stem_fraction = stem_count as f64 / total.max(1.0);
+    if stem_fraction > params.max_single_type_fraction {
+        return 0; // too many Stem cells — block ALL division until they differentiate
+    }
+
     let candidates: Vec<MorphonId> = morphons
         .values()
         .filter(|m| m.should_divide(params.division_threshold))
@@ -290,6 +308,110 @@ pub fn dedifferentiation(
     }
 
     count
+}
+
+/// Run transdifferentiation — direct A→B cell type conversion without Stem detour.
+///
+/// Biological pendant: pancreas alpha cells converting directly to insulin-producing
+/// beta cells. Triggered by chronic "mismatch" — the morphon's current function
+/// doesn't match the inputs it receives (concept doc section 3.4D).
+///
+/// Mismatch detection: if the majority of a morphon's incoming connections come from
+/// a cell type that implies a different role, the morphon converts. For example, a
+/// Modulatory morphon receiving mostly Sensory input should become Associative.
+pub fn transdifferentiation(
+    morphons: &mut HashMap<MorphonId, Morphon>,
+    topology: &Topology,
+    params: &MorphogenesisParams,
+) -> usize {
+    // First pass: collect (morphon_id, suggested_type) decisions.
+    // We read topology + other morphons here, so we collect first, mutate second.
+    let mut conversions: Vec<(MorphonId, CellType)> = Vec::new();
+
+    for morphon in morphons.values() {
+        // Only non-Stem, non-Fused, sufficiently old, under chronic mismatch
+        if morphon.cell_type == CellType::Stem || morphon.cell_type == CellType::Fused {
+            continue;
+        }
+        if morphon.age < params.transdifferentiation_min_age {
+            continue;
+        }
+        if morphon.desire < params.transdifferentiation_desire_threshold {
+            continue;
+        }
+        // Don't touch Sensory or Motor morphons — they're I/O boundary, not convertible
+        if morphon.cell_type == CellType::Sensory || morphon.cell_type == CellType::Motor {
+            continue;
+        }
+
+        // Analyze incoming connectivity: what types are feeding this morphon?
+        let incoming = topology.incoming(morphon.id);
+        if incoming.is_empty() {
+            continue;
+        }
+
+        let mut type_counts: HashMap<CellType, usize> = HashMap::new();
+        for (src_id, _synapse) in &incoming {
+            if let Some(src) = morphons.get(src_id) {
+                *type_counts.entry(src.cell_type).or_insert(0) += 1;
+            }
+        }
+
+        let total = incoming.len() as f64;
+        let suggested = infer_role_from_inputs(&type_counts, total);
+
+        if let Some(target) = suggested {
+            if target != morphon.cell_type {
+                conversions.push((morphon.id, target));
+            }
+        }
+    }
+
+    // Second pass: apply conversions
+    let mut count = 0;
+    for (id, target) in conversions {
+        if let Some(morphon) = morphons.get_mut(&id) {
+            // Direct conversion: differentiate() handles the type switch + activation fn +
+            // receptor update. Rate is 0.01 for non-Stem (slower than normal differentiation).
+            if morphon.differentiate(target) {
+                count += 1;
+            }
+        }
+    }
+
+    count
+}
+
+/// Infer what cell type a morphon *should* be based on its input sources.
+/// Returns Some(target) if there's a clear signal, None if ambiguous.
+fn infer_role_from_inputs(
+    type_counts: &HashMap<CellType, usize>,
+    total: f64,
+) -> Option<CellType> {
+    // Dominant input type must be >60% of connections for a clear signal
+    let threshold = 0.6;
+
+    let sensory_frac = *type_counts.get(&CellType::Sensory).unwrap_or(&0) as f64 / total;
+    let motor_frac = *type_counts.get(&CellType::Motor).unwrap_or(&0) as f64 / total;
+    let assoc_frac = *type_counts.get(&CellType::Associative).unwrap_or(&0) as f64 / total;
+    let modul_frac = *type_counts.get(&CellType::Modulatory).unwrap_or(&0) as f64 / total;
+
+    if sensory_frac > threshold {
+        // Mostly sensory input → should be Associative (process patterns)
+        Some(CellType::Associative)
+    } else if motor_frac > threshold {
+        // Mostly motor feedback → should be Modulatory (regulate output)
+        Some(CellType::Modulatory)
+    } else if modul_frac > threshold {
+        // Mostly modulatory input → should be Associative (integrate signals)
+        Some(CellType::Associative)
+    } else if assoc_frac > threshold {
+        // Mostly associative → could go either way, but if mismatched,
+        // become Associative (join the processing layer)
+        Some(CellType::Associative)
+    } else {
+        None // mixed inputs, no clear signal
+    }
 }
 
 /// Cluster state for fusion tracking.
@@ -719,10 +841,11 @@ pub fn apoptosis(
         .values()
         .filter(|m| {
             m.age > params.apoptosis_min_age
-                && m.energy < params.apoptosis_energy_threshold
-                && m.activity_history.mean() < 0.01
                 && m.fused_with.is_none()
                 && topology.degree(m.id) < 3
+                // Eligible if EITHER energy-starved OR chronically inactive
+                && (m.energy < params.apoptosis_energy_threshold
+                    || m.activity_history.mean() < 0.01)
 
                 // V3 Governor: protect minimum cell type fractions
                 && match m.cell_type {
@@ -794,6 +917,7 @@ pub fn step_glacial(
 
     if lifecycle.differentiation {
         report.differentiations = differentiation(morphons, topology);
+        report.transdifferentiations = transdifferentiation(morphons, topology, params);
         dedifferentiation(morphons, arousal_level);
     }
 
@@ -1403,5 +1527,98 @@ mod tests {
             &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng,
         );
         assert_eq!(report.morphons_born, 0);
+    }
+
+    // === Transdifferentiation ===
+
+    #[test]
+    fn transdifferentiation_converts_mismatched_morphon() {
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        let mut target = Morphon::new(10, pos.clone());
+        target.cell_type = CellType::Modulatory;
+        target.differentiation_level = 0.5;
+        target.activation_fn = ActivationFn::Oscillatory;
+        target.receptors = default_receptors(CellType::Modulatory);
+        target.age = 600;
+        target.desire = 0.8;
+
+        let s1 = make_morphon(1, CellType::Sensory);
+        let s2 = make_morphon(2, CellType::Sensory);
+        let s3 = make_morphon(3, CellType::Sensory);
+
+        let mut morphons = HashMap::new();
+        morphons.insert(10, target);
+        morphons.insert(1, s1);
+        morphons.insert(2, s2);
+        morphons.insert(3, s3);
+
+        let mut topo = Topology::new();
+        for &id in &[1, 2, 3, 10] {
+            topo.add_morphon(id);
+        }
+        topo.add_synapse(1, 10, Synapse::new(0.5));
+        topo.add_synapse(2, 10, Synapse::new(0.5));
+        topo.add_synapse(3, 10, Synapse::new(0.5));
+
+        let params = MorphogenesisParams::default();
+        let count = transdifferentiation(&mut morphons, &topo, &params);
+
+        assert_eq!(count, 1);
+        let m = morphons.get(&10).unwrap();
+        assert_eq!(m.cell_type, CellType::Associative);
+        assert_eq!(m.activation_fn, ActivationFn::LeakyIntegrator);
+    }
+
+    #[test]
+    fn transdifferentiation_skips_low_desire() {
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        let mut target = Morphon::new(10, pos.clone());
+        target.cell_type = CellType::Modulatory;
+        target.differentiation_level = 0.5;
+        target.age = 600;
+        target.desire = 0.1;
+
+        let s1 = make_morphon(1, CellType::Sensory);
+
+        let mut morphons = HashMap::new();
+        morphons.insert(10, target);
+        morphons.insert(1, s1);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(10);
+        topo.add_synapse(1, 10, Synapse::new(0.5));
+
+        let params = MorphogenesisParams::default();
+        let count = transdifferentiation(&mut morphons, &topo, &params);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn transdifferentiation_skips_io_boundary() {
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        let mut motor = Morphon::new(10, pos.clone());
+        motor.cell_type = CellType::Motor;
+        motor.differentiation_level = 0.5;
+        motor.age = 600;
+        motor.desire = 0.8;
+
+        let s1 = make_morphon(1, CellType::Sensory);
+
+        let mut morphons = HashMap::new();
+        morphons.insert(10, motor);
+        morphons.insert(1, s1);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(10);
+        topo.add_synapse(1, 10, Synapse::new(0.5));
+
+        let params = MorphogenesisParams::default();
+        let count = transdifferentiation(&mut morphons, &topo, &params);
+        assert_eq!(count, 0);
     }
 }
