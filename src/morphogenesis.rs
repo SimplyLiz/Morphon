@@ -54,6 +54,10 @@ pub struct MorphogenesisParams {
     pub min_motor_fraction: f64,
     /// V3 Governor: maximum fraction of any single cell type (prevent Modulatory explosion).
     pub max_single_type_fraction: f64,
+
+    /// V2: Frustration-driven stochastic exploration configuration.
+    #[serde(default)]
+    pub frustration: FrustrationConfig,
 }
 
 impl Default for MorphogenesisParams {
@@ -75,6 +79,7 @@ impl Default for MorphogenesisParams {
             min_sensory_fraction: 0.05,
             min_motor_fraction: 0.02,
             max_single_type_fraction: 0.80,
+            frustration: FrustrationConfig::default(),
         }
     }
 }
@@ -104,6 +109,7 @@ pub fn synaptogenesis(
     topology: &mut Topology,
     _params: &MorphogenesisParams,
     rng: &mut impl Rng,
+    max_connectivity: usize,
 ) -> usize {
     let mut created = 0;
 
@@ -156,6 +162,12 @@ pub fn synaptogenesis(
 
         let prob = (1.0 - distance / 2.0) * 0.1;
         if rng.random_range(0.0..1.0) < prob {
+            // V3 Governor: check connectivity cap
+            if !crate::governance::check_connectivity(topology, from.id, max_connectivity)
+                || !crate::governance::check_connectivity(topology, to.id, max_connectivity)
+            {
+                continue;
+            }
             let weight = rng.random_range(-0.5..0.5);
             topology.add_synapse(from.id, to.id, Synapse::new(weight));
             created += 1;
@@ -259,9 +271,12 @@ pub fn division(
 }
 
 /// Run differentiation — Morphons specialize based on their activity patterns.
+/// If a target morphology is provided, morphons inside a target region are
+/// biased toward that region's cell type.
 pub fn differentiation(
     morphons: &mut HashMap<MorphonId, Morphon>,
     _topology: &Topology,
+    target: Option<&crate::developmental::TargetMorphology>,
 ) -> usize {
     let mut count = 0;
 
@@ -281,15 +296,46 @@ pub fn differentiation(
 
         // Most stem cells should stay stem (become Associative by default).
         // Only differentiate under clear activity signatures.
-        let target = if mean_activity > 0.4 && variance < 0.1 {
+        let mut diff_target = if mean_activity > 0.4 && variance < 0.1 {
             CellType::Associative // high consistent → Associative (the workhorse type)
         } else if mean_activity > 0.3 && variance > 0.2 {
             CellType::Associative // high variable → also Associative
         } else {
-            continue; // stay stem — don't eagerly classify as Modulatory
+            // V2: Even if activity signature is weak, target morphology can
+            // override differentiation toward the region's desired cell type.
+            if let Some(tm) = target {
+                let nearest = tm.regions.iter()
+                    .filter(|r| morphon.position.distance(&r.center) <= r.radius)
+                    .min_by(|a, b| {
+                        morphon.position.distance(&a.center)
+                            .partial_cmp(&morphon.position.distance(&b.center))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                if let Some(region) = nearest {
+                    region.target_cell_type
+                } else {
+                    continue; // stay stem
+                }
+            } else {
+                continue; // stay stem — don't eagerly classify as Modulatory
+            }
         };
 
-        if morphon.differentiate(target) {
+        // V2: If inside a target region, override differentiation target
+        if let Some(tm) = target {
+            let nearest = tm.regions.iter()
+                .filter(|r| morphon.position.distance(&r.center) <= r.radius)
+                .min_by(|a, b| {
+                    morphon.position.distance(&a.center)
+                        .partial_cmp(&morphon.position.distance(&b.center))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            if let Some(region) = nearest {
+                diff_target = region.target_cell_type;
+            }
+        }
+
+        if morphon.differentiate(diff_target) {
             count += 1;
         }
     }
@@ -433,6 +479,14 @@ pub struct Cluster {
     /// between this cluster and its neighbors to prevent over-synchronization.
     /// See concept doc section 3.7B.
     pub inhibitory_morphons: Vec<MorphonId>,
+
+    /// V3: Epistemic state — how confident is the system in this cluster's knowledge?
+    #[serde(default)]
+    pub epistemic_state: crate::epistemic::EpistemicState,
+
+    /// V3: Epistemic scarring — history of epistemic failures.
+    #[serde(default)]
+    pub epistemic_history: crate::epistemic::EpistemicHistory,
 }
 
 /// Run fusion — highly correlated Morphon groups merge into clusters.
@@ -543,6 +597,10 @@ pub fn fusion(
                     members,
                     shared_threshold: avg_threshold,
                     inhibitory_morphons,
+                    epistemic_state: crate::epistemic::EpistemicState::Hypothesis {
+                        formation_step: 0, // caller doesn't have step_count; updated on next glacial eval
+                    },
+                    epistemic_history: Default::default(),
                 },
             );
             fused += 1;
@@ -744,6 +802,7 @@ pub fn migration(
     topology: &Topology,
     params: &MorphogenesisParams,
     homeostasis_level: f64,
+    field: Option<&crate::field::MorphonField>,
 ) -> usize {
     let mut migrated = 0;
 
@@ -761,7 +820,14 @@ pub fn migration(
         .collect();
 
     for morphon in morphons.values_mut() {
-        if morphon.desire < 0.3 {
+        // V2: Frustration-gated migration — frustrated morphons can migrate
+        // even without the desire>=0.3 gate, and use random direction when stuck.
+        let frustrated = params.frustration.enabled
+            && params.frustration.frustration_migration
+            && morphon.frustration.exploration_mode
+            && morphon.frustration.frustration_level > params.frustration.random_migration_threshold;
+
+        if morphon.desire < 0.3 && !frustrated {
             continue;
         }
         if morphon.fused_with.is_some() && morphon.autonomy < 0.5 {
@@ -773,7 +839,7 @@ pub fn migration(
         }
 
         let neighbors = topology.outgoing(morphon.id);
-        if neighbors.is_empty() {
+        if neighbors.is_empty() && !frustrated {
             continue;
         }
 
@@ -796,10 +862,44 @@ pub fn migration(
             }
         }
 
+        // V2: Frustrated morphon with no gradient — use random exploration direction
+        if count == 0 && frustrated {
+            let dims = morphon.position.coords.len();
+            for (i, t) in tangent.iter_mut().enumerate().take(dims) {
+                let hash = (morphon.id.wrapping_mul(morphon.age).wrapping_add(9973 + i as u64) % 10000) as f64;
+                *t = (hash / 5000.0 - 1.0) * params.migration_rate * morphon.frustration.frustration_level;
+            }
+            count = 1; // proceed to exp_map
+        }
+
         if count > 0 {
-            let scale = params.migration_rate * morphon.desire * system_migration_mod;
+            let scale = params.migration_rate * morphon.desire.max(0.1) * system_migration_mod;
             for t in &mut tangent {
                 *t = *t / count as f64 * scale;
+            }
+
+            // V2: Blend field gradient into migration direction.
+            // PE field gradient points toward HIGH PE — negate to move away.
+            if let Some(field) = field {
+                let field_weight = field.config.migration_field_weight;
+                if field_weight > 0.0 {
+                    if let Some((gx, gy)) = field.gradient_at(&morphon.position, crate::field::FieldType::PredictionError) {
+                        let neighbor_weight = 1.0 - field_weight;
+                        if tangent.len() >= 2 {
+                            tangent[0] = tangent[0] * neighbor_weight + (-gx) * field_weight * params.migration_rate;
+                            tangent[1] = tangent[1] * neighbor_weight + (-gy) * field_weight * params.migration_rate;
+                        }
+                    }
+                    // V2: Identity field gradient — attract toward regions that need morphons.
+                    // Positive direction (move TOWARD high identity strength).
+                    if let Some((ix, iy)) = field.gradient_at(&morphon.position, crate::field::FieldType::Identity) {
+                        let identity_weight = 0.1;
+                        if tangent.len() >= 2 {
+                            tangent[0] += ix * identity_weight * params.migration_rate;
+                            tangent[1] += iy * identity_weight * params.migration_rate;
+                        }
+                    }
+                }
             }
 
             // Strip inward radial component — only allow lateral or outward migration.
@@ -910,14 +1010,16 @@ pub fn step_slow(
     homeostasis_level: f64,
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
+    field: Option<&crate::field::MorphonField>,
+    max_connectivity: usize,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
-    report.synapses_created = synaptogenesis(morphons, topology, params, rng);
+    report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity);
     report.synapses_pruned = pruning(topology, learning_params);
 
     if lifecycle.migration {
-        report.migrations = migration(morphons, topology, params, homeostasis_level);
+        report.migrations = migration(morphons, topology, params, homeostasis_level, field);
     }
 
     report
@@ -934,6 +1036,7 @@ pub fn step_glacial(
     arousal_level: f64,
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
+    target: Option<&crate::developmental::TargetMorphology>,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
@@ -942,7 +1045,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.differentiation {
-        report.differentiations = differentiation(morphons, topology);
+        report.differentiations = differentiation(morphons, topology, target);
         report.transdifferentiations = transdifferentiation(morphons, topology, params);
         dedifferentiation(morphons, arousal_level);
     }
@@ -1002,7 +1105,7 @@ mod tests {
         // Run many times since it's probabilistic
         let mut total_created = 0;
         for _ in 0..100 {
-            total_created += synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+            total_created += synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
         }
         // With very close morphons and high activity, should eventually create connections
         assert!(total_created > 0, "synaptogenesis should create some connections over 100 attempts");
@@ -1032,7 +1135,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         for _ in 0..100 {
-            synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+            synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
         }
         // Motor as source should be blocked
         assert!(!topo.has_connection(1, 2), "Motor should not have outgoing connections to non-Motor");
@@ -1055,7 +1158,7 @@ mod tests {
         topo.add_morphon(2);
 
         let params = MorphogenesisParams::default();
-        let created = synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+        let created = synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
         assert_eq!(created, 0, "inactive morphons should not form new connections");
     }
 
@@ -1179,7 +1282,7 @@ mod tests {
         morphons.insert(1, m);
 
         let topo = Topology::new();
-        let count = differentiation(&mut morphons, &topo);
+        let count = differentiation(&mut morphons, &topo, None);
 
         assert_eq!(count, 1);
         assert_eq!(morphons[&1].cell_type, CellType::Associative);
@@ -1194,7 +1297,7 @@ mod tests {
         morphons.insert(1, m);
 
         let topo = Topology::new();
-        let count = differentiation(&mut morphons, &topo);
+        let count = differentiation(&mut morphons, &topo, None);
         assert_eq!(count, 0);
     }
 
@@ -1207,7 +1310,7 @@ mod tests {
         morphons.insert(1, m);
 
         let topo = Topology::new();
-        let count = differentiation(&mut morphons, &topo);
+        let count = differentiation(&mut morphons, &topo, None);
         assert_eq!(count, 0);
     }
 
@@ -1389,6 +1492,8 @@ mod tests {
             members: vec![1, 2, 3],
             shared_threshold: 0.3,
             inhibitory_morphons: vec![],
+            epistemic_state: Default::default(),
+            epistemic_history: Default::default(),
         });
 
         let mut topo = Topology::new();
@@ -1433,6 +1538,8 @@ mod tests {
             members: vec![1, 2, 3],
             shared_threshold: 0.3,
             inhibitory_morphons: vec![99],
+            epistemic_state: Default::default(),
+            epistemic_history: Default::default(),
         });
 
         let mut topo = Topology::new();
@@ -1469,7 +1576,7 @@ mod tests {
         topo.add_synapse(1, 2, Synapse::new(0.5));
 
         let params = MorphogenesisParams::default();
-        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+        let migrated = migration(&mut morphons, &topo, &params, 0.0, None);
 
         assert_eq!(migrated, 1);
         let new_pos = &morphons[&1].position;
@@ -1489,7 +1596,7 @@ mod tests {
 
         let topo = Topology::new();
         let params = MorphogenesisParams::default();
-        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+        let migrated = migration(&mut morphons, &topo, &params, 0.0, None);
         assert_eq!(migrated, 0);
     }
 
@@ -1504,7 +1611,7 @@ mod tests {
 
         let topo = Topology::new();
         let params = MorphogenesisParams::default();
-        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+        let migrated = migration(&mut morphons, &topo, &params, 0.0, None);
         assert_eq!(migrated, 0);
     }
 
@@ -1523,7 +1630,7 @@ mod tests {
         let lp = LearningParams::default();
         let lifecycle = LifecycleConfig::default();
 
-        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng);
+        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50);
         // Just verify it runs and returns a valid report
         // Report is valid (fields are populated)
         let _ = report.synapses_created;
@@ -1550,7 +1657,7 @@ mod tests {
         let lifecycle = LifecycleConfig { division: false, ..Default::default() };
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
-            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng,
+            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng, None,
         );
         assert_eq!(report.morphons_born, 0);
     }

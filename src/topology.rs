@@ -87,6 +87,20 @@ impl Topology {
             .collect()
     }
 
+    /// Get all incoming synapses for a Morphon (immutable).
+    pub fn incoming_synapses(&self, id: MorphonId) -> Vec<(MorphonId, &Synapse)> {
+        let Some(&idx) = self.id_to_node.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, petgraph::Direction::Incoming)
+            .map(|edge| {
+                let source_id = self.graph[edge.source()];
+                (source_id, edge.weight())
+            })
+            .collect()
+    }
+
     /// Get mutable access to all incoming synapses for a Morphon.
     pub fn incoming_synapses_mut(&mut self, id: MorphonId) -> Vec<(MorphonId, EdgeIndex)> {
         let Some(&idx) = self.id_to_node.get(&id) else {

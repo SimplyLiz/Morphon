@@ -1,5 +1,6 @@
 //! The Morphon — fundamental autonomous compute unit of MI.
 
+use crate::justification::SynapticJustification;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,10 @@ pub struct Synapse {
     /// Post-synaptic trace — decaying memory of recent post-synaptic spikes.
     /// Incremented on post-spike, decays exponentially with tau_trace.
     pub post_trace: f64,
+
+    /// V3: Provenance record — why this synapse was formed and what reinforced it.
+    #[serde(default)]
+    pub justification: Option<SynapticJustification>,
 }
 
 impl Synapse {
@@ -47,6 +52,15 @@ impl Synapse {
             usage_count: 0,
             pre_trace: 0.0,
             post_trace: 0.0,
+            justification: None,
+        }
+    }
+
+    /// Create a synapse with a justification record (V3).
+    pub fn new_justified(weight: f64, justification: SynapticJustification) -> Self {
+        Self {
+            justification: Some(justification),
+            ..Self::new(weight)
         }
     }
 
@@ -57,6 +71,8 @@ impl Synapse {
 }
 
 fn default_plasticity_rate() -> f64 { 1.0 }
+fn default_cluster_overhead() -> f64 { 0.0005 }
+fn default_reward_for_output() -> f64 { 0.05 }
 
 /// V3 Metabolic Budget — energy earned through utility, not flat regeneration.
 ///
@@ -76,6 +92,18 @@ pub struct MetabolicConfig {
     pub basal_regen: f64,
     /// Extra firing cost on top of the base cost when the morphon spikes.
     pub firing_cost: f64,
+
+    /// V3: Additional cost per step for morphons in a fused cluster.
+    #[serde(default = "default_cluster_overhead")]
+    pub cluster_overhead_per_tick: f64,
+
+    /// V3: Energy bonus for motor morphons when output is rewarded.
+    #[serde(default = "default_reward_for_output")]
+    pub reward_for_successful_output: f64,
+
+    /// V3: Energy bonus for successful epistemic verification (Phase 2).
+    #[serde(default)]
+    pub reward_for_verification: f64,
 }
 
 impl Default for MetabolicConfig {
@@ -86,6 +114,9 @@ impl Default for MetabolicConfig {
             utility_reward: 0.02,
             basal_regen: 0.005,    // generous trickle — silent morphons survive for anchor/sail
             firing_cost: 0.002,    // reduced 2× — firing should be cheap
+            cluster_overhead_per_tick: 0.0005,
+            reward_for_successful_output: 0.05,
+            reward_for_verification: 0.0, // Phase 2 placeholder
         }
     }
 }
@@ -309,11 +340,12 @@ impl Morphon {
         let desire_alpha = 0.01;
         self.desire = self.desire * (1.0 - desire_alpha) + self.prediction_error * desire_alpha;
 
-        // V2: Update frustration state — detect PE stagnation and scale noise
+        // V2: Update frustration state — detect PE stagnation and scale noise.
         if frustration_config.enabled {
             let pe_delta = (self.prediction_error - self.frustration.prev_pe).abs();
             self.frustration.prev_pe = self.prediction_error;
 
+            let prev_counter = self.frustration.stagnation_counter;
             if pe_delta < frustration_config.stagnation_threshold && self.desire > 0.1 {
                 self.frustration.stagnation_counter = self.frustration.stagnation_counter.saturating_add(1);
             } else {
@@ -321,12 +353,15 @@ impl Morphon {
                 self.frustration.stagnation_counter = self.frustration.stagnation_counter.saturating_sub(5);
             }
 
-            let ratio = self.frustration.stagnation_counter as f64 / frustration_config.saturation_steps as f64;
-            self.frustration.frustration_level = (ratio * 3.0).tanh();
-            self.frustration.noise_amplitude = 1.0 + self.frustration.frustration_level
-                * (frustration_config.max_noise_multiplier - 1.0);
-            self.frustration.exploration_mode =
-                self.frustration.frustration_level > frustration_config.exploration_threshold;
+            // Only recompute derived values when counter changed
+            if self.frustration.stagnation_counter != prev_counter {
+                let ratio = self.frustration.stagnation_counter as f64 / frustration_config.saturation_steps as f64;
+                self.frustration.frustration_level = (ratio * 3.0).tanh();
+                self.frustration.noise_amplitude = 1.0 + self.frustration.frustration_level
+                    * (frustration_config.max_noise_multiplier - 1.0);
+                self.frustration.exploration_mode =
+                    self.frustration.frustration_level > frustration_config.exploration_threshold;
+            }
         }
 
         // Homeostatic threshold regulation
@@ -423,5 +458,97 @@ impl Morphon {
             self.activation_fn = ActivationFn::Sigmoid;
             self.receptors = default_receptors(CellType::Stem);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_morphon() -> Morphon {
+        Morphon::new(1, HyperbolicPoint::origin(4))
+    }
+
+    fn default_frustration_config() -> FrustrationConfig {
+        FrustrationConfig::default()
+    }
+
+    #[test]
+    fn frustration_accumulates_on_stagnant_pe() {
+        let mut m = make_morphon();
+        m.desire = 0.5; // pre-set above the 0.1 gate
+        let metabolic = MetabolicConfig::default();
+        let fc = default_frustration_config();
+
+        // Feed constant input — PE delta will be small, frustration should build.
+        for _ in 0..300 {
+            m.input_accumulator = 0.5;
+            m.step(1.0, 0, &metabolic, &fc);
+        }
+
+        assert!(m.frustration.stagnation_counter > 0, "stagnation counter should grow");
+        assert!(m.frustration.frustration_level > 0.0, "frustration should be non-zero");
+        assert!(m.frustration.noise_amplitude > 1.0, "noise amplitude should exceed baseline");
+    }
+
+    #[test]
+    fn frustration_resets_on_pe_improvement() {
+        let mut m = make_morphon();
+        m.desire = 0.2;
+        let metabolic = MetabolicConfig::default();
+        let fc = default_frustration_config();
+
+        // Build up frustration
+        for _ in 0..200 {
+            m.input_accumulator = 0.5;
+            m.step(1.0, 0, &metabolic, &fc);
+        }
+        let frustrated_level = m.frustration.frustration_level;
+        assert!(frustrated_level > 0.0);
+
+        // Now inject varying input — PE changes, stagnation counter should decay
+        for i in 0..100 {
+            m.input_accumulator = (i as f64) * 0.1;
+            m.step(1.0, 0, &metabolic, &fc);
+        }
+
+        assert!(
+            m.frustration.frustration_level < frustrated_level,
+            "frustration should decrease after PE changes"
+        );
+    }
+
+    #[test]
+    fn frustration_noise_amplitude_scaling() {
+        let state = FrustrationState::default();
+        assert!((state.noise_amplitude - 1.0).abs() < f64::EPSILON,
+            "baseline noise amplitude should be 1.0");
+
+        let mut m = make_morphon();
+        // Manually set high frustration
+        m.frustration.frustration_level = 1.0;
+        m.frustration.noise_amplitude = 1.0 + 1.0 * (FrustrationConfig::default().max_noise_multiplier - 1.0);
+        assert!((m.frustration.noise_amplitude - 5.0).abs() < f64::EPSILON,
+            "max frustration should give max_noise_multiplier");
+    }
+
+    #[test]
+    fn motor_morphons_ignore_frustration_noise() {
+        let mut m = make_morphon();
+        m.differentiate(CellType::Motor);
+        m.desire = 0.2;
+        m.frustration.frustration_level = 1.0;
+        m.frustration.noise_amplitude = 5.0;
+        let metabolic = MetabolicConfig::default();
+        let fc = default_frustration_config();
+
+        // Motor morphons have noise_scale = 0.0 regardless of frustration
+        let potential_before = m.potential;
+        m.input_accumulator = 0.0;
+        m.step(1.0, 0, &metabolic, &fc);
+        // Motor has full leak (leak_rate=1.0), so potential = 0*(1-1) + 0 + 0 = 0
+        // No noise should be added
+        assert!((m.potential - 0.0).abs() < f64::EPSILON,
+            "motor morphon potential should not have noise");
     }
 }

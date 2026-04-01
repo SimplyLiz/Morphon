@@ -5,8 +5,9 @@
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use crate::developmental::{self, DevelopmentalConfig};
+use crate::developmental::{self, DevelopmentalConfig, TargetMorphology};
 use crate::diagnostics::Diagnostics;
+use crate::field::{FieldConfig, MorphonField};
 use crate::lineage::{self, LineageTree};
 use crate::homeostasis::{self, HomeostasisParams};
 use crate::learning::{self, LearningParams};
@@ -37,6 +38,16 @@ pub struct SystemConfig {
     pub episodic_memory_capacity: usize,
     /// Timestep size for simulation.
     pub dt: f64,
+    /// V2: Bioelektrisches Feld configuration.
+    #[serde(default)]
+    pub field: FieldConfig,
+    /// V2: Target Morphology — functional region targets with self-healing.
+    #[serde(default)]
+    pub target_morphology: Option<TargetMorphology>,
+
+    /// V3: Constitutional constraints — hard governance invariants.
+    #[serde(default)]
+    pub governance: crate::governance::ConstitutionalConstraints,
 }
 
 impl SystemConfig {
@@ -68,6 +79,9 @@ impl Default for SystemConfig {
             working_memory_capacity: 7,
             episodic_memory_capacity: 1000,
             dt: 1.0,
+            field: FieldConfig::default(),
+            target_morphology: None,
+            governance: crate::governance::ConstitutionalConstraints::default(),
         }
     }
 }
@@ -96,6 +110,8 @@ pub struct SystemStats {
     pub assoc_activity_min: f64,
     pub assoc_activity_max: f64,
     pub assoc_activity_mean: f64,
+    /// V2: Target morphology region health: (region_idx, current, target).
+    pub region_health: Vec<(usize, usize, usize)>,
 }
 
 /// The Morphogenic Intelligence System.
@@ -172,6 +188,9 @@ pub struct System {
     pub(crate) consolidation_gate: f64,
     /// Peak performance seen so far — used for deconsolidation trigger.
     pub(crate) peak_performance: f64,
+
+    /// V2: Bioelektrisches Feld — spatial field for indirect morphon communication.
+    pub field: Option<MorphonField>,
 }
 
 impl System {
@@ -271,7 +290,19 @@ impl System {
             recent_performance: 0.0,
             consolidation_gate: 10.0, // consolidate once above random baseline
             peak_performance: 0.0,
+            field: None, // initialized below
         };
+
+        // V2: Initialize bioelectric field if enabled
+        if system.config.field.enabled {
+            // Auto-add Identity layer if target morphology is configured
+            if system.config.target_morphology.is_some()
+                && !system.config.field.active_layers.contains(&crate::field::FieldType::Identity)
+            {
+                system.config.field.active_layers.push(crate::field::FieldType::Identity);
+            }
+            system.field = Some(MorphonField::new(system.config.field.clone()));
+        }
 
         // === Spontaneous developmental activity ===
         // Analogous to retinal waves and cortical spontaneous bursting in utero.
@@ -315,6 +346,7 @@ impl System {
             m.prev_potential = 0.0;
             m.prediction_error = 0.0;
             m.desire = 0.0;
+            m.frustration = FrustrationState::default();
             m.fired = false;
             m.input_accumulator = 0.0;
             m.refractory_timer = 0.0;
@@ -422,19 +454,37 @@ impl System {
 
         // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
+        let frustration_config = &self.config.morphogenesis.frustration;
         let degree_map: HashMap<MorphonId, usize> = self.morphons.keys()
             .map(|&id| (id, self.topology.degree(id)))
             .collect();
         #[cfg(feature = "parallel")]
         self.morphons.par_iter_mut().for_each(|(id, m)| {
             let sc = degree_map.get(id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic);
+            m.step(dt, sc, metabolic, frustration_config);
         });
         #[cfg(not(feature = "parallel"))]
         self.morphons.values_mut().for_each(|m| {
             let sc = degree_map.get(&m.id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic);
+            m.step(dt, sc, metabolic, frustration_config);
         });
+
+        // V3: Cluster overhead — fused morphons pay extra maintenance cost.
+        let cluster_overhead = self.config.metabolic.cluster_overhead_per_tick;
+        if cluster_overhead > 0.0 {
+            for m in self.morphons.values_mut() {
+                if m.fused_with.is_some() {
+                    m.energy -= cluster_overhead;
+                }
+            }
+        }
+        // V3: Enforce constitutional energy floor.
+        let energy_floor = self.config.governance.energy_floor;
+        if energy_floor > 0.0 {
+            for m in self.morphons.values_mut() {
+                crate::governance::enforce_energy_floor(m, energy_floor);
+            }
+        }
 
         // 5. Adaptive threshold boost for k-WTA winners (Diehl & Cook).
         for &id in &self.kwta_winners {
@@ -710,6 +760,34 @@ impl System {
                     }
                 }
             }
+
+            // === V2: FRUSTRATION-DRIVEN WEIGHT PERTURBATION ===
+            // Morphons in exploration_mode get small random weight perturbations
+            // to escape local minima. Consolidated synapses are protected.
+            if self.config.morphogenesis.frustration.enabled {
+                let wmax = self.config.learning.weight_max;
+                let perturb_scale = self.config.morphogenesis.frustration.weight_perturbation_scale;
+
+                let frustrated_morphons: Vec<(MorphonId, f64)> = self.morphons.values()
+                    .filter(|m| m.frustration.exploration_mode)
+                    .map(|m| (m.id, m.frustration.frustration_level))
+                    .collect();
+
+                for (id, frust_level) in frustrated_morphons {
+                    let incoming = self.topology.incoming_synapses_mut(id);
+                    for (_pre_id, edge_idx) in incoming {
+                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                            if synapse.consolidated {
+                                continue;
+                            }
+                            let hash = (id.wrapping_mul(synapse.age).wrapping_add(31337) % 10000) as f64
+                                / 5000.0 - 1.0;
+                            let delta = hash * perturb_scale * frust_level * wmax;
+                            synapse.weight = (synapse.weight + delta).clamp(-wmax, wmax);
+                        }
+                    }
+                }
+            }
         }
 
         // === SLOW PATH ===
@@ -722,10 +800,23 @@ impl System {
                 self.modulation.homeostasis,
                 &self.config.lifecycle,
                 &mut rng,
+                self.field.as_ref(),
+                self.config.governance.max_connectivity_per_morphon,
             );
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
             report.migrations = slow_report.migrations;
+
+            // V2: Update bioelectric field — write morphon states, diffuse
+            if let Some(ref mut field) = self.field {
+                field.write_from_morphons(&self.morphons);
+                field.diffuse();
+                // Update diagnostics with field metrics
+                if let Some(pe_layer) = field.layers.get(&crate::field::FieldType::PredictionError) {
+                    self.diag.field_pe_max = pe_layer.max();
+                    self.diag.field_pe_mean = pe_layer.mean();
+                }
+            }
         }
 
         // === GLACIAL PATH (with checkpoint/rollback protection) ===
@@ -749,6 +840,7 @@ impl System {
                 self.modulation.arousal,
                 &self.config.lifecycle,
                 &mut rng,
+                self.config.target_morphology.as_ref(),
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
@@ -765,6 +857,61 @@ impl System {
             self.total_transdifferentiations += glacial_report.transdifferentiations;
             report.fusions = glacial_report.fusions;
             report.defusions = glacial_report.defusions;
+
+            // V2: Target Morphology — write Identity field + self-healing
+            if let Some(ref target) = self.config.target_morphology {
+                // Write Identity field layer (if field is enabled and has Identity layer)
+                if let Some(ref mut field) = self.field {
+                    // Pre-compute projections before borrowing layers mutably
+                    let projections: Vec<(usize, usize, i32, f64)> = target.regions.iter()
+                        .map(|region| {
+                            let (cx, cy) = field.project(&region.center);
+                            let grid_radius = (region.radius * field.config.resolution as f64 / 2.0).ceil() as i32;
+                            (cx, cy, grid_radius, region.identity_strength)
+                        })
+                        .collect();
+                    let res = field.config.resolution as i32;
+
+                    if let Some(identity_layer) = field.layers.get_mut(&crate::field::FieldType::Identity) {
+                        identity_layer.data.fill(0.0);
+                        for (cx, cy, grid_radius, strength) in &projections {
+                            for dy in -grid_radius..=*grid_radius {
+                                for dx in -grid_radius..=*grid_radius {
+                                    let gx = (*cx as i32 + dx).clamp(0, res - 1) as usize;
+                                    let gy = (*cy as i32 + dy).clamp(0, res - 1) as usize;
+                                    identity_layer.write(gx, gy, *strength);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Self-healing: recruit morphons to underpopulated regions
+                if target.self_healing {
+                    developmental::target_morphology_heal(
+                        target,
+                        &mut self.morphons,
+                        &mut self.topology,
+                        &mut self.next_morphon_id,
+                        self.config.morphogenesis.max_morphons,
+                    );
+                }
+            }
+
+            // V3: Update epistemic states for all clusters.
+            crate::epistemic::update_all_clusters(
+                &mut self.clusters,
+                &self.morphons,
+                &self.topology,
+                self.step_count,
+            );
+            // V3: Apply epistemic effects (plasticity adjustments, unconsolidation).
+            crate::epistemic::apply_epistemic_effects(
+                &self.clusters,
+                &mut self.morphons,
+                &mut self.topology,
+                self.step_count,
+            );
 
             // Rollback synapses if prediction error spiked after structural changes
             let surviving_ids: Vec<MorphonId> = all_ids
@@ -1229,6 +1376,14 @@ impl System {
             }
         }
 
+        // V3: Credit motor morphon energy for successful output.
+        if strength > 0.0 {
+            if let Some(m) = self.morphons.get_mut(&motor_id) {
+                m.energy = (m.energy + self.config.metabolic.reward_for_successful_output * strength)
+                    .min(1.0);
+            }
+        }
+
         // Weak global signal for paths deeper than 2 hops
         self.modulation.inject_reward(strength * 0.1);
     }
@@ -1601,6 +1756,9 @@ impl System {
             assoc_activity_min: self.diag.assoc_activity_min,
             assoc_activity_max: self.diag.assoc_activity_max,
             assoc_activity_mean: self.diag.assoc_activity_mean,
+            region_health: self.config.target_morphology.as_ref()
+                .map(|tm| tm.region_health(&self.morphons))
+                .unwrap_or_default(),
         }
     }
 

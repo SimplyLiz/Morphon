@@ -54,6 +54,10 @@ pub mod system;
 pub mod snapshot;
 pub mod lineage;
 pub mod diagnostics;
+pub mod field;
+pub mod justification;
+pub mod governance;
+pub mod epistemic;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "wasm")]
@@ -64,7 +68,11 @@ pub use system::{System, SystemConfig, SystemStats};
 pub use types::{
     CellType, DevelopmentalProgram, LifecycleConfig, ModulatorType, MorphonId,
 };
-pub use developmental::DevelopmentalConfig;
+pub use developmental::{DevelopmentalConfig, TargetMorphology, TargetRegion};
 pub use lineage::LineageTree;
 pub use diagnostics::Diagnostics;
+pub use field::{FieldConfig, FieldType, MorphonField};
 pub use neuromodulation::Neuromodulation;
+pub use governance::ConstitutionalConstraints;
+pub use epistemic::{EpistemicState, EpistemicHistory};
+pub use justification::{FormationCause, SynapticJustification};

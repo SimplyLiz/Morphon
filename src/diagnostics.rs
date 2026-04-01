@@ -74,6 +74,35 @@ pub struct Diagnostics {
     pub rollback_triggered: bool,
     /// Cumulative rollback events since system creation.
     pub total_rollbacks: u64,
+
+    // === V2: Frustration metrics ===
+    /// Average frustration level across all morphons.
+    pub avg_frustration: f64,
+    /// Number of morphons currently in exploration_mode.
+    pub exploration_mode_count: usize,
+    /// Maximum frustration level among all morphons.
+    pub max_frustration: f64,
+
+    // === V2: Field metrics ===
+    /// Peak value in the PredictionError field layer (0.0 if field disabled).
+    pub field_pe_max: f64,
+    /// Mean value in the PredictionError field layer (0.0 if field disabled).
+    pub field_pe_mean: f64,
+
+    // === V2: Target Morphology metrics ===
+    /// Per-region population vs target: (region_index, current_count, target_density).
+    pub region_health: Vec<(usize, usize, usize)>,
+
+    // === V3: Epistemic metrics ===
+    /// Number of clusters in each epistemic state.
+    pub epistemic_supported: usize,
+    pub epistemic_hypothesis: usize,
+    pub epistemic_outdated: usize,
+    pub epistemic_contested: usize,
+    /// Fraction of all synapses with justification records.
+    pub justified_fraction: f64,
+    /// Average skepticism across all clusters.
+    pub avg_skepticism: f64,
 }
 
 impl Diagnostics {
@@ -92,6 +121,7 @@ impl Diagnostics {
         let mut eligibility_nonzero = 0_usize;
         let mut active_tags = 0_usize;
         let mut consolidated_count = 0_usize;
+        let mut justified_count = 0_usize;
 
         for ei in topology.graph.edge_indices() {
             if let Some(syn) = topology.graph.edge_weight(ei) {
@@ -113,6 +143,9 @@ impl Diagnostics {
                 if syn.consolidated {
                     consolidated_count += 1;
                 }
+                if syn.justification.is_some() {
+                    justified_count += 1;
+                }
             }
         }
 
@@ -128,6 +161,9 @@ impl Diagnostics {
         let mut apoptosis_silent = 0_usize;
         let mut apoptosis_energy_low = 0_usize;
         let mut assoc_activities: Vec<f64> = Vec::new();
+        let mut frustration_sum = 0.0_f64;
+        let mut frustration_max = 0.0_f64;
+        let mut exploration_mode_count = 0_usize;
 
         for m in morphons.values() {
             let entry = firing_by_type.entry(m.cell_type).or_insert((0, 0));
@@ -152,6 +188,13 @@ impl Diagnostics {
             if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
                 assoc_activities.push(m.activity_history.mean());
             }
+
+            // V2: Frustration stats
+            frustration_sum += m.frustration.frustration_level;
+            frustration_max = frustration_max.max(m.frustration.frustration_level);
+            if m.frustration.exploration_mode {
+                exploration_mode_count += 1;
+            }
         }
 
         let assoc_activity_min = assoc_activities.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -171,6 +214,7 @@ impl Diagnostics {
             active_tags,
             consolidated_count,
             consolidated_fraction: consolidated_count as f64 / total_synapses.max(1) as f64,
+            justified_fraction: justified_count as f64 / total_synapses.max(1) as f64,
             avg_energy,
             firing_by_type,
             apoptosis_age_eligible,
@@ -179,6 +223,9 @@ impl Diagnostics {
             assoc_activity_min: if assoc_activity_min.is_finite() { assoc_activity_min } else { 0.0 },
             assoc_activity_max: if assoc_activity_max.is_finite() { assoc_activity_max } else { 0.0 },
             assoc_activity_mean,
+            avg_frustration: frustration_sum / morphons.len().max(1) as f64,
+            exploration_mode_count,
+            max_frustration: frustration_max,
             ..Default::default()
         }
     }
@@ -186,7 +233,7 @@ impl Diagnostics {
     /// Format a concise one-line summary for logging.
     pub fn summary(&self) -> String {
         format!(
-            "w={:.4}\u{00b1}{:.4} e={:.4}({}) tags={} con={}/{} E={:.2} spk={}",
+            "w={:.4}\u{00b1}{:.4} e={:.4}({}) tags={} con={}/{} E={:.2} spk={} frust={:.2}({})",
             self.weight_mean,
             self.weight_std,
             self.eligibility_mean_abs,
@@ -196,6 +243,8 @@ impl Diagnostics {
             self.total_synapses,
             self.avg_energy,
             self.spikes_delivered_this_step,
+            self.avg_frustration,
+            self.exploration_mode_count,
         )
     }
 
