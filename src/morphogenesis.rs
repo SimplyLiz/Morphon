@@ -827,6 +827,7 @@ pub fn apoptosis(
     morphons: &mut HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
     params: &MorphogenesisParams,
+    recent_births: usize,
 ) -> usize {
     // V3 Governor: energy floor — don't apoptose below minimum morphon count
     if morphons.len() <= params.min_morphons {
@@ -870,10 +871,12 @@ pub fn apoptosis(
         .map(|m| m.id)
         .collect();
 
-    // Rate limit: kill at most 5% of population per glacial step.
-    // Without this, mass apoptosis can bleed the system faster than
-    // division can replace, collapsing the network.
-    let max_deaths = (morphons.len() as f64 * 0.05).ceil() as usize;
+    // Adaptive rate limit: deaths track births, not a fixed percentage.
+    // Kill at most (recent_births + 2) per glacial step. This ensures:
+    // - If division is active (births > 0): apoptosis can match + slight surplus
+    // - If division is stalled (births = 0): at most 2 die per step (gentle bleed)
+    // - The population naturally converges to a size where births ≈ deaths
+    let max_deaths = recent_births + 2;
     let to_remove = if to_remove.len() > max_deaths {
         to_remove[..max_deaths].to_vec()
     } else {
@@ -944,7 +947,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.apoptosis {
-        report.morphons_died = apoptosis(morphons, topology, params);
+        report.morphons_died = apoptosis(morphons, topology, params, report.morphons_born);
     }
 
     report
@@ -1247,7 +1250,7 @@ mod tests {
         }
 
         let params = MorphogenesisParams::default();
-        let died = apoptosis(&mut morphons, &mut topo, &params);
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
 
         assert_eq!(died, 1);
         assert!(!morphons.contains_key(&1), "apoptosed morphon should be removed");
@@ -1266,7 +1269,7 @@ mod tests {
         topo.add_morphon(1);
 
         let params = MorphogenesisParams::default();
-        let died = apoptosis(&mut morphons, &mut topo, &params);
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
         assert_eq!(died, 0);
     }
 
@@ -1283,7 +1286,7 @@ mod tests {
         topo.add_morphon(1);
 
         let params = MorphogenesisParams::default();
-        let died = apoptosis(&mut morphons, &mut topo, &params);
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
         assert_eq!(died, 0, "fused morphons should be protected from apoptosis");
     }
 
@@ -1305,7 +1308,7 @@ mod tests {
         topo.add_synapse(1, 4, Synapse::new(0.2));
 
         let params = MorphogenesisParams::default();
-        let died = apoptosis(&mut morphons, &mut topo, &params);
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
         assert_eq!(died, 0, "well-connected morphons (degree >= 3) should survive");
     }
 
