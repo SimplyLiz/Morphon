@@ -19,16 +19,41 @@ use morphon_core::morphon::MetabolicConfig;
 use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
+use rand::Rng;
 use rand::seq::SliceRandom;
 use serde_json::json;
 use std::fs;
 
 const IMG_PIXELS: usize = 28 * 28; // 784
 const NUM_CLASSES: usize = 10;
+/// Simulation steps per image — Poisson spike trains need time for k-WTA
+/// to select winners. Diehl & Cook use 350ms; we use 50 steps as a start.
+const STEPS_PER_IMAGE: usize = 50;
 
-/// Zero-bias encoding: pixel intensity maps directly to [0, 3].
-fn encode_pixels(raw: &[u8]) -> Vec<f64> {
-    raw.iter().map(|&p| (p as f64 / 255.0) * 3.0).collect()
+/// Convert raw pixels to firing rate probabilities [0, 1].
+/// Each pixel's value becomes the probability of spiking on any given step.
+fn pixel_rates(raw: &[u8]) -> Vec<f64> {
+    raw.iter().map(|&p| p as f64 / 255.0).collect()
+}
+
+/// Generate a single Poisson spike-train frame from firing rates.
+/// Each input neuron fires (value=3.0) or is silent (value=0.0)
+/// with probability proportional to the pixel intensity.
+fn poisson_frame(rates: &[f64], rng: &mut impl Rng) -> Vec<f64> {
+    rates.iter().map(|&r| {
+        if rng.random_range(0.0..1.0) < r { 3.0 } else { 0.0 }
+    }).collect()
+}
+
+/// Present an image as Poisson spike trains over N steps.
+/// On each step, each pixel independently fires with probability = intensity.
+/// This gives k-WTA time to suppress losers and let winners emerge.
+fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut impl Rng) {
+    for _ in 0..steps {
+        let frame = poisson_frame(rates, rng);
+        system.feed_input(&frame);
+        system.step();
+    }
 }
 
 fn create_system() -> System {
@@ -81,8 +106,9 @@ fn create_system() -> System {
 }
 
 /// Classify using the analog readout (weighted sum of hidden potentials).
-fn classify(system: &mut System, pixels: &[f64], steps: usize) -> usize {
-    let outputs = system.process_steps(pixels, steps);
+fn classify(system: &mut System, rates: &[f64], rng: &mut impl Rng) -> usize {
+    present_image(system, rates, STEPS_PER_IMAGE, rng);
+    let outputs = system.read_output();
     if outputs.len() < NUM_CLASSES { return 0; }
     outputs.iter()
         .take(NUM_CLASSES)
@@ -94,11 +120,11 @@ fn classify(system: &mut System, pixels: &[f64], steps: usize) -> usize {
 
 /// Evaluate test accuracy and per-class breakdown.
 fn evaluate(system: &mut System, images: &[Vec<f64>], labels: &[usize],
-            n: usize, steps: usize) -> (f64, Vec<serde_json::Value>) {
+            n: usize, rng: &mut impl Rng) -> (f64, Vec<serde_json::Value>) {
     let mut cc = vec![0usize; 10];
     let mut ct = vec![0usize; 10];
     for i in 0..images.len().min(n) {
-        let p = classify(system, &images[i], steps);
+        let p = classify(system, &images[i], rng);
         ct[labels[i]] += 1;
         if p == labels[i] { cc[labels[i]] += 1; }
     }
@@ -142,12 +168,13 @@ fn main() {
         .test_set_length(1_000)
         .finalize();
 
+    // Store firing rate probabilities [0, 1] per pixel (Poisson encoding)
     let train_images: Vec<Vec<f64>> = (0..10_000)
-        .map(|i| encode_pixels(&mnist.trn_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
+        .map(|i| pixel_rates(&mnist.trn_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
         .collect();
     let train_labels: Vec<usize> = mnist.trn_lbl.iter().map(|&l| l as usize).collect();
     let test_images: Vec<Vec<f64>> = (0..1_000)
-        .map(|i| encode_pixels(&mnist.tst_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
+        .map(|i| pixel_rates(&mnist.tst_img[i * IMG_PIXELS..(i + 1) * IMG_PIXELS]))
         .collect();
     let test_labels: Vec<usize> = mnist.tst_lbl.iter().map(|&l| l as usize).collect();
 
@@ -160,32 +187,25 @@ fn main() {
     println!("Types: {:?}\n", s.differentiation_map);
 
     let mut rng = rand::rng();
-    let steps = 5;
 
     // =========================================================================
-    // PHASE 1: Unsupervised STDP + k-WTA (no labels, no readout)
-    // The hidden layer self-organizes into feature detectors via STDP.
-    // k-WTA ensures different neurons specialize on different patterns.
-    // No analog readout training — hidden representations must stabilize first.
+    // PHASE 1: Unsupervised STDP + k-WTA with Poisson spike trains.
+    // Each image is presented as a Poisson process over STEPS_PER_IMAGE steps.
+    // No labels, no readout. Hidden neurons self-organize via STDP + k-WTA.
     // =========================================================================
-    println!("--- PHASE 1: Unsupervised feature learning (STDP + k-WTA) ---\n");
+    println!("--- PHASE 1: Unsupervised feature learning (Poisson + STDP + k-WTA, {} steps/image) ---\n",
+        STEPS_PER_IMAGE);
 
     for epoch in 0..phase1_epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
         indices.shuffle(&mut rng);
 
         for (bi, &idx) in indices.iter().take(phase1_samples).enumerate() {
-            // Present image — STDP + k-WTA runs in the step() pipeline.
-            // No labels, no readout training, no reward injection.
-            // Just let the hidden layer see digits and self-organize.
-            system.process_steps(&train_images[idx], steps);
+            // Present image as Poisson spike trains — k-WTA selects winners
+            present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
 
-            // Inject novelty to drive plasticity (CMA-ES finding: novelty is primary driver)
+            // Inject novelty to drive plasticity
             system.inject_novelty(0.3);
-
-            // One more step to let STDP propagate
-            system.feed_input(&train_images[idx]);
-            system.step();
 
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();
@@ -225,16 +245,13 @@ fn main() {
         let mut total = 0;
 
         for (bi, &idx) in indices.iter().take(phase2_samples).enumerate() {
-            let pred = classify(&mut system, &train_images[idx], steps);
+            let pred = classify(&mut system, &train_images[idx], &mut rng);
             let label = train_labels[idx];
             if pred == label { correct += 1; }
             total += 1;
 
-            // Train readout with low learning rate — prevents early mode collapse.
-            // With lr=0.1, the first class to get an advantage locks in within
-            // ~100 samples. With lr=0.005, convergence is slow enough for all
-            // 10 classes to compete for representation.
-            system.train_readout(label, 0.005);
+            // Softmax cross-entropy readout training
+            system.train_readout(label, 0.01);
 
             if (bi + 1) % 500 == 0 {
                 println!("  Phase2 Ep{} [{:>4}/{}] acc={:.1}%",
@@ -245,13 +262,13 @@ fn main() {
 
         // Test
         println!("\n  Test after Phase2 Epoch {}:", epoch + 1);
-        let (test_acc, _) = evaluate(&mut system, &test_images, &test_labels, test_n, steps);
+        let (test_acc, _) = evaluate(&mut system, &test_images, &test_labels, test_n, &mut rng);
         println!("  => test={:.1}%\n", test_acc);
     }
 
     // Final evaluation with full per-class breakdown
     println!("=== Final Per-Class Test Accuracy ===");
-    let (test_acc, per_class) = evaluate(&mut system, &test_images, &test_labels, test_n, steps);
+    let (test_acc, per_class) = evaluate(&mut system, &test_images, &test_labels, test_n, &mut rng);
 
     println!("\n=== Final ===");
     let s = system.inspect();
