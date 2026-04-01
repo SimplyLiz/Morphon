@@ -113,6 +113,7 @@ impl System {
             consolidation_gate: 30.0,
             recent_performance: 0.0,
             peak_performance: 0.0,
+            field: None, // field is ephemeral, not persisted in snapshots
         }
     }
 

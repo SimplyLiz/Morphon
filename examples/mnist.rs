@@ -81,17 +81,17 @@ fn create_system() -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 5,   // STDP every 5 steps — gives Poisson patterns time to emerge
-            slow_period: 100,   // structural changes infrequent
-            glacial_period: 500,
-            homeostasis_period: 30, // normalization every 30 steps (once per image)
-            memory_period: 50,
+            medium_period: 1,   // STDP every step — Poisson needs frequent updates
+            slow_period: 1000,  // structural changes very infrequent
+            glacial_period: 5000,
+            homeostasis_period: 30, // normalization once per image
+            memory_period: 100,
         },
         learning: LearningParams {
             tau_eligibility: 5.0,   // slightly longer for Poisson integration
             tau_trace: 8.0,         // wider STDP window for spike train patterns
-            a_plus: 1.0,            // moderate STDP
-            a_minus: -0.6,          // asymmetric: weaker LTD prevents inhibitory collapse
+            a_plus: 1.0,            // moderate STDP — weight-dependent scaling in learning.rs
+            a_minus: -0.8,          // strong LTD for competitive learning (Diehl & Cook)
             tau_tag: 200.0,
             tag_threshold: 0.5,
             capture_threshold: 10.0, // disable consolidation during unsupervised phase
@@ -111,7 +111,7 @@ fn create_system() -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            kwta_fraction: 0.03, // ~5-10 winners for class-selective feature detectors
+            kwta_fraction: 0.01, // ~3-5 winners — forces class-selective specialization
             ..Default::default()
         },
         lifecycle: LifecycleConfig {
@@ -125,6 +125,7 @@ fn create_system() -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
+        ..Default::default()
     };
     System::new(config)
 }
@@ -178,8 +179,8 @@ fn main() {
     let profile = parse_profile();
     let (phase1_epochs, phase1_samples, phase2_epochs, phase2_samples, test_n) = match profile {
         "extended" => (3, 5000, 3, 5000, 1000),
-        "standard" => (2, 2000, 2, 2000, 500),
-        _          => (1, 500,  1, 500,  200),
+        "standard" => (2, 3000, 2, 3000, 500),
+        _          => (1, 1000, 1, 1000, 200),
     };
 
     println!("=== MORPHON MNIST Benchmark — Two-Phase Learning [{}] ===\n", profile);

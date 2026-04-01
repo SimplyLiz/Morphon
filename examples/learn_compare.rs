@@ -87,6 +87,7 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 50,
+        ..Default::default()
     }
 }
 
@@ -195,6 +196,7 @@ fn run_option_c(rng: &mut impl Rng) -> Vec<f64> {
         dt: 1.0,
         working_memory_capacity: 3,
         episodic_memory_capacity: 10,
+        ..Default::default()
     };
     let mut system = System::new(config);
     let s = system.inspect();
@@ -255,6 +257,7 @@ fn main() {
         lifecycle: LifecycleConfig { division: false, fusion: false, apoptosis: false, differentiation: false, migration: false },
         metabolic: MetabolicConfig::default(),
         dt: 1.0, working_memory_capacity: 3, episodic_memory_capacity: 10,
+        ..Default::default()
     });
     // Train
     for _ in 0..2000 {

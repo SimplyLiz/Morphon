@@ -239,6 +239,253 @@ pub fn develop(
     (morphons, topology, next_id)
 }
 
+// === V2: Target Morphology ===
+
+/// A target region in the information space.
+/// Defines what the system should look like in a spatial area.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetRegion {
+    /// Human-readable name for this region.
+    pub name: String,
+    /// Center of the region in hyperbolic space.
+    pub center: HyperbolicPoint,
+    /// Radius in hyperbolic distance units.
+    pub radius: f64,
+    /// The cell type that morphons in this region should differentiate toward.
+    pub target_cell_type: CellType,
+    /// Target number of morphons in the region.
+    pub target_density: usize,
+    /// Target average degree (in+out connections) per morphon in the region.
+    pub target_connectivity: f64,
+    /// How strongly the Identity field broadcasts this region's presence.
+    pub identity_strength: f64,
+}
+
+/// The complete target morphology: describes the desired spatial organization.
+/// When active, the system actively maintains these targets — if morphons
+/// die or migrate away, new ones are recruited via division pressure or seeding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetMorphology {
+    /// All target regions.
+    pub regions: Vec<TargetRegion>,
+    /// Whether self-healing is enabled (recruit morphons to underpopulated regions).
+    pub self_healing: bool,
+    /// Minimum population deficit ratio to trigger recruitment.
+    /// 0.5 = region is at half its target density or less.
+    pub healing_threshold: f64,
+}
+
+impl Default for TargetMorphology {
+    fn default() -> Self {
+        Self {
+            regions: Vec::new(),
+            self_healing: true,
+            healing_threshold: 0.5,
+        }
+    }
+}
+
+impl TargetMorphology {
+    /// Cortical template: sensory periphery, associative core, motor output region.
+    pub fn cortical(dimensions: usize) -> Self {
+        // Build direction vectors for region centers
+        let mut sensory_dir = vec![0.0; dimensions];
+        sensory_dir[0] = 0.6; // positive x direction
+        let mut motor_dir = vec![0.0; dimensions];
+        motor_dir[0] = -0.6; // negative x direction
+
+        let origin = HyperbolicPoint::origin(dimensions);
+
+        Self {
+            regions: vec![
+                TargetRegion {
+                    name: "sensory_cortex".into(),
+                    center: origin.exp_map(&sensory_dir),
+                    radius: 0.5,
+                    target_cell_type: CellType::Sensory,
+                    target_density: 20,
+                    target_connectivity: 5.0,
+                    identity_strength: 1.0,
+                },
+                TargetRegion {
+                    name: "associative_core".into(),
+                    center: origin.clone(),
+                    radius: 0.6,
+                    target_cell_type: CellType::Associative,
+                    target_density: 50,
+                    target_connectivity: 8.0,
+                    identity_strength: 0.5,
+                },
+                TargetRegion {
+                    name: "motor_output".into(),
+                    center: origin.exp_map(&motor_dir),
+                    radius: 0.5,
+                    target_cell_type: CellType::Motor,
+                    target_density: 20,
+                    target_connectivity: 5.0,
+                    identity_strength: 1.0,
+                },
+            ],
+            self_healing: true,
+            healing_threshold: 0.5,
+        }
+    }
+
+    /// Cerebellar template: large motor region, compact sensory input.
+    pub fn cerebellar(dimensions: usize) -> Self {
+        let mut sensory_dir = vec![0.0; dimensions];
+        sensory_dir[0] = 0.6;
+        let mut motor_dir = vec![0.0; dimensions];
+        motor_dir[0] = -0.4;
+        let origin = HyperbolicPoint::origin(dimensions);
+
+        Self {
+            regions: vec![
+                TargetRegion {
+                    name: "sensory_input".into(),
+                    center: origin.exp_map(&sensory_dir),
+                    radius: 0.3,
+                    target_cell_type: CellType::Sensory,
+                    target_density: 15,
+                    target_connectivity: 4.0,
+                    identity_strength: 0.8,
+                },
+                TargetRegion {
+                    name: "associative_bridge".into(),
+                    center: origin.clone(),
+                    radius: 0.4,
+                    target_cell_type: CellType::Associative,
+                    target_density: 30,
+                    target_connectivity: 6.0,
+                    identity_strength: 0.3,
+                },
+                TargetRegion {
+                    name: "motor_cortex".into(),
+                    center: origin.exp_map(&motor_dir),
+                    radius: 0.6,
+                    target_cell_type: CellType::Motor,
+                    target_density: 45,
+                    target_connectivity: 8.0,
+                    identity_strength: 1.0,
+                },
+            ],
+            self_healing: true,
+            healing_threshold: 0.5,
+        }
+    }
+
+    /// Hippocampal template: sequential processing chain.
+    pub fn hippocampal(dimensions: usize) -> Self {
+        let mut sensory_dir = vec![0.0; dimensions];
+        sensory_dir[0] = 0.6;
+        let mut assoc_dir = vec![0.0; dimensions];
+        if dimensions > 1 { assoc_dir[1] = 0.3; }
+        let mut motor_dir = vec![0.0; dimensions];
+        motor_dir[0] = -0.6;
+        let origin = HyperbolicPoint::origin(dimensions);
+
+        Self {
+            regions: vec![
+                TargetRegion {
+                    name: "input_gate".into(),
+                    center: origin.exp_map(&sensory_dir),
+                    radius: 0.4,
+                    target_cell_type: CellType::Sensory,
+                    target_density: 30,
+                    target_connectivity: 4.0,
+                    identity_strength: 0.8,
+                },
+                TargetRegion {
+                    name: "processing_chain".into(),
+                    center: origin.exp_map(&assoc_dir),
+                    radius: 0.5,
+                    target_cell_type: CellType::Associative,
+                    target_density: 40,
+                    target_connectivity: 6.0,
+                    identity_strength: 0.5,
+                },
+                TargetRegion {
+                    name: "output_gate".into(),
+                    center: origin.exp_map(&motor_dir),
+                    radius: 0.3,
+                    target_cell_type: CellType::Motor,
+                    target_density: 10,
+                    target_connectivity: 5.0,
+                    identity_strength: 0.8,
+                },
+            ],
+            self_healing: true,
+            healing_threshold: 0.5,
+        }
+    }
+
+    /// Count morphons in each region and return health status.
+    /// Returns Vec of (region_index, current_count, target_density).
+    pub fn region_health(&self, morphons: &HashMap<MorphonId, Morphon>) -> Vec<(usize, usize, usize)> {
+        self.regions.iter().enumerate().map(|(i, region)| {
+            let count = morphons.values()
+                .filter(|m| m.position.distance(&region.center) <= region.radius)
+                .count();
+            (i, count, region.target_density)
+        }).collect()
+    }
+}
+
+/// Self-healing: compare actual vs target state per region.
+/// Boost division pressure for underpopulated regions, seed new morphons
+/// if a region is completely empty.
+/// Returns the number of healing actions taken.
+pub fn target_morphology_heal(
+    target: &TargetMorphology,
+    morphons: &mut HashMap<MorphonId, Morphon>,
+    topology: &mut crate::topology::Topology,
+    next_id: &mut MorphonId,
+    max_morphons: usize,
+) -> usize {
+    let mut actions = 0;
+
+    for region in &target.regions {
+        let in_region: Vec<MorphonId> = morphons.values()
+            .filter(|m| m.position.distance(&region.center) <= region.radius)
+            .map(|m| m.id)
+            .collect();
+
+        let current = in_region.len();
+        let deficit_ratio = current as f64 / region.target_density.max(1) as f64;
+
+        if deficit_ratio < target.healing_threshold {
+            // Boost division pressure of existing morphons in the region
+            for &id in &in_region {
+                if let Some(m) = morphons.get_mut(&id) {
+                    m.division_pressure += 0.1;
+                    actions += 1;
+                }
+            }
+
+            // If region is empty, seed a new morphon near the center
+            if current == 0 && morphons.len() < max_morphons {
+                let new_id = *next_id;
+                *next_id += 1;
+                // Small random offset from center
+                let tangent: Vec<f64> = (0..region.center.coords.len())
+                    .map(|i| {
+                        let hash = (new_id.wrapping_mul(7919).wrapping_add(i as u64) % 1000) as f64;
+                        (hash / 500.0 - 1.0) * 0.05
+                    })
+                    .collect();
+                let pos = region.center.exp_map(&tangent);
+                let mut m = Morphon::new(new_id, pos);
+                m.differentiate(region.target_cell_type);
+                topology.add_morphon(new_id);
+                morphons.insert(new_id, m);
+                actions += 1;
+            }
+        }
+    }
+
+    actions
+}
+
 /// Assign cell types based on position (morphogen gradient simulation).
 /// If target_input_size / target_output_size are set, those exact counts are used.
 fn differentiate_by_position(
@@ -290,5 +537,93 @@ fn differentiate_by_position(
             m.differentiate(target);
             m.differentiation_level = 0.6;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::topology::Topology;
+
+    #[test]
+    fn cortical_template_has_three_regions() {
+        let tm = TargetMorphology::cortical(4);
+        assert_eq!(tm.regions.len(), 3);
+        assert_eq!(tm.regions[0].target_cell_type, CellType::Sensory);
+        assert_eq!(tm.regions[1].target_cell_type, CellType::Associative);
+        assert_eq!(tm.regions[2].target_cell_type, CellType::Motor);
+    }
+
+    #[test]
+    fn cerebellar_template_motor_dominant() {
+        let tm = TargetMorphology::cerebellar(4);
+        assert_eq!(tm.regions.len(), 3);
+        let motor_region = tm.regions.iter().find(|r| r.target_cell_type == CellType::Motor).unwrap();
+        let sensory_region = tm.regions.iter().find(|r| r.target_cell_type == CellType::Sensory).unwrap();
+        assert!(motor_region.target_density > sensory_region.target_density);
+    }
+
+    #[test]
+    fn self_healing_seeds_empty_region() {
+        let tm = TargetMorphology::cortical(4);
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let mut next_id = 1;
+
+        // No morphons exist — all regions are empty
+        let actions = target_morphology_heal(&tm, &mut morphons, &mut topo, &mut next_id, 100);
+
+        // Should have seeded one morphon per empty region
+        assert!(actions > 0, "should take healing actions");
+        assert!(!morphons.is_empty(), "should have seeded morphons");
+        // Verify the seeded morphons have correct cell types
+        for m in morphons.values() {
+            let in_any_region = tm.regions.iter().any(|r| r.target_cell_type == m.cell_type);
+            assert!(in_any_region, "seeded morphon should match a region's target type");
+        }
+    }
+
+    #[test]
+    fn self_healing_boosts_division_in_underpopulated_region() {
+        let tm = TargetMorphology::cortical(4);
+        let sensory_center = tm.regions[0].center.clone();
+
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let mut next_id = 100;
+
+        // Place one morphon inside the sensory region (target density = 20)
+        let mut m = Morphon::new(1, sensory_center.clone());
+        m.differentiate(CellType::Sensory);
+        let dp_before = m.division_pressure;
+        morphons.insert(1, m);
+        topo.add_morphon(1);
+
+        target_morphology_heal(&tm, &mut morphons, &mut topo, &mut next_id, 100);
+
+        // The existing morphon should have boosted division pressure
+        assert!(morphons[&1].division_pressure > dp_before,
+            "division pressure should be boosted in underpopulated region");
+    }
+
+    #[test]
+    fn region_health_reports_correctly() {
+        let tm = TargetMorphology::cortical(4);
+        let sensory_center = tm.regions[0].center.clone();
+
+        let mut morphons = HashMap::new();
+        // Place 3 morphons near the sensory region center
+        for i in 0..3 {
+            let tangent: Vec<f64> = (0..4).map(|d| if d == 0 { 0.01 * i as f64 } else { 0.0 }).collect();
+            let pos = sensory_center.exp_map(&tangent);
+            morphons.insert(i as u64, Morphon::new(i as u64, pos));
+        }
+
+        let health = tm.region_health(&morphons);
+        assert_eq!(health.len(), 3);
+        // First region (sensory) should have 3 morphons, target 20
+        assert_eq!(health[0].0, 0);
+        assert_eq!(health[0].1, 3);
+        assert_eq!(health[0].2, 20);
     }
 }

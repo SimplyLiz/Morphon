@@ -94,6 +94,7 @@ fn create_system() -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 200,
+        ..Default::default()
     };
     System::new(config)
 }

@@ -10,7 +10,7 @@
 morphon-core/
 ├── src/
 │   ├── lib.rs              # Crate root, public re-exports
-│   ├── types.rs            # Core types: CellType, ModulatorType, HyperbolicPoint, RingBuffer
+│   ├── types.rs            # Core types: CellType, ModulatorType, HyperbolicPoint, RingBuffer, FrustrationState
 │   ├── morphon.rs          # Morphon (compute unit) and Synapse structs
 │   ├── topology.rs         # petgraph-backed dynamic connection graph
 │   ├── neuromodulation.rs  # 4-channel broadcast (Reward/Novelty/Arousal/Homeostasis)
@@ -23,6 +23,7 @@ morphon-core/
 │   ├── developmental.rs    # Bootstrapping programs with I/O pathway guarantees
 │   ├── lineage.rs          # Lineage tree export for visualization
 │   ├── diagnostics.rs      # Learning pipeline observability (weights, eligibility, firing, captures)
+│   ├── field.rs            # V2: Bioelektrisches Feld — 2D spatial field for indirect communication
 │   ├── snapshot.rs         # Serde serialization (save/load JSON)
 │   ├── system.rs           # Top-level System orchestrating everything
 │   ├── python.rs           # PyO3 bindings (behind `python` feature flag)
@@ -67,23 +68,27 @@ Step N
 │  ├─ update_eligibility()      → fast eligibility traces + slow synaptic tags
 │  ├─ apply_weight_update()     → three-factor rule + tag-and-capture
 │  ├─ DFA climbing-fiber rule   → Δw = pre_trace × feedback_signal × lr - L2 decay
-│  └─ weight normalization      → per-neuron L1 norm on Associative incoming weights (Diehl & Cook 2015)
+│  ├─ weight normalization      → per-neuron L1 norm on Associative incoming weights (Diehl & Cook 2015)
+│  └─ [V2] frustration weight perturbation → small random Δw on frustrated morphons (skip consolidated)
 │
 ├─ SLOW (every 100 steps)
 │  ├─ synaptogenesis()          → grow new connections between correlated pairs
 │  ├─ pruning()                 → remove weak/unused synapses
 │  ├─ migration()               → move Morphons in hyperbolic space (with damping)
-│  └─ curvature_learning()      → adjust local curvature based on desire
+│  │   └─ [V2] field gradient blending → PE field (repel) + Identity field (attract)
+│  ├─ curvature_learning()      → adjust local curvature based on desire
+│  └─ [V2] field.write + diffuse → broadcast morphon states, run 2D heat equation
 │
 ├─ GLACIAL (every 1000 steps) — wrapped in checkpoint/rollback
 │  ├─ create_checkpoint()       → snapshot local state
 │  ├─ division()                → mitosis for overloaded Morphons
-│  ├─ differentiation()         → stem cells specialize
+│  ├─ differentiation()         → stem cells specialize ([V2] biased by target region)
 │  ├─ transdifferentiation()    → direct A→B cell type conversion (chronic mismatch)
 │  ├─ dedifferentiation()       → stressed cells return to flexibility
 │  ├─ fusion()                  → correlated groups merge into clusters
 │  ├─ defusion()                → stressed clusters break apart
 │  ├─ apoptosis()               → remove useless Morphons
+│  ├─ [V2] target morphology    → write Identity field + self-healing (division boost / seeding)
 │  └─ should_rollback()         → revert if PE spiked
 │
 ├─ HOMEOSTASIS (every 50 steps)

@@ -116,6 +116,7 @@ fn evaluate(x: &DVector<f64>) -> f64 {
         lifecycle: LifecycleConfig::default(),
         metabolic: MetabolicConfig::default(),
         dt: 1.0, working_memory_capacity: 7, episodic_memory_capacity: 200,
+        ..Default::default()
     };
 
     let mut system = System::new(config);

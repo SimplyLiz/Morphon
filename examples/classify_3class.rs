@@ -62,6 +62,7 @@ fn main() {
         dt: 1.0,
         working_memory_capacity: 3,
         episodic_memory_capacity: 10,
+        ..Default::default()
     };
 
     let mut system = System::new(config);

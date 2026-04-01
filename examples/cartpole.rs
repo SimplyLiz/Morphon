@@ -184,6 +184,7 @@ fn create_system() -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 200,
+        ..Default::default()
     };
     let mut sys = System::new(config);
     sys.enable_analog_readout(); // Purkinje-style analog output bypass
