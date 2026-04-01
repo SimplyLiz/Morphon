@@ -16,7 +16,11 @@
 | `crossbeam-channel` | 0.5 | Lock-free channels (reserved for future use) |
 | `serde` + `serde_json` | 1 | Serialization for system snapshots |
 | `pyo3` | 0.25 | Python bindings (optional, behind `python` feature) |
+| `wasm-bindgen` | 0.2 | WASM bindings (optional, behind `wasm` feature) |
+| `getrandom` | 0.3 | RNG for WASM (optional, behind `wasm` feature) |
 | `criterion` | 0.5 (dev) | Benchmarking framework |
+| `cmaes` | 0.2 (dev) | CMA-ES optimizer for hyperparameter search |
+| `mnist` | 0.6 (dev) | MNIST dataset loader for classification example |
 
 ## Build
 
@@ -29,7 +33,7 @@ cargo build --features python # with Python bindings
 ## Test
 
 ```bash
-cargo test                   # 23 tests (4 unit + 18 integration + 1 doctest)
+cargo test                   # 113 tests (94 unit + 18 integration + 1 doctest)
 cargo test -- --nocapture    # with output
 ```
 
@@ -50,6 +54,9 @@ cargo run --example cartpole --release -- --extended # full benchmark
 cargo run --example anomaly --release
 cargo run --example mnist --release                  # requires ./data/ with MNIST files
 cargo run --example classify_tiny --release          # minimal sanity check
+cargo run --example classify_3class --release        # 3-class classification
+cargo run --example learn_compare --release          # compare learning configurations
+cargo run --example cma_optimize --release           # CMA-ES hyperparameter search
 ```
 
 ## Python Bindings
