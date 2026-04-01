@@ -221,8 +221,11 @@ pub fn division(
         .collect();
 
     let mut born = 0;
+    // Cap births per glacial tick to prevent synapse explosion from connection duplication.
+    // 654 births at once → 19K new synapses. Cap at 10% of current population.
+    let max_births_per_tick = (morphons.len() / 10).max(5);
     for parent_id in candidates {
-        if morphons.len() >= params.max_morphons {
+        if morphons.len() >= params.max_morphons || born >= max_births_per_tick {
             break;
         }
 
