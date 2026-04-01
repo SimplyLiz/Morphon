@@ -22,16 +22,16 @@ const N_TRAIN: usize = 500;
 const N_TEST: usize = 100;
 
 /// Generate a sample for the given class with noise.
-/// CMA-ES optimal: input_bias=1.99, input_scale=3.86
+/// ZERO BIAS — class signal must dominate. Bias masks class discrimination
+/// because sigmoid(bias) ≈ sigmoid(bias+signal) when bias is large.
 fn make_sample(class: usize, rng: &mut impl Rng) -> Vec<f64> {
-    let bias = 1.99;
-    let scale = 3.86;
-    let mut input = vec![bias; N_INPUTS];
-    let mut noise = || rng.random_range(-0.1..0.1);
+    let scale = 3.0;
+    let mut input = vec![0.0; N_INPUTS]; // zero baseline — inactive channels stay at 0
+    let mut noise = || rng.random_range(-0.2..0.2);
     match class {
-        0 => { input[0] = bias + scale + noise(); input[1] = bias + scale * 0.9 + noise(); input[2] = bias + scale * 0.7 + noise(); }
-        1 => { input[3] = bias + scale + noise(); input[4] = bias + scale * 0.9 + noise(); input[5] = bias + scale * 0.7 + noise(); }
-        2 => { input[6] = bias + scale * 1.2 + noise(); input[7] = bias + scale + noise(); }
+        0 => { input[0] = scale + noise(); input[1] = scale * 0.9 + noise(); input[2] = scale * 0.7 + noise(); }
+        1 => { input[3] = scale + noise(); input[4] = scale * 0.9 + noise(); input[5] = scale * 0.7 + noise(); }
+        2 => { input[6] = scale * 1.2 + noise(); input[7] = scale + noise(); }
         _ => {}
     }
     input
@@ -49,23 +49,23 @@ fn create_system() -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 1,
-            slow_period: 10,
-            glacial_period: 100,
-            homeostasis_period: 5,
-            memory_period: 50,
+            medium_period: 99999, // DISABLE three-factor — only teach_supervised updates weights
+            slow_period: 99999,
+            glacial_period: 99999,
+            homeostasis_period: 10,
+            memory_period: 99999,
         },
-        // CMA-ES optimized parameters (48% accuracy, 200 gen search)
+        // Moderate params — CMA-ES aggressive params cause saturation with zero-bias
         learning: LearningParams {
-            tau_eligibility: 1.2,
-            tau_trace: 3.07,
-            a_plus: 4.99,
-            a_minus: -4.94,
+            tau_eligibility: 10.0,
+            tau_trace: 10.0,
+            a_plus: 1.0,
+            a_minus: -1.0,
             tau_tag: 200.0,
-            tag_threshold: 0.8,
+            tag_threshold: 0.3,
             capture_threshold: 0.2,
-            capture_rate: 1.0,
-            weight_max: 2.07,
+            capture_rate: 0.2,
+            weight_max: 3.0,
             weight_min: 0.01,
             alpha_reward: 0.5,
             alpha_novelty: 3.0,
@@ -167,13 +167,11 @@ fn main() {
             let input = make_sample(label, &mut rng);
             let pred = classify(&mut system, &input);
 
-            // CMA-ES optimal: strong teaching (1.92), minimal contrastive (0.1/0.0),
-            // novelty-driven learning, no arousal
-            system.teach_hidden(label, 1.92);
-            system.reward_contrastive(label, 0.1, 0.0);
+            // Direct supervised learning (delta rule) — proven to work in learn_compare
+            system.teach_supervised(label, 0.01);
+            // Also try three-factor teaching for comparison
+            system.teach_hidden(label, 0.5);
             system.inject_novelty(0.3);
-
-            // Let teaching + reward propagate through the weight update path
             system.step();
 
             if pred == label { correct += 1; }

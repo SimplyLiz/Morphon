@@ -21,9 +21,11 @@ use std::fs;
 const IMG_PIXELS: usize = 28 * 28; // 784
 const NUM_CLASSES: usize = 10;
 
-/// Normalize pixels to [0, 1] and add bias for network activity.
+/// Zero-bias encoding: pixel intensity maps directly to [0, 3].
+/// Dark pixels (background) stay at 0 — only active pixels carry signal.
+/// This preserves digit-specific spatial patterns without bias masking.
 fn encode_pixels(raw: &[u8]) -> Vec<f64> {
-    raw.iter().map(|&p| 0.3 + (p as f64 / 255.0) * 2.0).collect()
+    raw.iter().map(|&p| (p as f64 / 255.0) * 3.0).collect()
 }
 
 fn create_system() -> System {

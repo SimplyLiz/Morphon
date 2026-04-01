@@ -44,14 +44,25 @@ impl CartPole {
         self.theta_dot = rng.random_range(-0.05..0.05);
     }
 
-    fn observe(&self) -> [f64; 4] {
+    /// Sparse encoding: split each observation into positive/negative channels.
+    /// Zero bias — inactive channels stay at 0, preserving class discrimination.
+    fn observe(&self) -> [f64; 8] {
         let amp = 5.0;
-        let bias = 2.0;
+        let raw = [
+            self.x / X_THRESHOLD,
+            self.x_dot.clamp(-3.0, 3.0) / 3.0,
+            self.theta / THETA_THRESHOLD,
+            self.theta_dot.clamp(-3.0, 3.0) / 3.0,
+        ];
         [
-            bias + self.x / X_THRESHOLD * amp,
-            bias + self.x_dot.clamp(-3.0, 3.0) / 3.0 * amp,
-            bias + self.theta / THETA_THRESHOLD * amp,
-            bias + self.theta_dot.clamp(-3.0, 3.0) / 3.0 * amp,
+            raw[0].max(0.0) * amp,
+            (-raw[0]).max(0.0) * amp,
+            raw[1].max(0.0) * amp,
+            (-raw[1]).max(0.0) * amp,
+            raw[2].max(0.0) * amp,
+            (-raw[2]).max(0.0) * amp,
+            raw[3].max(0.0) * amp,
+            (-raw[3]).max(0.0) * amp,
         ]
     }
 
@@ -74,8 +85,9 @@ impl CartPole {
 /// Linear TD-error critic — external to the MI system.
 /// Biologically: dopamine neurons in VTA/SNc computing δ from striatal input.
 /// V(s) = w · features(s) + b; δ = R + γV(s') - V(s)
+/// Critic operates on raw CartPole state (4D), not the sparse encoding (8D).
 struct Critic {
-    weights: [f64; 8],
+    weights: [f64; 8],  // 4 raw + 4 squared
     bias: f64,
     lr: f64,
 }
@@ -85,21 +97,21 @@ impl Critic {
         Self { weights: [0.0; 8], bias: 0.0, lr: 0.005 }
     }
 
-    fn features(obs: &[f64; 4]) -> [f64; 8] {
-        [obs[0], obs[1], obs[2], obs[3],
-         obs[0]*obs[0], obs[1]*obs[1], obs[2]*obs[2], obs[3]*obs[3]]
+    fn features(env: &CartPole) -> [f64; 8] {
+        let s = [env.x / X_THRESHOLD, env.x_dot / 3.0, env.theta / THETA_THRESHOLD, env.theta_dot / 3.0];
+        [s[0], s[1], s[2], s[3], s[0]*s[0], s[1]*s[1], s[2]*s[2], s[3]*s[3]]
     }
 
-    fn predict(&self, obs: &[f64; 4]) -> f64 {
-        let f = Self::features(obs);
+    fn predict(&self, env: &CartPole) -> f64 {
+        let f = Self::features(env);
         f.iter().zip(self.weights.iter()).map(|(fi, wi)| fi * wi).sum::<f64>() + self.bias
     }
 
-    fn update(&mut self, obs: &[f64; 4], reward: f64, next_obs: &[f64; 4], done: bool) -> f64 {
-        let v = self.predict(obs);
-        let v_next = if done { 0.0 } else { self.predict(next_obs) };
+    fn update(&mut self, env: &CartPole, reward: f64, next_env: &CartPole, done: bool) -> f64 {
+        let v = self.predict(env);
+        let v_next = if done { 0.0 } else { self.predict(next_env) };
         let td_error = reward + GAMMA * v_next - v;
-        let f = Self::features(obs);
+        let f = Self::features(env);
         for i in 0..8 {
             self.weights[i] = (self.weights[i] + self.lr * td_error * f[i]).clamp(-10.0, 10.0);
         }
@@ -115,7 +127,7 @@ fn create_system() -> System {
             dimensions: 4,
             initial_connectivity: 0.25,
             proliferation_rounds: 2,
-            target_input_size: Some(4),
+            target_input_size: Some(8),  // 4 obs × 2 channels (pos/neg sparse encoding)
             target_output_size: Some(2),
             ..DevelopmentalConfig::cerebellar()
         },
@@ -181,6 +193,8 @@ fn run_episode(
 
     for _ in 0..max_steps {
         let obs = env.observe();
+        // Save pre-action state for critic
+        let pre_state = CartPole { x: env.x, x_dot: env.x_dot, theta: env.theta, theta_dot: env.theta_dot };
         let outputs = system.process_steps(&obs, INTERNAL_STEPS);
         let action = select_action(&outputs, epsilon, rng);
         let alive = env.step(action);
@@ -190,8 +204,7 @@ fn run_episode(
             1.0 + 0.5 * (1.0 - (env.theta / THETA_THRESHOLD).abs())
         } else { 0.0 };
 
-        let next_obs = env.observe();
-        let td_error = critic.update(&obs, reward, &next_obs, !alive);
+        let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
         if td_error > 0.0 {

@@ -12,6 +12,65 @@
 #
 set -euo pipefail
 
+# --- Helper functions (must be defined before use) ---
+
+write_bench_entry() {
+    local name="$1"
+    local file="$2"
+
+    python3 -c "
+import json, sys
+with open('$file') as f:
+    d = json.load(f)
+entry = {
+    'mean': d['mean']['point_estimate'],
+    'median': d['median']['point_estimate'],
+    'std_dev': d['std_dev']['point_estimate']
+}
+sys.stdout.write('  \"$name\": ' + json.dumps(entry))
+"
+}
+
+extract_criterion_results() {
+    local criterion_dir="target/criterion"
+    local output="${RESULTS_DIR}/criterion_latest.json"
+
+    if [ ! -d "$criterion_dir" ]; then
+        echo "  No Criterion cache found at $criterion_dir"
+        return
+    fi
+
+    echo "{" > "$output"
+    local first=true
+
+    for bench_dir in "$criterion_dir"/*/; do
+        local bench_name=$(basename "$bench_dir")
+        [ "$bench_name" = "report" ] && continue
+
+        local estimates="$bench_dir/new/estimates.json"
+        if [ -f "$estimates" ]; then
+            $first || echo "," >> "$output"
+            first=false
+            write_bench_entry "$bench_name" "$estimates" >> "$output"
+        else
+            for param_dir in "$bench_dir"/*/; do
+                local param=$(basename "$param_dir")
+                [ "$param" = "report" ] && continue
+                local param_estimates="$param_dir/new/estimates.json"
+                if [ -f "$param_estimates" ]; then
+                    $first || echo "," >> "$output"
+                    first=false
+                    write_bench_entry "${bench_name}/${param}" "$param_estimates" >> "$output"
+                fi
+            done
+        fi
+    done
+
+    echo "" >> "$output"
+    echo "}" >> "$output"
+    echo "  Criterion results saved to $output"
+}
+
 # --- Parse arguments ---
 PROFILE="quick"
 SKIP_MNIST=false
@@ -61,7 +120,7 @@ FAILURES=0
 if ! $SKIP_CRITERION; then
     echo ">> [1/4] Running Criterion micro-benchmarks..."
     echo ""
-    if cargo bench 2>&1 | tee /tmp/morphon_bench_output.txt; then
+    if cargo bench 2>&1; then
         echo ""
         echo ">> Extracting Criterion results..."
         extract_criterion_results
@@ -129,66 +188,3 @@ fi
 echo "  Results:  ${RESULTS_DIR}/"
 echo "  Report:   ${RESULTS_DIR}/REPORT.md"
 echo "========================================"
-
-# --- Helper: Extract Criterion results to JSON ---
-extract_criterion_results() {
-    local criterion_dir="target/criterion"
-    local output="${RESULTS_DIR}/criterion_latest.json"
-
-    if [ ! -d "$criterion_dir" ]; then
-        echo "  No Criterion cache found at $criterion_dir"
-        return
-    fi
-
-    # Build JSON object from estimates.json files
-    echo "{" > "$output"
-    local first=true
-
-    for bench_dir in "$criterion_dir"/*/; do
-        local bench_name=$(basename "$bench_dir")
-        [ "$bench_name" = "report" ] && continue
-
-        local estimates="$bench_dir/new/estimates.json"
-        if [ -f "$estimates" ]; then
-            # Flat benchmark
-            $first || echo "," >> "$output"
-            first=false
-            write_bench_entry "$bench_name" "$estimates" >> "$output"
-        else
-            # Grouped benchmark — scan subdirectories
-            for param_dir in "$bench_dir"/*/; do
-                local param=$(basename "$param_dir")
-                [ "$param" = "report" ] && continue
-                local param_estimates="$param_dir/new/estimates.json"
-                if [ -f "$param_estimates" ]; then
-                    $first || echo "," >> "$output"
-                    first=false
-                    write_bench_entry "${bench_name}/${param}" "$param_estimates" >> "$output"
-                fi
-            done
-        fi
-    done
-
-    echo "" >> "$output"
-    echo "}" >> "$output"
-    echo "  Criterion results saved to $output"
-}
-
-write_bench_entry() {
-    local name="$1"
-    local file="$2"
-
-    # Extract values using python3 (available on macOS)
-    python3 -c "
-import json, sys
-with open('$file') as f:
-    d = json.load(f)
-entry = {
-    'mean': d['mean']['point_estimate'],
-    'median': d['median']['point_estimate'],
-    'std_dev': d['std_dev']['point_estimate']
-}
-# Output without trailing newline
-sys.stdout.write('  \"$name\": ' + json.dumps(entry))
-"
-}

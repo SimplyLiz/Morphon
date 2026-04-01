@@ -1,0 +1,15 @@
+{
+  "eligibility_update_1000_synapses": {"mean": 2168.8311786121344, "median": 2196.403860050584, "std_dev": 239.94907949914307},
+  "process_input": {"mean": 4053748.724117649, "median": 3113993.9117647056, "std_dev": 2957520.010083686},
+  "pruning_500_edges": {"mean": 6829.894693499459, "median": 6552.703469722683, "std_dev": 875.5407332626462},
+  "resonance_propagate/200": {"mean": 1112882.7544291115, "median": 764767.3175230566, "std_dev": 957528.0486711131},
+  "resonance_propagate/50": {"mean": 469403.1127030438, "median": 291045.5817805383, "std_dev": 503578.2283770172},
+  "resonance_propagate/500": {"mean": 1288102.9338885313, "median": 922357.3537634409, "std_dev": 1136571.2817502369},
+  "synaptic_scaling_100_morphons": {"mean": 23906.26172297057, "median": 25391.000212856536, "std_dev": 5488.393091026726},
+  "synaptogenesis_100_morphons": {"mean": 129385.05749038562, "median": 137904.65167797887, "std_dev": 30807.111560147332},
+  "system_step_100_morphons": {"mean": 2660748.7011764706, "median": 1944091.911764706, "std_dev": 2362806.3725728937},
+  "system_step_scaling/200": {"mean": 375378.30414442666, "median": 359810.1995791246, "std_dev": 46630.928548953256},
+  "system_step_scaling/50": {"mean": 87720.6302707469, "median": 88069.78510660108, "std_dev": 5555.213013305257},
+  "system_step_scaling/500": {"mean": 2180610.784864426, "median": 2215639.4540816327, "std_dev": 116636.12676626994},
+  "weight_update_1000_synapses": {"mean": 33313.28960331708, "median": 33868.63888888889, "std_dev": 2282.8055856057576}
+}

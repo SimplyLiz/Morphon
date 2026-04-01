@@ -7,7 +7,7 @@
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
