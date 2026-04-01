@@ -847,13 +847,13 @@ pub fn apoptosis(
             m.age > params.apoptosis_min_age
                 && m.fused_with.is_none()
                 // Two paths to apoptosis:
-                // (a) Isolated: low degree + low energy/activity (original)
-                // (b) Silent: chronically inactive regardless of connectivity.
-                //     A well-connected neuron that never fires is wasting resources.
-                //     Without this, dense networks (MNIST 784→370) never apoptose.
-                && (topology.degree(m.id) < 3
-                    || m.activity_history.mean() < 0.001) // truly dead — not just k-WTA suppressed
-                && m.energy < params.apoptosis_energy_threshold
+                // (a) Isolated + starved: low degree AND low energy
+                // (b) Silent: activity < 0.1% regardless of energy or connectivity.
+                //     Being silent for 1000+ steps IS sufficient evidence of being
+                //     useless. Energy check not required — in sparse networks,
+                //     basal_regen > maintenance_cost so idle morphons never drain.
+                && ((topology.degree(m.id) < 3 && m.energy < params.apoptosis_energy_threshold)
+                    || m.activity_history.mean() < 0.001)
 
                 // V3 Governor: protect minimum cell type fractions
                 && match m.cell_type {
