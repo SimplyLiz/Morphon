@@ -108,6 +108,8 @@ impl System {
             feedback_weights: std::collections::HashMap::new(),
             readout_weights: Vec::new(),
             use_analog_readout: false,
+            consolidation_gate: 0.0,
+            recent_performance: 0.0,
         }
     }
 

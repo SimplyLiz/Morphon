@@ -188,7 +188,7 @@ impl Morphon {
             fused_with: None,
             autonomy: 1.0,
             migration_cooldown: 0.0,
-            homeostatic_setpoint: 0.1,
+            homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
         }
     }
@@ -229,7 +229,7 @@ impl Morphon {
             fused_with: None,
             autonomy: 1.0,
             migration_cooldown: 0.0,
-            homeostatic_setpoint: 0.1,
+            homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
         }
     }

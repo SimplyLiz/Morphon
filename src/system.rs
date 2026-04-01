@@ -150,6 +150,13 @@ pub struct System {
     pub(crate) total_born: usize,
     /// Cumulative morphon death count.
     pub(crate) total_died: usize,
+
+    /// Running average of recent episode performance (set by caller via report_performance).
+    /// Used to gate consolidation: no captures until performance exceeds a threshold.
+    pub(crate) recent_performance: f64,
+    /// Performance threshold for enabling consolidation.
+    /// Below this, the system stays fully plastic. Above, it starts consolidating.
+    pub(crate) consolidation_gate: f64,
 }
 
 impl System {
@@ -244,6 +251,8 @@ impl System {
             diag: Diagnostics::default(),
             total_born: 0,
             total_died: 0,
+            recent_performance: 0.0,
+            consolidation_gate: 30.0, // don't consolidate until avg > 30 (3× random)
         };
 
         // === Spontaneous developmental activity ===
@@ -302,17 +311,18 @@ impl System {
         // Reset motor synapse TRACES (not weights) — warm-up builds eligibility
         // that would bias the first few learning updates. Keep Xavier-scaled weights
         // from developmental program for symmetry-breaking.
-        for &motor_id in &system.output_ports {
-            let incoming = system.topology.incoming_synapses_mut(motor_id);
-            for (_, edge_idx) in incoming {
-                if let Some(syn) = system.topology.synapse_mut(edge_idx) {
-                    syn.eligibility = 0.0;
-                    syn.pre_trace = 0.0;
-                    syn.post_trace = 0.0;
-                    syn.tag = 0.0;
-                }
+        // Reset ALL synapse learning state — warm-up creates tags and captures
+        // that would prematurely consolidate before real training starts.
+        for ei in system.topology.graph.edge_indices() {
+            if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+                syn.eligibility = 0.0;
+                syn.pre_trace = 0.0;
+                syn.post_trace = 0.0;
+                syn.tag = 0.0;
+                syn.consolidated = false; // critical: undo warm-up captures
             }
         }
+        system.diag.total_captures = 0;
 
         system
     }
@@ -374,8 +384,9 @@ impl System {
                 .collect();
 
             if !assoc_potentials.is_empty() {
-                // k = 5% of population, minimum 3
-                let k = (assoc_potentials.len() as f64 * 0.05).ceil() as usize;
+                // k = 15% of population — enough diversity for the readout
+                // while maintaining competitive specialization via threshold boost.
+                let k = (assoc_potentials.len() as f64 * 0.15).ceil() as usize;
                 let k = k.max(3).min(assoc_potentials.len());
 
                 // Sort by potential descending — top-k winners survive
@@ -542,9 +553,11 @@ impl System {
                                     synapse.tag_strength = dfa_strength;
                                 }
                                 // Capture: strong DFA update + high reward → consolidate
+                                // Performance-gated capture: no consolidation until proven performance
                                 if synapse.tag > 0.1
                                     && self.modulation.reward > 0.3
                                     && !synapse.consolidated
+                                    && self.recent_performance > self.consolidation_gate
                                 {
                                     synapse.weight += 0.1 * synapse.tag_strength * self.modulation.reward;
                                     synapse.weight = synapse.weight.clamp(-wmax, wmax);
@@ -566,7 +579,11 @@ impl System {
                                     plasticity,
                                     &post_receptors,
                                 );
-                                if captured {
+                                // Performance gate: undo capture if below threshold
+                                if captured && self.recent_performance <= self.consolidation_gate {
+                                    synapse.consolidated = false; // revert — not ready to consolidate
+                                }
+                                if captured && self.recent_performance > self.consolidation_gate {
                                     captures_this_step += 1;
                                 }
                                 // L2 weight decay on all three-factor synapses
@@ -923,16 +940,21 @@ impl System {
             // Consolidates input→hidden connections that contribute to correct outputs.
             // Accumulate tag from repeated positive feedback (not one-shot).
             // Capture after sustained positive tagging across many presentations.
+            // Tag-and-capture: gated on performance.
+            // Below consolidation_gate: tags accumulate but never capture.
+            // Above gate: captures happen, locking in proven representations.
+            // "Sklerotien-Bildung" — only consolidate near a rich nutrient source.
             if fb > 0.01 {
+                let can_consolidate = self.recent_performance > self.consolidation_gate;
                 let incoming = self.topology.incoming_synapses_mut(assoc_id);
                 for (_, edge_idx) in incoming {
                     if let Some(syn) = self.topology.synapse_mut(edge_idx) {
                         if !syn.consolidated {
-                            syn.tag += fb.abs() * 0.02; // gradual accumulation
+                            syn.tag += fb.abs() * 0.02;
                             syn.tag = syn.tag.min(1.0);
                             syn.tag_strength = syn.tag;
                         }
-                        if syn.tag > 0.3 && !syn.consolidated {
+                        if syn.tag > 0.3 && !syn.consolidated && can_consolidate {
                             syn.consolidated = true;
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
@@ -951,6 +973,19 @@ impl System {
     /// Number of output ports (motor Morphons available for external output).
     pub fn output_size(&self) -> usize {
         self.output_ports.len()
+    }
+
+    /// Report recent performance (e.g., avg episode steps).
+    /// Used to gate consolidation: no captures until performance exceeds threshold.
+    /// Call this after each episode or batch.
+    pub fn report_performance(&mut self, performance: f64) {
+        // EMA with alpha=0.05
+        self.recent_performance += 0.05 * (performance - self.recent_performance);
+    }
+
+    /// Check if consolidation is enabled (performance above gate).
+    pub fn consolidation_enabled(&self) -> bool {
+        self.recent_performance > self.consolidation_gate
     }
 
     /// Inject a reward signal.

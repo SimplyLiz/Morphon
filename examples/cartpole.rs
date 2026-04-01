@@ -272,6 +272,7 @@ fn main() {
         recent.push(steps);
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
+        system.report_performance(steps as f64);
         let avg = recent.iter().sum::<usize>() as f64 / recent.len() as f64;
 
         if (ep + 1) % 100 == 0 || steps >= 200 {
