@@ -115,7 +115,12 @@ Morphon/
 │   ├── cartpole.rs         # CartPole RL control task
 │   ├── anomaly.rs          # Sensor anomaly detection
 │   ├── mnist.rs            # MNIST digit classification (full 784px)
-│   └── classify_tiny.rs    # Minimal classification sanity check
+│   ├── classify_tiny.rs    # Minimal classification sanity check
+│   ├── classify_3class.rs  # 3-class classification with contrastive reward
+│   ├── learn_compare.rs    # Compare learning configurations side-by-side
+│   └── cma_optimize.rs     # CMA-ES hyperparameter optimization
+├── src/bin/
+│   └── bench_report.rs     # Generate benchmark reports (HTML + Markdown)
 ├── benches/
 │   └── benchmarks.rs
 └── docs/

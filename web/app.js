@@ -63,8 +63,6 @@ const RASTER_COLORS = {
 let morphonOrder = [];       // sorted [{id, cellType}] for Y-axis
 let morphonYMap = new Map(); // id → Y row
 let rasterCanvas, rasterCtx;
-let offscreenCanvas, offscreenCtx;
-let rasterImageData = null;
 let rasterScrollX = 0;
 let rasterMorphonCount = 0;  // cached to detect topology changes
 let stepAccumulator = 0;     // for sub-1x speed
@@ -816,8 +814,9 @@ function setupControls() {
     connectedToSelected.clear();
     nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
     lastSpikeCount = 0; stepAccumulator = 0;
-    rasterScrollX = 0; rasterImageData = null; rasterMorphonCount = 0;
-    morphonOrder = []; morphonYMap.clear();
+    rasterScrollX = 0; rasterMorphonCount = 0;
+    rasterHistory.fill(null); groupRateHistory = [];
+    morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
     document.getElementById('events').innerHTML = '';
@@ -854,10 +853,7 @@ function setupControls() {
   });
   document.getElementById('btn-raster-clear')?.addEventListener('click', () => {
     rasterScrollX = 0;
-    if (rasterImageData) {
-      const d = rasterImageData.data;
-      for (let i = 0; i < d.length; i += 4) { d[i] = 6; d[i+1] = 8; d[i+2] = 15; d[i+3] = 255; }
-    }
+    rasterHistory.fill(null);
   });
 
   // Save/Load
@@ -1071,9 +1067,6 @@ function updateSpikes() {
 function initRaster() {
   rasterCanvas = document.getElementById('raster-canvas');
   rasterCtx = rasterCanvas.getContext('2d');
-  rasterCtx.imageSmoothingEnabled = false;
-  offscreenCanvas = document.createElement('canvas');
-  offscreenCtx = offscreenCanvas.getContext('2d');
   resizeRasterCanvas();
 }
 
@@ -1087,7 +1080,18 @@ function resizeRasterCanvas() {
   rasterCtx.imageSmoothingEnabled = false;
 }
 
+// Group info: { type, startRow, count } — built by rebuildMorphonOrder
+let rasterGroups = [];
+// Spike history ring buffer: each slot = Uint32Array of fired IDs for that step
+const rasterHistory = new Array(RASTER_WINDOW).fill(null);
+// Per-group firing rate history: groupRateHistory[groupIdx][step % RASTER_WINDOW] = fraction
+let groupRateHistory = [];
+
 function rebuildMorphonOrder() {
+  // Save old group types before rebuilding
+  const oldGroupTypes = rasterGroups.map(g => g.type);
+  const oldRateHistory = groupRateHistory;
+
   const groups = {};
   for (const type of CELL_TYPE_ORDER) groups[type] = [];
   for (const n of nodeData) {
@@ -1095,104 +1099,132 @@ function rebuildMorphonOrder() {
     groups[type].push(n.id);
   }
   morphonOrder = [];
+  rasterGroups = [];
   for (const type of CELL_TYPE_ORDER) {
+    if (groups[type].length === 0) continue;
     groups[type].sort((a, b) => a - b);
+    const start = morphonOrder.length;
     for (const id of groups[type]) morphonOrder.push({ id, cellType: type });
+    rasterGroups.push({ type, startRow: start, count: groups[type].length });
   }
   morphonYMap.clear();
   morphonOrder.forEach((m, i) => morphonYMap.set(m.id, i));
-
-  // Recreate ImageData at new size
-  const h = morphonOrder.length || 1;
   rasterMorphonCount = nodeData.length;
-  offscreenCanvas.width = RASTER_WINDOW;
-  offscreenCanvas.height = h;
-  rasterImageData = offscreenCtx.createImageData(RASTER_WINDOW, h);
-  // Fill with background
-  const d = rasterImageData.data;
-  for (let i = 0; i < d.length; i += 4) { d[i] = 6; d[i+1] = 8; d[i+2] = 15; d[i+3] = 255; }
-  rasterScrollX = 0;
 
-  // Update Y-axis labels
-  const labelsEl = document.getElementById('raster-labels');
-  if (labelsEl) {
-    labelsEl.innerHTML = '';
-    let prevType = '';
-    for (let i = 0; i < morphonOrder.length; i++) {
-      if (morphonOrder[i].cellType !== prevType) {
-        prevType = morphonOrder[i].cellType;
-        const span = document.createElement('span');
-        span.textContent = prevType.substring(0, 3).toUpperCase();
-        span.style.color = `rgb(${RASTER_COLORS[prevType].join(',')})`;
-        labelsEl.appendChild(span);
-      }
-    }
+  // Carry over rate history by matching group type names
+  const oldByType = {};
+  for (let i = 0; i < oldGroupTypes.length; i++) {
+    if (oldRateHistory[i]) oldByType[oldGroupTypes[i]] = oldRateHistory[i];
   }
+  groupRateHistory = rasterGroups.map(g => oldByType[g.type] || new Float32Array(RASTER_WINDOW));
 }
 
 function rasterStampStep(firedIds) {
-  if (!rasterImageData || morphonOrder.length === 0) return;
-  const w = RASTER_WINDOW;
-  const h = morphonOrder.length;
-  const data = rasterImageData.data;
-  const col = rasterScrollX % w;
+  if (morphonOrder.length === 0 || rasterGroups.length === 0) return;
+  const col = rasterScrollX % RASTER_WINDOW;
+  rasterHistory[col] = firedIds;
 
-  // Clear this column to background
-  for (let y = 0; y < h; y++) {
-    const idx = (y * w + col) * 4;
-    data[idx] = 6; data[idx+1] = 8; data[idx+2] = 15; data[idx+3] = 255;
-  }
-
-  // Stamp fired morphons
+  // Compute per-group firing rate for this step
+  const groupCounts = new Array(rasterGroups.length).fill(0);
   for (const id of firedIds) {
-    const y = morphonYMap.get(id);
-    if (y === undefined) continue;
-    const rgb = RASTER_COLORS[morphonOrder[y].cellType] || RASTER_COLORS.Stem;
-    const idx = (y * w + col) * 4;
-    data[idx] = rgb[0]; data[idx+1] = rgb[1]; data[idx+2] = rgb[2]; data[idx+3] = 255;
+    const row = morphonYMap.get(id);
+    if (row === undefined) continue;
+    for (let gi = 0; gi < rasterGroups.length; gi++) {
+      const g = rasterGroups[gi];
+      if (row >= g.startRow && row < g.startRow + g.count) {
+        groupCounts[gi]++;
+        break;
+      }
+    }
+  }
+  for (let gi = 0; gi < rasterGroups.length; gi++) {
+    groupRateHistory[gi][col] = groupCounts[gi] / rasterGroups[gi].count;
   }
 
   rasterScrollX++;
 }
 
 function drawRasterPlot() {
-  if (!rasterCtx || !rasterImageData || morphonOrder.length === 0) return;
-  const w = RASTER_WINDOW;
-  const h = morphonOrder.length;
-  const cw = rasterCanvas.width - 40; // leave room for labels
-  const ch = rasterCanvas.height;
-  if (cw <= 0 || ch <= 0) return;
+  if (!rasterCtx || rasterGroups.length === 0) return;
+  const canvasW = rasterCanvas.width;
+  const canvasH = rasterCanvas.height;
+  if (canvasW <= 0 || canvasH <= 0) return;
 
-  // Put ImageData onto offscreen canvas
-  offscreenCtx.putImageData(rasterImageData, 0, 0);
+  const labelW = 40;
+  const plotW = canvasW - labelW - 8;
+  const nGroups = rasterGroups.length;
+  const bandGap = 3;
+  const bandH = (canvasH - (nGroups - 1) * bandGap) / nGroups;
 
-  rasterCtx.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+  rasterCtx.clearRect(0, 0, canvasW, canvasH);
 
-  // Draw in two parts so newest data is at the right edge
-  const col = rasterScrollX % w;
-  const rightW = w - col;
-  const leftW = col;
+  const stepsVisible = Math.min(rasterScrollX, RASTER_WINDOW);
+  const colW = plotW / RASTER_WINDOW;
 
-  if (rightW > 0) {
-    rasterCtx.drawImage(offscreenCanvas, col, 0, rightW, h, 40, 0, (rightW / w) * cw, ch);
-  }
-  if (leftW > 0) {
-    rasterCtx.drawImage(offscreenCanvas, 0, 0, leftW, h, 40 + (rightW / w) * cw, 0, (leftW / w) * cw, ch);
-  }
+  for (let gi = 0; gi < nGroups; gi++) {
+    const g = rasterGroups[gi];
+    const rgb = RASTER_COLORS[g.type];
+    const bandY = gi * (bandH + bandGap);
+    const rates = groupRateHistory[gi];
 
-  // Draw cell-type group separators
-  rasterCtx.strokeStyle = 'rgba(80,140,255,0.15)';
-  rasterCtx.lineWidth = 0.5;
-  let prevType = '';
-  for (let i = 0; i < morphonOrder.length; i++) {
-    if (morphonOrder[i].cellType !== prevType && prevType !== '') {
-      const y = (i / morphonOrder.length) * ch;
-      rasterCtx.beginPath();
-      rasterCtx.moveTo(40, y);
-      rasterCtx.lineTo(40 + cw, y);
-      rasterCtx.stroke();
+    // Background band
+    rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.06)`;
+    rasterCtx.fillRect(labelW, bandY, plotW, bandH);
+
+    // Heatmap: each column colored by firing rate intensity
+    for (let s = 0; s < stepsVisible; s++) {
+      const bufIdx = ((rasterScrollX - stepsVisible + s) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+      const rate = rates[bufIdx];
+      if (rate <= 0) continue;
+
+      const x = labelW + (s / RASTER_WINDOW) * plotW;
+      // Intensity: sqrt for perceptual linearity, cap at 1
+      const intensity = Math.min(Math.sqrt(rate * 3), 1.0);
+      const alpha = 0.15 + intensity * 0.85;
+      rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha.toFixed(2)})`;
+      rasterCtx.fillRect(x, bandY, Math.max(colW, 1.2), bandH);
     }
-    prevType = morphonOrder[i].cellType;
+
+    // Firing rate line trace (overlaid)
+    rasterCtx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.9)`;
+    rasterCtx.lineWidth = 1.5;
+    rasterCtx.beginPath();
+    let started = false;
+    for (let s = 0; s < stepsVisible; s++) {
+      const bufIdx = ((rasterScrollX - stepsVisible + s) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+      const rate = rates[bufIdx];
+      const x = labelW + (s / RASTER_WINDOW) * plotW;
+      const y = bandY + bandH - rate * bandH * 0.9; // 0% at bottom, 100% at top
+      if (!started) { rasterCtx.moveTo(x, y); started = true; }
+      else rasterCtx.lineTo(x, y);
+    }
+    rasterCtx.stroke();
+
+    // Group label + count
+    rasterCtx.font = '9px "JetBrains Mono", monospace';
+    rasterCtx.textBaseline = 'middle';
+    rasterCtx.textAlign = 'right';
+    rasterCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    rasterCtx.fillText(`${g.type.substring(0, 3).toUpperCase()}`, labelW - 4, bandY + bandH / 2);
+    // Current rate % on the right
+    if (stepsVisible > 0) {
+      const lastBuf = ((rasterScrollX - 1) % RASTER_WINDOW + RASTER_WINDOW) % RASTER_WINDOW;
+      const lastRate = rates[lastBuf];
+      rasterCtx.textAlign = 'left';
+      rasterCtx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.7)`;
+      rasterCtx.fillText(`${(lastRate * 100).toFixed(0)}%`, labelW + plotW + 3, bandY + bandH / 2);
+    }
+  }
+
+  // Time cursor
+  if (stepsVisible > 0) {
+    const cursorX = labelW + (stepsVisible / RASTER_WINDOW) * plotW;
+    rasterCtx.strokeStyle = 'rgba(255,255,255,0.25)';
+    rasterCtx.lineWidth = 1;
+    rasterCtx.beginPath();
+    rasterCtx.moveTo(cursorX, 0);
+    rasterCtx.lineTo(cursorX, canvasH);
+    rasterCtx.stroke();
   }
 }
 

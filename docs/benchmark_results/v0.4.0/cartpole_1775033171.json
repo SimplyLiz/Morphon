@@ -1,27 +1,27 @@
 {
   "benchmark": "cartpole",
   "diagnostics": {
-    "active_tags": 146,
-    "total_captures": 5560,
-    "weight_mean": -0.01638832883798742,
-    "weight_std": 1.0935922794212691
+    "active_tags": 138,
+    "total_captures": 0,
+    "weight_mean": 0.14852107652025068,
+    "weight_std": 0.8363596635991711
   },
   "episodes": 1000,
   "max_steps_per_episode": 500,
   "profile": "standard",
   "results": {
-    "avg_last_100": 11.42,
-    "best_steps": 59,
+    "avg_last_100": 11.94,
+    "best_steps": 62,
     "solved": false
   },
   "system": {
-    "clusters": 30,
+    "clusters": 29,
     "firing_rate": 0.07333333333333333,
     "generation": 4,
     "morphons": 300,
-    "prediction_error": 0.264267160276917,
-    "synapses": 1207
+    "prediction_error": 0.21832848692474868,
+    "synapses": 1271
   },
-  "timestamp": 1775033315,
+  "timestamp": 1775033171,
   "version": "0.4.0"
 }

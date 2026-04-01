@@ -395,22 +395,7 @@
     image-rendering: pixelated;
     image-rendering: crisp-edges;
   }
-  #raster-labels {
-    position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: 36px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-around;
-    pointer-events: none;
-  }
-  #raster-labels span {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 8px;
-    color: var(--text-dim);
-    text-align: right;
-    padding-right: 4px;
-  }
+  /* labels drawn on canvas directly */
   .events-scroll {
     max-height: 70px;
     overflow-y: auto;
@@ -732,7 +717,6 @@
     </div>
   </div>
   <div id="raster-canvas-wrap">
-    <div id="raster-labels"></div>
     <canvas id="raster-canvas"></canvas>
   </div>
 </div>
