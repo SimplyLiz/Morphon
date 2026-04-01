@@ -112,6 +112,10 @@ pub struct SystemStats {
     pub assoc_activity_mean: f64,
     /// V2: Target morphology region health: (region_idx, current, target).
     pub region_health: Vec<(usize, usize, usize)>,
+    /// Bioelectric field: peak prediction-error value (0.0 if field disabled).
+    pub field_pe_max: f64,
+    /// Bioelectric field: mean prediction-error value (0.0 if field disabled).
+    pub field_pe_mean: f64,
 }
 
 /// The Morphogenic Intelligence System.
@@ -619,6 +623,13 @@ impl System {
                                 let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
 
+                                // V3: Record reinforcement event
+                                if delta_w.abs() > 0.001 {
+                                    if let Some(ref mut j) = synapse.justification {
+                                        j.record_reinforcement(self.step_count, delta_w, self.modulation.reward);
+                                    }
+                                }
+
                                 // Tag-and-Capture on DFA path: consolidate synapses where
                                 // the DFA update was strong AND reward is high.
                                 // This gives the hidden layer long-term memory.
@@ -648,6 +659,7 @@ impl System {
                                 // Standard three-factor for Motor, Sensory, Modulatory
                                 // Scaled by per-morphon plasticity_rate (Anchor/Sail)
                                 let plasticity = self.modulation.plasticity_rate() * plast_rate;
+                                let weight_before = synapse.weight;
                                 let captured = learning::apply_weight_update(
                                     synapse,
                                     &self.modulation,
@@ -661,6 +673,13 @@ impl System {
                                 }
                                 if captured && self.recent_performance > self.consolidation_gate {
                                     captures_this_step += 1;
+                                }
+                                // V3: Record reinforcement event
+                                let delta_w_3f = synapse.weight - weight_before;
+                                if delta_w_3f.abs() > 0.001 {
+                                    if let Some(ref mut j) = synapse.justification {
+                                        j.record_reinforcement(self.step_count, delta_w_3f, self.modulation.reward);
+                                    }
                                 }
                                 // L2 weight decay on all three-factor synapses
                                 synapse.weight -= 0.0005 * synapse.weight;
@@ -802,6 +821,7 @@ impl System {
                 &mut rng,
                 self.field.as_ref(),
                 self.config.governance.max_connectivity_per_morphon,
+                self.step_count,
             );
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
@@ -841,6 +861,7 @@ impl System {
                 &self.config.lifecycle,
                 &mut rng,
                 self.config.target_morphology.as_ref(),
+                self.step_count,
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
@@ -997,6 +1018,8 @@ impl System {
         let prev_total_captures = self.diag.total_captures;
         let prev_total_rollbacks = self.diag.total_rollbacks;
         let rollback_triggered = self.diag.rollback_triggered;
+        let prev_field_pe_max = self.diag.field_pe_max;
+        let prev_field_pe_mean = self.diag.field_pe_mean;
         self.diag = Diagnostics::snapshot(&self.morphons, &self.topology);
         self.diag.spikes_delivered_this_step = spikes_delivered;
         self.diag.spikes_pending = self.resonance.pending_count();
@@ -1004,6 +1027,8 @@ impl System {
         self.diag.total_captures = prev_total_captures + captures_this_step;
         self.diag.total_rollbacks = prev_total_rollbacks;
         self.diag.rollback_triggered = rollback_triggered;
+        self.diag.field_pe_max = prev_field_pe_max;
+        self.diag.field_pe_mean = prev_field_pe_mean;
 
         // Curvature learning: regions with high prediction error get stronger curvature
         // (more space for fine-grained distinctions). Runs on slow schedule.
@@ -1759,6 +1784,8 @@ impl System {
             region_health: self.config.target_morphology.as_ref()
                 .map(|tm| tm.region_health(&self.morphons))
                 .unwrap_or_default(),
+            field_pe_max: self.diag.field_pe_max,
+            field_pe_mean: self.diag.field_pe_mean,
         }
     }
 

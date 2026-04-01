@@ -155,7 +155,7 @@ pub fn develop(
 
                 let child = morphons[&parent_id].divide(child_id, rng);
                 topology.add_morphon(child_id);
-                topology.duplicate_connections(parent_id, child_id, rng);
+                topology.duplicate_connections(parent_id, child_id, rng, 0);
                 morphons.insert(child_id, child);
             }
         }
@@ -195,7 +195,11 @@ pub fn develop(
                 let t = associative[(i.wrapping_mul(7) + j) % associative.len()];
                 if !topology.has_connection(s, t) {
                     let w = rng.random_range(0.3..0.8); // positive, above threshold
-                    topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
+                    let j = crate::justification::SynapticJustification::new(
+                        crate::justification::FormationCause::External { source: "developmental".into() },
+                        0,
+                    );
+                    topology.add_synapse(s, t, Synapse::new_justified(w, j).with_delay(0.1));
                 }
             }
         }
@@ -209,7 +213,11 @@ pub fn develop(
             for &m in &motor {
                 if !topology.has_connection(a, m) {
                     let w = rng.random_range(-assoc_to_motor_scale..assoc_to_motor_scale);
-                    topology.add_synapse(a, m, Synapse::new(w).with_delay(0.1));
+                    let j = crate::justification::SynapticJustification::new(
+                        crate::justification::FormationCause::External { source: "developmental".into() },
+                        0,
+                    );
+                    topology.add_synapse(a, m, Synapse::new_justified(w, j).with_delay(0.1));
                 }
             }
         }
@@ -220,7 +228,11 @@ pub fn develop(
             let t = motor[i % motor.len().max(1)];
             if !topology.has_connection(s, t) {
                 let w = rng.random_range(-direct_scale..direct_scale);
-                topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
+                let j = crate::justification::SynapticJustification::new(
+                    crate::justification::FormationCause::External { source: "developmental".into() },
+                    0,
+                );
+                topology.add_synapse(s, t, Synapse::new_justified(w, j).with_delay(0.1));
             }
         }
     }
@@ -454,10 +466,13 @@ pub fn target_morphology_heal(
         let deficit_ratio = current as f64 / region.target_density.max(1) as f64;
 
         if deficit_ratio < target.healing_threshold {
-            // Boost division pressure of existing morphons in the region
+            // Boost division pressure scaled by deficit severity.
+            // Mild deficit (+0.1), severe deficit (+0.5) — enables faster recovery.
+            let deficit = 1.0 - deficit_ratio;
+            let boost = 0.1 + deficit * 0.4;
             for &id in &in_region {
                 if let Some(m) = morphons.get_mut(&id) {
-                    m.division_pressure += 0.1;
+                    m.division_pressure += boost;
                     actions += 1;
                 }
             }
@@ -476,6 +491,8 @@ pub fn target_morphology_heal(
                 let pos = region.center.exp_map(&tangent);
                 let mut m = Morphon::new(new_id, pos);
                 m.differentiate(region.target_cell_type);
+                m.differentiation_level = 0.8; // pre-committed, resists dedifferentiation
+                m.age = 200; // bypass the age >= 200 differentiation gate
                 topology.add_morphon(new_id);
                 morphons.insert(new_id, m);
                 actions += 1;

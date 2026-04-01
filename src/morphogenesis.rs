@@ -110,6 +110,7 @@ pub fn synaptogenesis(
     _params: &MorphogenesisParams,
     rng: &mut impl Rng,
     max_connectivity: usize,
+    step_count: u64,
 ) -> usize {
     let mut created = 0;
 
@@ -169,7 +170,11 @@ pub fn synaptogenesis(
                 continue;
             }
             let weight = rng.random_range(-0.5..0.5);
-            topology.add_synapse(from.id, to.id, Synapse::new(weight));
+            let justification = crate::justification::SynapticJustification::new(
+                crate::justification::FormationCause::ProximityFormation { distance },
+                step_count,
+            );
+            topology.add_synapse(from.id, to.id, Synapse::new_justified(weight, justification));
             created += 1;
         }
     }
@@ -211,6 +216,7 @@ pub fn division(
     next_id: &mut MorphonId,
     params: &MorphogenesisParams,
     rng: &mut impl Rng,
+    step_count: u64,
 ) -> usize {
     if morphons.len() >= params.max_morphons {
         return 0;
@@ -261,7 +267,7 @@ pub fn division(
 
         // Add child to topology and duplicate ~50% of parent's connections
         topology.add_morphon(child_id);
-        topology.duplicate_connections(parent_id, child_id, rng);
+        topology.duplicate_connections(parent_id, child_id, rng, step_count);
 
         morphons.insert(child_id, child);
         born += 1;
@@ -699,10 +705,14 @@ fn create_inhibitory_morphons_for_cluster(
         // of both clusters
         let inhibition_weight = -0.3;
         for &mid in new_members.iter().chain(other_members.iter()) {
+            let justification = crate::justification::SynapticJustification::new(
+                crate::justification::FormationCause::FusionBridge { cluster: new_cluster_id },
+                0, // step_count not available here; updated on next glacial eval
+            );
             topology.add_synapse(
                 inh_id,
                 mid,
-                crate::morphon::Synapse::new(inhibition_weight),
+                crate::morphon::Synapse::new_justified(inhibition_weight, justification),
             );
         }
 
@@ -827,7 +837,11 @@ pub fn migration(
             && morphon.frustration.exploration_mode
             && morphon.frustration.frustration_level > params.frustration.random_migration_threshold;
 
-        if morphon.desire < 0.3 && !frustrated {
+        // V2: Field-motivated migration — when a bioelectric field is present,
+        // morphons with even mild PE (>0.05) can migrate along field gradients.
+        let field_motivated = field.is_some() && morphon.desire > 0.05;
+
+        if morphon.desire < 0.3 && !frustrated && !field_motivated {
             continue;
         }
         if morphon.fused_with.is_some() && morphon.autonomy < 0.5 {
@@ -1012,10 +1026,11 @@ pub fn step_slow(
     rng: &mut impl Rng,
     field: Option<&crate::field::MorphonField>,
     max_connectivity: usize,
+    step_count: u64,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
-    report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity);
+    report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
     report.synapses_pruned = pruning(topology, learning_params);
 
     if lifecycle.migration {
@@ -1037,11 +1052,12 @@ pub fn step_glacial(
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
     target: Option<&crate::developmental::TargetMorphology>,
+    step_count: u64,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
     if lifecycle.division {
-        report.morphons_born = division(morphons, topology, next_morphon_id, params, rng);
+        report.morphons_born = division(morphons, topology, next_morphon_id, params, rng, step_count);
     }
 
     if lifecycle.differentiation {
@@ -1105,7 +1121,7 @@ mod tests {
         // Run many times since it's probabilistic
         let mut total_created = 0;
         for _ in 0..100 {
-            total_created += synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
+            total_created += synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50, 0);
         }
         // With very close morphons and high activity, should eventually create connections
         assert!(total_created > 0, "synaptogenesis should create some connections over 100 attempts");
@@ -1135,7 +1151,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         for _ in 0..100 {
-            synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
+            synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50, 0);
         }
         // Motor as source should be blocked
         assert!(!topo.has_connection(1, 2), "Motor should not have outgoing connections to non-Motor");
@@ -1158,7 +1174,7 @@ mod tests {
         topo.add_morphon(2);
 
         let params = MorphogenesisParams::default();
-        let created = synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50);
+        let created = synaptogenesis(&morphons, &mut topo, &params, &mut rng, 50, 0);
         assert_eq!(created, 0, "inactive morphons should not form new connections");
     }
 
@@ -1214,7 +1230,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
 
         assert_eq!(born, 1);
         assert_eq!(morphons.len(), 2);
@@ -1245,7 +1261,7 @@ mod tests {
 
         let params = MorphogenesisParams { max_morphons: 12, ..Default::default() };
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
 
         assert!(born <= 2, "should not exceed max_morphons");
         assert!(morphons.len() <= 12);
@@ -1265,7 +1281,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
 
         assert_eq!(born, 0);
     }
@@ -1630,7 +1646,7 @@ mod tests {
         let lp = LearningParams::default();
         let lifecycle = LifecycleConfig::default();
 
-        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50);
+        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50, 0);
         // Just verify it runs and returns a valid report
         // Report is valid (fields are populated)
         let _ = report.synapses_created;
@@ -1657,7 +1673,7 @@ mod tests {
         let lifecycle = LifecycleConfig { division: false, ..Default::default() };
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
-            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng, None,
+            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng, None, 0,
         );
         assert_eq!(report.morphons_born, 0);
     }

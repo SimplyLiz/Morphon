@@ -185,7 +185,10 @@ impl Topology {
         parent_id: MorphonId,
         child_id: MorphonId,
         rng: &mut impl rand::Rng,
+        step_count: u64,
     ) {
+        use crate::justification::{FormationCause, SynapticJustification};
+
         // Copy ~50% of incoming connections
         let incoming: Vec<_> = self.incoming(parent_id)
             .into_iter()
@@ -202,6 +205,10 @@ impl Topology {
                 child_syn.tag = 0.0;
                 child_syn.tag_strength = 0.0;
                 child_syn.consolidated = false;
+                child_syn.justification = Some(SynapticJustification::new(
+                    FormationCause::InheritedFromDivision { parent: parent_id },
+                    step_count,
+                ));
                 self.add_synapse(src, child_id, child_syn);
             }
         }
@@ -219,6 +226,10 @@ impl Topology {
                 child_syn.age = 0;
                 child_syn.usage_count = 0;
                 child_syn.eligibility = 0.0;
+                child_syn.justification = Some(SynapticJustification::new(
+                    FormationCause::InheritedFromDivision { parent: parent_id },
+                    step_count,
+                ));
                 self.add_synapse(child_id, tgt, child_syn);
             }
         }
@@ -377,7 +388,7 @@ mod tests {
             topo_copy.add_synapse(3, 2, Synapse::new(0.3));
             topo_copy.add_synapse(2, 3, Synapse::new(0.7));
 
-            topo_copy.duplicate_connections(2, 4, &mut rng);
+            topo_copy.duplicate_connections(2, 4, &mut rng, 0);
             total_child_degree += topo_copy.degree(4);
         }
         // With 3 parent connections and 50% copy probability, average child degree ~1.5 per run

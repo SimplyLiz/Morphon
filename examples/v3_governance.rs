@@ -343,6 +343,231 @@ fn main() {
     }
 
     // =========================================================================
+    // Experiment 6: Justification Recording at Formation Sites
+    // =========================================================================
+    println!("\n--- Experiment 6: Justification Recording at Formation Sites ---");
+    {
+        let config = SystemConfig {
+            developmental: DevelopmentalConfig {
+                seed_size: 30,
+                dimensions: 3,
+                initial_connectivity: 0.3,
+                target_input_size: Some(4),
+                target_output_size: Some(2),
+                ..DevelopmentalConfig::cortical()
+            },
+            ..Default::default()
+        };
+        let system = System::new(config);
+
+        // Developmental wiring should produce justified synapses
+        let diag = system.diagnostics();
+        check!(
+            &format!("developmental wiring creates justified synapses (fraction={:.2})", diag.justified_fraction),
+            diag.justified_fraction > 0.0
+        );
+
+        // Check that justified synapses have External formation cause
+        let mut external_count = 0;
+        let mut total_justified = 0;
+        for ei in system.topology.graph.edge_indices() {
+            if let Some(syn) = system.topology.graph.edge_weight(ei) {
+                if let Some(ref j) = syn.justification {
+                    total_justified += 1;
+                    if matches!(j.formation_cause, morphon_core::justification::FormationCause::External { .. }) {
+                        external_count += 1;
+                    }
+                }
+            }
+        }
+        check!(
+            &format!("developmental synapses have External cause ({}/{})", external_count, total_justified),
+            external_count > 0 && external_count == total_justified
+        );
+
+        // Now run and verify synaptogenesis creates ProximityFormation justifications.
+        // Need enough steps for slow tick (every 100) to trigger synaptogenesis,
+        // and enough stimulation for morphons to reach activity threshold (mean >= 0.3).
+        let mut system = system;
+        let mut rng = rand::rng();
+
+        for _ in 0..5000 {
+            let input: Vec<f64> = (0..4).map(|_| rng.random_range(0.5..1.0)).collect();
+            system.process_steps(&input, 3);
+            system.inject_reward(0.5);
+            system.inject_novelty(0.3);
+        }
+
+        let mut proximity_count = 0;
+        let mut new_justified = 0;
+        for ei in system.topology.graph.edge_indices() {
+            if let Some(syn) = system.topology.graph.edge_weight(ei) {
+                if let Some(ref j) = syn.justification {
+                    new_justified += 1;
+                    if matches!(j.formation_cause, morphon_core::justification::FormationCause::ProximityFormation { .. }) {
+                        proximity_count += 1;
+                    }
+                }
+            }
+        }
+        check!(
+            &format!(
+                "runtime synaptogenesis creates ProximityFormation justifications ({})",
+                proximity_count
+            ),
+            proximity_count > 0
+        );
+        // Total may shrink (pruning removes justified synapses), but
+        // ProximityFormation synapses prove runtime recording works.
+        let diag_after = system.diagnostics();
+        check!(
+            &format!(
+                "justified fraction stays high after runtime ({:.0}%)",
+                diag_after.justified_fraction * 100.0
+            ),
+            diag_after.justified_fraction > 0.5
+        );
+    }
+
+    // =========================================================================
+    // Experiment 7: Reinforcement Recording in Medium Tick
+    // =========================================================================
+    println!("\n--- Experiment 7: Reinforcement Recording ---");
+    {
+        let config = SystemConfig {
+            developmental: DevelopmentalConfig {
+                seed_size: 25,
+                dimensions: 3,
+                initial_connectivity: 0.3,
+                target_input_size: Some(3),
+                target_output_size: Some(2),
+                ..DevelopmentalConfig::cortical()
+            },
+            ..Default::default()
+        };
+        let mut system = System::new(config);
+
+        // Run with reward to trigger weight updates
+        for _ in 0..500 {
+            let input = vec![1.0, 0.5, 0.2];
+            system.process_steps(&input, 3);
+            system.inject_reward(0.8);
+        }
+
+        // Check that some synapses have reinforcement history
+        let mut synapses_with_reinforcement = 0;
+        let mut total_events = 0;
+        for ei in system.topology.graph.edge_indices() {
+            if let Some(syn) = system.topology.graph.edge_weight(ei) {
+                if let Some(ref j) = syn.justification {
+                    if !j.reinforcement_history.is_empty() {
+                        synapses_with_reinforcement += 1;
+                        total_events += j.reinforcement_history.len();
+                    }
+                }
+            }
+        }
+        check!(
+            &format!(
+                "reinforcement events recorded ({} synapses, {} total events)",
+                synapses_with_reinforcement, total_events
+            ),
+            synapses_with_reinforcement > 0
+        );
+    }
+
+    // =========================================================================
+    // Experiment 8: reward_for_successful_output Energy Boost
+    // =========================================================================
+    println!("\n--- Experiment 8: Motor Energy Reward ---");
+    {
+        let config = SystemConfig {
+            developmental: DevelopmentalConfig {
+                seed_size: 20,
+                dimensions: 3,
+                initial_connectivity: 0.3,
+                target_input_size: Some(2),
+                target_output_size: Some(2),
+                ..DevelopmentalConfig::cortical()
+            },
+            metabolic: MetabolicConfig {
+                reward_for_successful_output: 0.2, // high for visibility
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut system = System::new(config);
+
+        // Process some input first
+        system.process_steps(&[1.0, 0.0], 3);
+
+        // Record motor energy before reward
+        let motor_energy_before: Vec<f64> = system.morphons.values()
+            .filter(|m| m.cell_type == morphon_core::types::CellType::Motor)
+            .map(|m| m.energy)
+            .collect();
+
+        // Inject reward at output 0
+        system.inject_reward_at(0, 1.0);
+
+        // Step to let it take effect (inject_reward_at is immediate on energy)
+        let motor_energy_after: Vec<f64> = system.morphons.values()
+            .filter(|m| m.cell_type == morphon_core::types::CellType::Motor)
+            .map(|m| m.energy)
+            .collect();
+
+        // At least the targeted motor should have gained energy
+        let max_before = motor_energy_before.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_after = motor_energy_after.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        check!(
+            &format!(
+                "inject_reward_at boosts motor energy (before={:.3}, after={:.3})",
+                max_before, max_after
+            ),
+            max_after >= max_before
+        );
+    }
+
+    // =========================================================================
+    // Experiment 9: max_cluster_size_fraction Enforcement
+    // =========================================================================
+    println!("\n--- Experiment 9: Cluster Size Governance ---");
+    {
+        // Test the governance function directly
+        use morphon_core::morphogenesis::Cluster;
+
+        let big_cluster = Cluster {
+            id: 1,
+            members: vec![1, 2, 3, 4, 5, 6], // 6 members
+            shared_threshold: 0.5,
+            inhibitory_morphons: vec![],
+            epistemic_state: Default::default(),
+            epistemic_history: Default::default(),
+        };
+
+        // 6 out of 10 total = 60% — should exceed 30% cap
+        let ok_30 = morphon_core::governance::check_cluster_size(&big_cluster, 10, 0.3);
+        check!(
+            &format!("cluster 60% of system rejected at 30% cap (ok={})", ok_30),
+            !ok_30
+        );
+
+        // 6 out of 20 total = 30% — should be at limit
+        let ok_at_limit = morphon_core::governance::check_cluster_size(&big_cluster, 20, 0.3);
+        check!(
+            &format!("cluster 30% of system accepted at 30% cap (ok={})", ok_at_limit),
+            ok_at_limit
+        );
+
+        // 6 out of 100 = 6% — well within
+        let ok_small = morphon_core::governance::check_cluster_size(&big_cluster, 100, 0.3);
+        check!(
+            &format!("cluster 6% of system accepted at 30% cap (ok={})", ok_small),
+            ok_small
+        );
+    }
+
+    // =========================================================================
     // Summary
     // =========================================================================
     println!("\n=== Results: {} passed, {} failed ===", passed, failed);

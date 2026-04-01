@@ -43,6 +43,16 @@ Every synapse can track why it was formed and what reinforced it.
 
 **Integration**: `Synapse.justification: Option<SynapticJustification>` with `#[serde(default)]` for backward compat. `Synapse::new_justified()` constructor available.
 
+**Formation recording** (active at all formation sites):
+- `developmental.rs` → `External { source: "developmental" }`
+- `synaptogenesis()` → `ProximityFormation { distance }`
+- `duplicate_connections()` (division) → `InheritedFromDivision { parent }`
+- `create_inhibitory_morphons_for_cluster()` (fusion) → `FusionBridge { cluster }`
+
+**Reinforcement recording** (active in medium tick):
+- DFA climbing-fiber path: records `delta_w` and `modulation.reward` when `|delta_w| > 0.001`
+- Three-factor STDP path: same threshold
+
 ### `src/epistemic.rs` — Four-State Epistemic Model + Scarring
 
 **`EpistemicState`** enum (per cluster):
