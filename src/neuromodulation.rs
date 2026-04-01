@@ -19,6 +19,13 @@ pub struct Neuromodulation {
     /// Serotonin analog — regulates baseline activity level.
     pub homeostasis: f64,
 
+    /// Running average of reward signal — used for advantage computation.
+    /// M(t) = reward - reward_baseline creates bidirectional modulation:
+    /// better-than-average → positive (LTP), worse-than-average → negative (LTD).
+    /// Without this, raw positive reward + any eligibility bias = systematic drift.
+    /// (Frémaux et al. 2010, J Neurosci)
+    pub reward_baseline: f64,
+
     /// Decay rates for each channel.
     reward_decay: f64,
     novelty_decay: f64,
@@ -33,6 +40,7 @@ impl Default for Neuromodulation {
             novelty: 0.0,
             arousal: 0.0,
             homeostasis: 0.5, // baseline stability
+            reward_baseline: 0.0,
             reward_decay: 0.95,
             novelty_decay: 0.90,
             arousal_decay: 0.85,
@@ -43,8 +51,18 @@ impl Default for Neuromodulation {
 
 impl Neuromodulation {
     /// Inject a reward signal (0.0 to 1.0).
+    /// Also updates the reward baseline (exponential moving average).
     pub fn inject_reward(&mut self, strength: f64) {
         self.reward = (self.reward + strength).clamp(0.0, 1.0);
+        // Update baseline with slow EMA (alpha=0.01)
+        self.reward_baseline += 0.01 * (strength - self.reward_baseline);
+    }
+
+    /// The advantage signal: reward minus expected reward.
+    /// Positive = better than average, negative = worse than average.
+    /// This is the modulation signal that should drive weight updates.
+    pub fn reward_advantage(&self) -> f64 {
+        self.reward - self.reward_baseline
     }
 
     /// Inject a novelty signal (0.0 to 1.0).

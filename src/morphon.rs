@@ -26,6 +26,12 @@ pub struct Synapse {
     pub age: u64,
     /// How often this synapse has been activated.
     pub usage_count: u64,
+    /// Pre-synaptic trace — decaying memory of recent pre-synaptic spikes.
+    /// Incremented on pre-spike, decays exponentially with tau_trace.
+    pub pre_trace: f64,
+    /// Post-synaptic trace — decaying memory of recent post-synaptic spikes.
+    /// Incremented on post-spike, decays exponentially with tau_trace.
+    pub post_trace: f64,
 }
 
 impl Synapse {
@@ -39,6 +45,8 @@ impl Synapse {
             consolidated: false,
             age: 0,
             usage_count: 0,
+            pre_trace: 0.0,
+            post_trace: 0.0,
         }
     }
 

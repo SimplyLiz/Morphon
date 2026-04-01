@@ -19,9 +19,16 @@ use serde::{Deserialize, Serialize};
 pub struct LearningParams {
     /// Time constant for fast eligibility trace decay.
     pub tau_eligibility: f64,
+    /// Time constant for pre/post-synaptic spike traces (Frémaux & Gerstner 2016).
+    /// Controls the STDP window width — how long after a spike the trace persists.
+    pub tau_trace: f64,
+    /// LTP magnitude (applied when post fires and pre_trace > 0).
+    pub a_plus: f64,
+    /// LTD magnitude (applied when pre fires and post_trace > 0). Negative.
+    pub a_minus: f64,
     /// Time constant for slow synaptic tag decay (much longer).
     pub tau_tag: f64,
-    /// Hebbian coincidence threshold for setting a synaptic tag.
+    /// Eligibility threshold for setting a synaptic tag.
     pub tag_threshold: f64,
     /// Reward threshold for capturing a tagged synapse.
     pub capture_threshold: f64,
@@ -42,8 +49,11 @@ impl Default for LearningParams {
     fn default() -> Self {
         Self {
             tau_eligibility: 20.0,      // ~20 timesteps (fast)
+            tau_trace: 10.0,            // STDP trace window (Lava/Loihi: 10)
+            a_plus: 1.0,               // LTP magnitude
+            a_minus: -1.0,             // LTD magnitude (symmetric)
             tau_tag: 6000.0,            // ~6000 timesteps ≈ minutes (slow)
-            tag_threshold: 0.7,         // strong Hebbian coincidence needed
+            tag_threshold: 0.3,         // eligibility threshold for tagging
             capture_threshold: 0.5,     // moderate reward needed for capture
             capture_rate: 0.1,
             weight_max: 5.0,
@@ -56,29 +66,16 @@ impl Default for LearningParams {
     }
 }
 
-/// Compute the Hebbian coincidence function H(pre, post).
+/// Update eligibility trace using trace-based STDP (Frémaux & Gerstner 2016).
 ///
-/// LTD magnitudes are calibrated so that at the homeostatic setpoint (10% firing),
-/// the expected H is approximately zero. This prevents systematic negative eligibility
-/// drift that would make all weight updates depressive regardless of reward.
+/// Instead of binary coincidence detection per timestep, pre- and post-synaptic
+/// traces maintain a decaying memory of recent spikes. When pre fires, the
+/// post_trace determines LTD. When post fires, the pre_trace determines LTP.
+/// This widens the effective STDP window from 1 timestep to ~tau_trace steps,
+/// solving the co-firing problem caused by refractory periods and spike delays.
 ///
-/// At p = q = 0.1:
-///   E[H] = 0.01*(+1.0) + 0.09*(-0.06) + 0.09*(-0.05) + 0.81*(0.0) ≈ 0.0
-///
-/// Correlated pairs (both fire together more than chance) get net positive eligibility.
-/// Anti-correlated pairs get net negative. Uncorrelated pairs stay near zero.
-fn hebbian_coincidence(pre_fired: bool, post_fired: bool) -> f64 {
-    match (pre_fired, post_fired) {
-        (true, true) => 1.0,     // LTP: both active — strong potentiation
-        (true, false) => -0.06,  // mild LTD: pre fired alone
-        (false, true) => -0.05,  // mild LTD: post fired alone
-        (false, false) => 0.0,   // no change
-    }
-}
-
-/// Update the eligibility trace for a synapse.
-///
-///   ėᵢⱼ = -eᵢⱼ/τₑ + H(preᵢ, postⱼ)
+/// The eligibility trace accumulates these STDP contributions and decays slowly,
+/// serving as the "tag" that the three-factor modulation signal acts on.
 pub fn update_eligibility(
     synapse: &mut Synapse,
     pre_fired: bool,
@@ -86,16 +83,32 @@ pub fn update_eligibility(
     params: &LearningParams,
     dt: f64,
 ) {
-    let h = hebbian_coincidence(pre_fired, post_fired);
+    // Decay traces
+    let trace_decay = (-dt / params.tau_trace).exp();
+    synapse.pre_trace *= trace_decay;
+    synapse.post_trace *= trace_decay;
 
-    // Fast eligibility trace: exponential decay + Hebbian input
-    synapse.eligibility += (-synapse.eligibility / params.tau_eligibility + h) * dt;
+    // STDP: event-driven eligibility updates
+    let mut stdp = 0.0;
+    if pre_fired {
+        // Pre-before-post: LTD proportional to how recently post fired
+        stdp += params.a_minus * synapse.post_trace;
+        synapse.pre_trace += 1.0;
+    }
+    if post_fired {
+        // Post-after-pre: LTP proportional to how recently pre fired
+        stdp += params.a_plus * synapse.pre_trace;
+        synapse.post_trace += 1.0;
+    }
+
+    // Eligibility trace: exponential decay + STDP contributions
+    synapse.eligibility += (-synapse.eligibility / params.tau_eligibility + stdp) * dt;
     synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
 
-    // Slow synaptic tag: set on strong Hebbian coincidence, decay slowly
-    if h > params.tag_threshold && !synapse.consolidated {
+    // Slow synaptic tag: set when eligibility is strongly positive
+    if synapse.eligibility > params.tag_threshold && !synapse.consolidated {
         synapse.tag = 1.0;
-        synapse.tag_strength = h;
+        synapse.tag_strength = synapse.eligibility;
     }
     // Tag decays exponentially (much slower than eligibility)
     synapse.tag *= (-dt / params.tau_tag).exp();
@@ -119,9 +132,12 @@ pub fn apply_weight_update(
     plasticity_rate: f64,
     post_receptors: &ReceptorSet,
 ) -> bool {
-    // Receptor-gated modulation: only include channels the post-synaptic morphon responds to
+    // Receptor-gated modulation: only include channels the post-synaptic morphon responds to.
+    // Reward channel uses ADVANTAGE (reward - baseline) instead of raw reward.
+    // This eliminates the unsupervised bias that causes systematic weight drift
+    // (Frémaux et al. 2010: mean(reward) × mean(eligibility) term dominates otherwise).
     let r = if post_receptors.contains(&ModulatorType::Reward) {
-        params.alpha_reward * modulation.reward
+        params.alpha_reward * modulation.reward_advantage()
     } else {
         0.0
     };

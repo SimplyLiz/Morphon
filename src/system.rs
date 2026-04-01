@@ -247,29 +247,15 @@ impl System {
         #[cfg(not(feature = "parallel"))]
         self.morphons.values_mut().for_each(|m| m.step(dt));
 
-        // 4. Spike-timing eligibility: now that morphon.step() has run, post_fired
-        //    correctly reflects whether the delivered spike triggered firing.
-        //    This captures the causal "pre fired → spike arrived → post fired"
-        //    chain that the medium path misses due to refractory timing.
+        // 4. Spike-timing: boost pre_trace on delivered synapses.
+        //    The spike delivery is direct evidence that pre fired recently.
+        //    By incrementing pre_trace here, the trace-based STDP in the medium
+        //    path will detect the causal relationship even if the pre-synaptic
+        //    morphon is now in refractory (fired=false).
         for spike in &delivered {
-            let post_fired = self.morphons.get(&spike.target).map_or(false, |m| m.fired);
             if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
-                    // Spike arrival is direct evidence of pre-synaptic firing.
-                    // Only apply LTP (positive). Skip LTD here — the medium path
-                    // handles the balanced Hebbian update. Applying LTD at spike
-                    // delivery causes runaway weight decay when post rarely fires,
-                    // silencing motor morphons permanently.
-                    let h = if post_fired { 1.0 } else { 0.0 };
-                    synapse.eligibility +=
-                        (-synapse.eligibility / self.config.learning.tau_eligibility + h) * dt;
-                    synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
-
-                    // Tag on strong coincidence (spike arrived AND post fired)
-                    if h > self.config.learning.tag_threshold && !synapse.consolidated {
-                        synapse.tag = 1.0;
-                        synapse.tag_strength = h;
-                    }
+                    synapse.pre_trace += 1.0;
                 }
             }
         }
@@ -280,8 +266,8 @@ impl System {
         if tick.medium {
             // Update eligibility traces and apply receptor-gated weight changes
             for &id in &morphon_ids {
-                let (post_fired, post_receptors, post_activity) = self.morphons.get(&id)
-                    .map(|m| (m.fired, m.receptors.clone(), m.activity_history.mean()))
+                let (post_fired, post_receptors) = self.morphons.get(&id)
+                    .map(|m| (m.fired, m.receptors.clone()))
                     .unwrap_or_default();
                 let incoming = self.topology.incoming_synapses_mut(id);
 
@@ -289,17 +275,9 @@ impl System {
                     let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
                     if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
-                        // Protect cold morphons: skip LTD if post has near-zero activity.
-                        // This prevents the vicious cycle where LTD kills weights before
-                        // the morphon ever gets a chance to fire.
-                        let effective_pre = if post_activity < 0.02 && !post_fired {
-                            false // suppress LTD by pretending pre didn't fire
-                        } else {
-                            pre_fired
-                        };
                         learning::update_eligibility(
                             synapse,
-                            effective_pre,
+                            pre_fired,
                             post_fired,
                             &self.config.learning,
                             dt,

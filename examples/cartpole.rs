@@ -84,8 +84,11 @@ fn create_system() -> System {
         },
         learning: LearningParams {
             tau_eligibility: 8.0,
+            tau_trace: 10.0,
+            a_plus: 1.0,
+            a_minus: -1.0,
             tau_tag: 500.0,
-            tag_threshold: 0.5,
+            tag_threshold: 0.3,
             capture_threshold: 0.3,
             capture_rate: 0.2,
             weight_max: 3.0,
