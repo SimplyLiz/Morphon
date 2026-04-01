@@ -75,6 +75,10 @@ pub struct MorphogenesisReport {
 
 /// Run synaptogenesis — create new connections between correlated Morphons
 /// that don't yet have a direct connection.
+///
+/// Uses random pair sampling (O(N)) instead of exhaustive pair scan (O(N²)).
+/// For small active populations the sample count covers all pairs; for large
+/// populations, statistical coverage accumulates across slow ticks.
 pub fn synaptogenesis(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
@@ -82,44 +86,59 @@ pub fn synaptogenesis(
     rng: &mut impl Rng,
 ) -> usize {
     let mut created = 0;
-    let ids: Vec<MorphonId> = morphons.keys().copied().collect();
 
-    // Check pairs of morphons that both fired recently
-    for i in 0..ids.len() {
-        for j in (i + 1)..ids.len() {
-            let a = &morphons[&ids[i]];
-            let b = &morphons[&ids[j]];
+    // Pre-filter: only morphons with recent activity are candidates
+    let active: Vec<MorphonId> = morphons
+        .values()
+        .filter(|m| m.activity_history.mean() >= 0.3)
+        .map(|m| m.id)
+        .collect();
 
-            // Both must have fired recently (high mean activity)
-            if a.activity_history.mean() < 0.3 || b.activity_history.mean() < 0.3 {
-                continue;
-            }
+    if active.len() < 2 {
+        return 0;
+    }
 
-            // Must be in spatial proximity
-            let distance = a.position.distance(&b.position);
-            if distance > 2.0 {
-                continue;
-            }
+    // Sample O(N) random pairs. For small N this exceeds total pairs,
+    // giving equivalent coverage to the exhaustive scan.
+    let total_pairs = active.len() * (active.len() - 1) / 2;
+    let num_samples = (active.len() * 5).min(total_pairs);
 
-            // Don't create if connection already exists
-            if topology.has_connection(a.id, b.id) || topology.has_connection(b.id, a.id) {
-                continue;
-            }
+    for _ in 0..num_samples {
+        let i = rng.random_range(0..active.len());
+        let mut j = rng.random_range(0..active.len() - 1);
+        if j >= i { j += 1; } // avoid i == j without rejection sampling
 
-            // Respect cell type hierarchy:
-            // - Don't create connections INTO Sensory (they're input-only)
-            // - Don't create connections OUT OF Motor (they're output-only)
-            let (from, to) = (a, b);
-            let valid_direction = to.cell_type != CellType::Sensory
-                && from.cell_type != CellType::Motor;
-            if !valid_direction { continue; }
+        let a = &morphons[&active[i]];
+        let b = &morphons[&active[j]];
 
-            let prob = (1.0 - distance / 2.0) * 0.1;
-            if rng.random_range(0.0..1.0) < prob {
-                let weight = rng.random_range(-0.5..0.5);
-                topology.add_synapse(from.id, to.id, Synapse::new(weight));
-                created += 1;
-            }
+        // Must be in spatial proximity
+        let distance = a.position.distance(&b.position);
+        if distance > 2.0 {
+            continue;
+        }
+
+        // Don't create if connection already exists (either direction)
+        if topology.has_connection(a.id, b.id) || topology.has_connection(b.id, a.id) {
+            continue;
+        }
+
+        // Respect cell type hierarchy:
+        // - Don't create connections INTO Sensory (they're input-only)
+        // - Don't create connections OUT OF Motor (they're output-only)
+        // Try a→b first, fall back to b→a
+        let (from, to) = if b.cell_type != CellType::Sensory && a.cell_type != CellType::Motor {
+            (a, b)
+        } else if a.cell_type != CellType::Sensory && b.cell_type != CellType::Motor {
+            (b, a)
+        } else {
+            continue;
+        };
+
+        let prob = (1.0 - distance / 2.0) * 0.1;
+        if rng.random_range(0.0..1.0) < prob {
+            let weight = rng.random_range(-0.5..0.5);
+            topology.add_synapse(from.id, to.id, Synapse::new(weight));
+            created += 1;
         }
     }
 

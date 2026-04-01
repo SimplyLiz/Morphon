@@ -1,0 +1,20 @@
+{
+  "accuracy": 0.48,
+  "params": {
+    "a_minus": -4.937618374939363,
+    "a_plus": 4.9905510885481235,
+    "alpha_arousal": 2.4775519767650534e-17,
+    "alpha_novelty": 2.9995018623467566,
+    "alpha_reward": 0.5000000126264394,
+    "capture_rate": 0.9999999999999973,
+    "inhibit_strength": 0.00035180785387121683,
+    "input_bias": 1.9849059240432707,
+    "input_scale": 3.860256894186385,
+    "reward_strength": 0.10000047518217066,
+    "tag_threshold": 0.7999657941464586,
+    "tau_eligibility": 1.2040271559201103,
+    "tau_trace": 3.0684313903030382,
+    "teach_strength": 1.9176677522656504,
+    "weight_max": 2.0706720741836193
+  }
+}

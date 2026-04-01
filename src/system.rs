@@ -110,6 +110,12 @@ pub struct System {
     /// Stable output port mapping: index → MorphonId.
     /// These are the motor Morphons that produce external output.
     pub(crate) output_ports: Vec<MorphonId>,
+    /// Critic morphon IDs — a subset of Associative morphons that predict
+    /// state value V(s). Their aggregate membrane potential is the value estimate.
+    /// Biologically: ventral striatum (critic) vs dorsal striatum (actor).
+    pub(crate) critic_ports: Vec<MorphonId>,
+    /// Previous critic value — for TD error computation.
+    pub(crate) prev_critic_value: f64,
 
     /// Next available Morphon ID.
     pub(crate) next_morphon_id: MorphonId,
@@ -132,7 +138,7 @@ impl System {
     pub fn new(config: SystemConfig) -> Self {
         let mut rng = rand::rng();
 
-        let (morphons, topology, next_id) =
+        let (mut morphons, topology, next_id) =
             developmental::develop(&config.developmental, &mut rng);
 
         // Build stable I/O port mappings from the developmental result
@@ -150,6 +156,29 @@ impl System {
             .collect();
         motor_ids.sort();
 
+        // Designate ~15% of Associative morphons as critic morphons.
+        // They receive sensory input like regular Associatives but their
+        // aggregate potential encodes V(state) for TD error computation.
+        let mut assoc_ids: Vec<MorphonId> = morphons
+            .values()
+            .filter(|m| m.cell_type == CellType::Associative)
+            .map(|m| m.id)
+            .collect();
+        assoc_ids.sort();
+        let n_critics = (assoc_ids.len() as f64 * 0.15).ceil() as usize;
+        let critic_ids: Vec<MorphonId> = assoc_ids.into_iter().take(n_critics).collect();
+
+        // Set critic morphons' receptors to {Reward, Homeostasis} only —
+        // they learn from reward prediction error, not novelty/arousal.
+        for &cid in &critic_ids {
+            if let Some(m) = morphons.get_mut(&cid) {
+                let mut receptors = std::collections::HashSet::new();
+                receptors.insert(ModulatorType::Reward);
+                receptors.insert(ModulatorType::Homeostasis);
+                m.receptors = receptors;
+            }
+        }
+
         let mut system = System {
             morphons,
             topology,
@@ -163,6 +192,8 @@ impl System {
             config,
             input_ports: sensory_ids,
             output_ports: motor_ids,
+            critic_ports: critic_ids,
+            prev_critic_value: 0.0,
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
@@ -797,6 +828,49 @@ impl System {
     /// or `diagnostics().firing_summary()` for per-type firing rates.
     pub fn diagnostics(&self) -> &Diagnostics {
         &self.diag
+    }
+
+    /// Read the critic morphons' aggregate potential as V(state).
+    /// Returns the mean membrane potential of all critic morphons.
+    pub fn critic_value(&self) -> f64 {
+        if self.critic_ports.is_empty() {
+            return 0.0;
+        }
+        let sum: f64 = self.critic_ports
+            .iter()
+            .filter_map(|id| self.morphons.get(id))
+            .map(|m| m.potential)
+            .sum();
+        sum / self.critic_ports.len() as f64
+    }
+
+    /// Number of critic morphons.
+    pub fn critic_size(&self) -> usize {
+        self.critic_ports.len()
+    }
+
+    /// Compute TD error and inject it as the reward modulation signal.
+    ///
+    /// δ = reward + γ·V(s') - V(s)
+    ///
+    /// This is the core of the actor-critic architecture within the Morphon
+    /// framework. The critic morphons learn to predict V(s), and the TD error
+    /// drives both the critic's own learning (minimize prediction error) and
+    /// the actor's learning (strengthen actions that lead to better-than-expected states).
+    ///
+    /// Biologically: dopamine neurons compute δ from ventral striatum (critic)
+    /// signals and broadcast it to dorsal striatum (actor) and cortex.
+    pub fn inject_td_error(&mut self, reward: f64, gamma: f64) -> f64 {
+        let v_new = self.critic_value();
+        let td_error = reward + gamma * v_new - self.prev_critic_value;
+        self.prev_critic_value = v_new;
+
+        // Inject TD error as the reward signal — positive = better than expected,
+        // negative = worse than expected. Scale to [0, 1] for the modulation channel.
+        let scaled = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
+        self.modulation.inject_reward(scaled);
+
+        td_error
     }
 
     /// Average prediction error across all Morphons.

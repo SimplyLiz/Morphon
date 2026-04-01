@@ -226,11 +226,11 @@ impl Morphon {
         // Apply activation function to determine output
         let activation = self.activation_fn.apply(self.potential);
 
-        // Fire if above threshold
-        self.fired = activation > self.threshold;
+        // Fire if above threshold and has energy to spend
+        self.fired = activation > self.threshold && self.energy > 0.0;
         if self.fired {
             self.refractory_timer = 1.0; // refractory period (1 step)
-            self.energy -= 0.005; // firing costs energy
+            self.energy = (self.energy - 0.005).max(0.0); // firing costs energy, floor at 0
             self.activity_history.push(1.0);
         } else {
             self.activity_history.push(0.0);
@@ -259,8 +259,8 @@ impl Morphon {
             self.division_pressure = (self.division_pressure - 0.005).max(0.0);
         }
 
-        // Energy regeneration (slow)
-        self.energy = (self.energy + 0.001).min(1.0);
+        // Energy regeneration (slow), clamped to [0, 1]
+        self.energy = (self.energy + 0.001).clamp(0.0, 1.0);
 
         // Tick down migration cooldown
         if self.migration_cooldown > 0.0 {

@@ -22,13 +22,16 @@ const N_TRAIN: usize = 500;
 const N_TEST: usize = 100;
 
 /// Generate a sample for the given class with noise.
+/// CMA-ES optimal: input_bias=1.99, input_scale=3.86
 fn make_sample(class: usize, rng: &mut impl Rng) -> Vec<f64> {
-    let mut input = vec![0.3; N_INPUTS]; // baseline
+    let bias = 1.99;
+    let scale = 3.86;
+    let mut input = vec![bias; N_INPUTS];
     let mut noise = || rng.random_range(-0.1..0.1);
     match class {
-        0 => { input[0] = 2.0 + noise(); input[1] = 1.8 + noise(); input[2] = 1.5 + noise(); }
-        1 => { input[3] = 2.0 + noise(); input[4] = 1.8 + noise(); input[5] = 1.5 + noise(); }
-        2 => { input[6] = 2.5 + noise(); input[7] = 2.0 + noise(); }
+        0 => { input[0] = bias + scale + noise(); input[1] = bias + scale * 0.9 + noise(); input[2] = bias + scale * 0.7 + noise(); }
+        1 => { input[3] = bias + scale + noise(); input[4] = bias + scale * 0.9 + noise(); input[5] = bias + scale * 0.7 + noise(); }
+        2 => { input[6] = bias + scale * 1.2 + noise(); input[7] = bias + scale + noise(); }
         _ => {}
     }
     input
@@ -52,20 +55,21 @@ fn create_system() -> System {
             homeostasis_period: 5,
             memory_period: 50,
         },
+        // CMA-ES optimized parameters (48% accuracy, 200 gen search)
         learning: LearningParams {
-            tau_eligibility: 5.0,
-            tau_trace: 10.0,
-            a_plus: 1.0,
-            a_minus: -1.0,
+            tau_eligibility: 1.2,
+            tau_trace: 3.07,
+            a_plus: 4.99,
+            a_minus: -4.94,
             tau_tag: 200.0,
-            tag_threshold: 0.3,
+            tag_threshold: 0.8,
             capture_threshold: 0.2,
-            capture_rate: 0.2,
-            weight_max: 3.0,
+            capture_rate: 1.0,
+            weight_max: 2.07,
             weight_min: 0.01,
-            alpha_reward: 5.0,
-            alpha_novelty: 0.5,
-            alpha_arousal: 1.0,
+            alpha_reward: 0.5,
+            alpha_novelty: 3.0,
+            alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
         },
         morphogenesis: MorphogenesisParams {
