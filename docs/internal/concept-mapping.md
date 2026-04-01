@@ -104,6 +104,21 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Slow | s-min (~100ms-1s) | Every 100 steps | Done |
 | Glacial | min-h (~10s-60s) | Every 1000 steps | Done |
 | Homeostasis | — | Every 50 steps | Done |
+| Endoquilibrium | — | Every medium tick | Done |
+
+## Endoquilibrium — Predictive Neuroendocrine Regulation
+
+| Concept | Implemented In | Status |
+|---------|---------------|--------|
+| Vital signs sensing (7 metrics) | `endoquilibrium.rs: sense_vitals()` | Done |
+| Dual-timescale EMA predictor | `endoquilibrium.rs: AllostasisPredictor` | Done |
+| 6 regulation rules (FR, eligibility, entropy, type balance, tag-capture, energy) | `endoquilibrium.rs: regulate()` | Done |
+| Channel gains (reward/novelty/arousal/homeostasis) | `learning.rs: apply_weight_update(channel_gains)` | Done |
+| Threshold bias | `morphon.rs: Morphon::step(threshold_bias)` | Done |
+| Plasticity multiplier | `system.rs: plasticity * endo.plasticity_mult` | Done |
+| Developmental stage detection | `endoquilibrium.rs: detect_stage()` | Done |
+| Stage-dependent setpoints | `endoquilibrium.rs: DevelopmentalSetpoints::for_stage()` | Done |
+| Channel smoothing + clamping | `endoquilibrium.rs: apply_smoothing()` | Done |
 
 ## Section 3.9: Hyperbolic Information Space (NEW)
 

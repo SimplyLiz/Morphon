@@ -106,7 +106,7 @@ fn bench_weight_update(c: &mut Criterion) {
 
         b.iter(|| {
             for syn in &mut synapses {
-                learning::apply_weight_update(syn, &modulation, &params, 0.01, &receptors);
+                learning::apply_weight_update(syn, &modulation, &params, 0.01, &receptors, [1.0; 4]);
             }
         });
     });

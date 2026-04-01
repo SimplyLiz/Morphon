@@ -162,29 +162,31 @@ pub fn apply_weight_update(
     params: &LearningParams,
     plasticity_rate: f64,
     post_receptors: &ReceptorSet,
+    channel_gains: [f64; 4],
 ) -> bool {
     // Receptor-gated modulation: only include channels the post-synaptic morphon responds to.
+    // Channel gains are set by Endoquilibrium (default [1.0; 4] when disabled).
     // Reward channel uses DELTA (reward change) as a pseudo-TD error signal.
     // This provides bidirectional modulation that never converges to zero:
     // improving → positive, worsening → negative, steady → zero.
     // (Frémaux et al. 2013: critic/TD-error signal is necessary for RL convergence)
     let r = if post_receptors.contains(&ModulatorType::Reward) {
-        params.alpha_reward * modulation.reward_delta()
+        params.alpha_reward * modulation.reward_delta() * channel_gains[0]
     } else {
         0.0
     };
     let n = if post_receptors.contains(&ModulatorType::Novelty) {
-        params.alpha_novelty * modulation.novelty
+        params.alpha_novelty * modulation.novelty * channel_gains[1]
     } else {
         0.0
     };
     let a = if post_receptors.contains(&ModulatorType::Arousal) {
-        params.alpha_arousal * modulation.arousal
+        params.alpha_arousal * modulation.arousal * channel_gains[2]
     } else {
         0.0
     };
     let h = if post_receptors.contains(&ModulatorType::Homeostasis) {
-        params.alpha_homeostasis * modulation.homeostasis
+        params.alpha_homeostasis * modulation.homeostasis * channel_gains[3]
     } else {
         0.0
     };
@@ -375,7 +377,7 @@ mod tests {
         assert!(!sensory_receptors.contains(&ModulatorType::Reward));
 
         let weight_before = syn.weight;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &sensory_receptors);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &sensory_receptors, [1.0; 4]);
 
         // With zero novelty and zero arousal, weight change should be minimal
         let _delta_sensory = (syn.weight - weight_before).abs();
@@ -387,7 +389,7 @@ mod tests {
         assert!(motor_receptors.contains(&ModulatorType::Reward));
 
         let weight_before2 = syn2.weight;
-        apply_weight_update(&mut syn2, &modulation, &params, 0.01, &motor_receptors);
+        apply_weight_update(&mut syn2, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
         let delta2 = (syn2.weight - weight_before2).abs();
 
         // Motor (with reward receptor) should have larger change when reward is high
@@ -409,7 +411,7 @@ mod tests {
         modulation.inject_reward(0.8); // above capture_threshold (0.5)
 
         let motor_receptors = default_receptors(CellType::Motor);
-        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors);
+        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
 
         assert!(captured, "tag should be captured with high reward");
         assert!(syn.consolidated, "synapse should be consolidated");
@@ -428,7 +430,7 @@ mod tests {
         modulation.inject_reward(0.9);
 
         let motor_receptors = default_receptors(CellType::Motor);
-        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors);
+        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
         assert!(!captured, "consolidated synapse should not be re-captured");
     }
 
@@ -443,7 +445,7 @@ mod tests {
         modulation.inject_reward(1.0);
 
         let motor_receptors = default_receptors(CellType::Motor);
-        apply_weight_update(&mut syn, &modulation, &params, 1.0, &motor_receptors);
+        apply_weight_update(&mut syn, &modulation, &params, 1.0, &motor_receptors, [1.0; 4]);
 
         assert!(
             syn.weight <= params.weight_max,
@@ -505,7 +507,7 @@ mod tests {
         let receptors = default_receptors(CellType::Stem);
 
         let initial_usage = syn.usage_count;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4]);
         assert_eq!(syn.usage_count, initial_usage + 1);
     }
 
@@ -518,7 +520,7 @@ mod tests {
         let receptors = default_receptors(CellType::Stem);
 
         let initial_age = syn.age;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4]);
         assert_eq!(syn.age, initial_age + 1);
     }
 }

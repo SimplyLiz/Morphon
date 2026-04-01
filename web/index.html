@@ -755,6 +755,18 @@
   .cell-type-row { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
   .cell-type-row:hover { background: rgba(255,255,255,0.04); }
   .cell-type-row.active { background: rgba(80, 140, 255, 0.12); }
+  .color-mode-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 3px 8px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .color-mode-btn.active { color: var(--text-bright); border-color: var(--accent); background: rgba(80,140,255,0.12); }
+  .color-mode-btn:hover { color: var(--text); }
 
   /* Motor output bars */
   .motor-bars { display: flex; flex-direction: column; gap: 3px; max-height: 80px; overflow-y: auto; }
@@ -854,6 +866,8 @@
       <div class="stat-item"><span class="label">Born</span><span class="value small" id="s-born" style="color:#34d399">0</span></div>
       <div class="stat-item"><span class="label">Died</span><span class="value small" id="s-died" style="color:#f87171">0</span></div>
       <div class="stat-item"><span class="label">Transdiff</span><span class="value small" id="s-transdiff" style="color:#c084fc">0</span></div>
+      <div class="stat-item"><span class="label">Field PE Max</span><span class="value small" id="s-field-pe-max" style="color:#ef4444">-</span></div>
+      <div class="stat-item"><span class="label">Field PE Mean</span><span class="value small" id="s-field-pe-mean" style="color:#ef4444">-</span></div>
     </div>
     <div class="sparkline-container">
       <div class="sparkline-label">Firing Rate</div>
@@ -863,9 +877,37 @@
       <div class="sparkline-label">Morphon Count</div>
       <canvas class="sparkline" id="spark-morphons" width="188" height="32"></canvas>
     </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Synapses</div>
+      <canvas class="sparkline" id="spark-synapses" width="188" height="32"></canvas>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Field PE</div>
+      <canvas class="sparkline" id="spark-field-pe" width="188" height="32"></canvas>
+    </div>
   </div>
 
   <div class="panel">
+    <div class="section-title">V3 Governance</div>
+    <div class="stat-grid">
+      <div class="stat-item"><span class="label">Justified</span><span class="value small" id="s-justified" style="color:#eab308">-</span></div>
+      <div class="stat-item"><span class="label">Consolidated</span><span class="value small" id="s-consolidated" style="color:#a78bfa">-</span></div>
+      <div class="stat-item"><span class="label">Skepticism</span><span class="value small" id="s-skepticism" style="color:#f97316">-</span></div>
+      <div class="stat-item"><span class="label">Epistemic</span><span class="value small" id="s-epistemic" style="color:#94a3b8">-</span></div>
+    </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Justified %</div>
+      <canvas class="sparkline" id="spark-justified" width="188" height="32"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="section-title">Color Mode</div>
+    <div style="display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap;">
+      <button class="color-mode-btn active" data-mode="celltype">Cell Type</button>
+      <button class="color-mode-btn" data-mode="pe">PE Heatmap</button>
+      <button class="color-mode-btn" data-mode="epistemic">Epistemic</button>
+    </div>
     <div class="section-title">Cell Types</div>
     <div class="cell-types" id="cell-types">
       <div class="cell-type-row" data-type="Stem"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
@@ -929,6 +971,9 @@
       <div class="detail-row"><span class="label">Desire</span><span class="value" id="d-desire">0</span></div>
       <div class="detail-row"><span class="label">Connections</span><span class="value" id="d-conns">0</span></div>
       <div class="detail-row"><span class="label">Fired</span><span class="value" id="d-fired">-</span></div>
+      <div class="detail-row" id="d-epistemic-row" style="display:none"><span class="label">Epistemic</span><span class="value" id="d-epistemic" style="color:#eab308">-</span></div>
+      <div class="detail-row" id="d-skepticism-row" style="display:none"><span class="label">Skepticism</span><span class="value" id="d-skepticism" style="color:#f97316">-</span></div>
+      <div class="detail-row" id="d-justified-row" style="display:none"><span class="label">Justified</span><span class="value" id="d-justified" style="color:#eab308">-</span></div>
     </div>
   </div>
 </div>

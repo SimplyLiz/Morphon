@@ -34,6 +34,9 @@ pub struct SystemSnapshot {
     pub input_ports: Vec<MorphonId>,
     /// Stable output port mapping.
     pub output_ports: Vec<MorphonId>,
+    /// Endoquilibrium state.
+    #[serde(default)]
+    pub endo: crate::endoquilibrium::Endoquilibrium,
 }
 
 impl System {
@@ -62,6 +65,7 @@ impl System {
             step_count: self.step_count,
             input_ports: self.input_ports.clone(),
             output_ports: self.output_ports.clone(),
+            endo: self.endo.clone(),
         }
     }
 
@@ -114,6 +118,7 @@ impl System {
             recent_performance: 0.0,
             peak_performance: 0.0,
             field: None, // field is ephemeral, not persisted in snapshots
+            endo: snapshot.endo,
         }
     }
 

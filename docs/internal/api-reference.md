@@ -252,9 +252,9 @@ Weight-dependent trace-based STDP (Frémaux & Gerstner 2016, Gilson & Fukai 2011
 
 `post_activity` is continuous: 1.0 for spiking morphons. For Motor morphons: `(sigmoid(potential) - 0.5) * 2 ∈ [-1, 1]` — centered at zero so only above-average potential generates positive post_trace.
 
-**`apply_weight_update(synapse, modulation, params, plasticity_rate, post_receptors)`**
+**`apply_weight_update(synapse, modulation, params, plasticity_rate, post_receptors, channel_gains)`**
 
-Receptor-gated: only modulation channels matching `post_receptors` are included. Reward channel uses **advantage** (`reward - baseline`, clamped ≥ 0) instead of raw reward.
+Receptor-gated: only modulation channels matching `post_receptors` are included. Each channel signal is multiplied by the corresponding entry in `channel_gains: [f64; 4]` (set by Endoquilibrium; `[1.0; 4]` when disabled). Reward channel uses **advantage** (`reward - baseline`, clamped >= 0) instead of raw reward.
 
 Standard: `Δw = eligibility * M(t) * plasticity_rate`
 
@@ -614,6 +614,61 @@ Methods:
 - `snapshot(morphons, topology) -> Self` — compute diagnostics from current state
 - `summary() -> String` — one-line formatted summary for logging
 - `firing_summary() -> String` — per-type firing rate percentages
+
+---
+
+## `endoquilibrium.rs` — Predictive Neuroendocrine Regulation
+
+See [endoquilibrium.md](endoquilibrium.md) for full design rationale and measured impact.
+
+### `EndoConfig` (struct, Serialize/Deserialize)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `false` | Master switch |
+| `fast_tau` | `f32` | `50.0` | Fast EMA time constant (ticks) |
+| `slow_tau` | `f32` | `500.0` | Slow EMA time constant (ticks) |
+| `smoothing_alpha` | `f32` | `0.1` | Channel adjustment smoothing factor |
+| `fr_deficit_*_k` | `f32` | 0.2-0.5 | Rule 1 proportional gains |
+| `elig_*_k` | `f32` | 0.2-1.2 | Rule 2 proportional gains |
+| `entropy_*_k` | `f32` | 0.4-1.5 | Rule 3 proportional gains |
+| `tag_capture_reward_boost` | `f32` | `1.5` | Rule 5 reward gain multiplier |
+| `tag_capture_stale_ticks` | `u64` | `500` | Rule 5 staleness threshold |
+
+### `ChannelState` (struct, Serialize/Deserialize)
+
+The 6 levers Endoquilibrium controls:
+
+| Field | Range | Default | Applied At |
+|-------|-------|---------|------------|
+| `reward_gain` | [0.1, 3.0] | 1.0 | `learning.rs:apply_weight_update()` |
+| `novelty_gain` | [0.0, 2.0] | 1.0 | `learning.rs:apply_weight_update()` |
+| `arousal_gain` | [0.1, 2.0] | 1.0 | `learning.rs:apply_weight_update()` |
+| `homeostasis_gain` | [0.3, 2.0] | 1.0 | `learning.rs:apply_weight_update()` |
+| `threshold_bias` | [-0.3, 0.3] | 0.0 | `morphon.rs:Morphon::step()` firing decision |
+| `plasticity_mult` | [0.1, 5.0] | 1.0 | `system.rs` three-factor + DFA learning rates |
+
+### `DevelopmentalStage` (enum)
+
+`Proliferating`, `Differentiating`, `Consolidating`, `Mature`, `Stressed`
+
+### `Endoquilibrium` (struct, Serialize/Deserialize)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channels` | `ChannelState` | Current lever values |
+| `config` | `EndoConfig` | Configuration |
+| `last_diag` | `EndoDiagnostics` | Last tick's diagnostics |
+
+Methods:
+- `new(config: EndoConfig) -> Self`
+- `tick(vitals: VitalSigns)` — run one regulation cycle (sense/predict/regulate/smooth)
+- `summary() -> String` — one-line log: `endo: stage=Mature rg=1.50 ng=1.40 ...`
+- `stage() -> DevelopmentalStage` — current detected stage
+
+### `sense_vitals(morphons, topology, diag, step) -> VitalSigns`
+
+Free function. Computes all 7 vital signs from current system state. O(N + S) where N=morphons, S=synapses.
 
 ---
 

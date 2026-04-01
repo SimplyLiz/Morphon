@@ -287,7 +287,7 @@ impl Morphon {
     ///
     /// `synapse_count`: number of outgoing synapses (for metabolic maintenance cost).
     /// `metabolic`: V3 metabolic budget configuration.
-    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig, frustration_config: &FrustrationConfig) {
+    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig, frustration_config: &FrustrationConfig, threshold_bias: f64) {
         self.age += 1;
 
         // Refractory period
@@ -322,8 +322,8 @@ impl Morphon {
         // Apply activation function to determine output
         let activation = self.activation_fn.apply(self.potential);
 
-        // Fire if above threshold and has energy to spend
-        self.fired = activation > self.threshold && self.energy > 0.0;
+        // Fire if above threshold (+ Endoquilibrium bias) and has energy to spend
+        self.fired = activation > (self.threshold + threshold_bias) && self.energy > 0.0;
         if self.fired {
             self.refractory_timer = 1.0; // refractory period (1 step)
             self.energy -= metabolic.firing_cost;
@@ -483,7 +483,7 @@ mod tests {
         // Feed constant input — PE delta will be small, frustration should build.
         for _ in 0..300 {
             m.input_accumulator = 0.5;
-            m.step(1.0, 0, &metabolic, &fc);
+            m.step(1.0, 0, &metabolic, &fc, 0.0);
         }
 
         assert!(m.frustration.stagnation_counter > 0, "stagnation counter should grow");
@@ -501,7 +501,7 @@ mod tests {
         // Build up frustration
         for _ in 0..200 {
             m.input_accumulator = 0.5;
-            m.step(1.0, 0, &metabolic, &fc);
+            m.step(1.0, 0, &metabolic, &fc, 0.0);
         }
         let frustrated_level = m.frustration.frustration_level;
         assert!(frustrated_level > 0.0);
@@ -509,7 +509,7 @@ mod tests {
         // Now inject varying input — PE changes, stagnation counter should decay
         for i in 0..100 {
             m.input_accumulator = (i as f64) * 0.1;
-            m.step(1.0, 0, &metabolic, &fc);
+            m.step(1.0, 0, &metabolic, &fc, 0.0);
         }
 
         assert!(
@@ -545,7 +545,7 @@ mod tests {
         // Motor morphons have noise_scale = 0.0 regardless of frustration
         let potential_before = m.potential;
         m.input_accumulator = 0.0;
-        m.step(1.0, 0, &metabolic, &fc);
+        m.step(1.0, 0, &metabolic, &fc, 0.0);
         // Motor has full leak (leak_rate=1.0), so potential = 0*(1-1) + 0 + 0 = 0
         // No noise should be added
         assert!((m.potential - 0.0).abs() < f64::EPSILON,

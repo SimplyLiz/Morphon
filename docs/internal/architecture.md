@@ -24,6 +24,7 @@ morphon-core/
 │   ├── lineage.rs          # Lineage tree export for visualization
 │   ├── diagnostics.rs      # Learning pipeline observability (weights, eligibility, firing, captures)
 │   ├── field.rs            # V2: Bioelektrisches Feld — 2D spatial field for indirect communication
+│   ├── endoquilibrium.rs   # Predictive neuroendocrine regulation (vital signs → channel gains)
 │   ├── snapshot.rs         # Serde serialization (save/load JSON)
 │   ├── system.rs           # Top-level System orchestrating everything
 │   ├── python.rs           # PyO3 bindings (behind `python` feature flag)
@@ -65,8 +66,9 @@ Step N
 │  └─ DFA feedback injection    → project output error to associative layer via fixed random weights
 │
 ├─ MEDIUM (every 10 steps)
+│  ├─ endoquilibrium.tick()     → sense vitals, predict, regulate channel gains + threshold bias
 │  ├─ update_eligibility()      → fast eligibility traces + slow synaptic tags
-│  ├─ apply_weight_update()     → three-factor rule + tag-and-capture
+│  ├─ apply_weight_update()     → three-factor rule + tag-and-capture (× endo channel_gains)
 │  ├─ DFA climbing-fiber rule   → Δw = pre_trace × feedback_signal × lr - L2 decay
 │  ├─ weight normalization      → per-neuron L1 norm on Associative incoming weights (Diehl & Cook 2015)
 │  └─ [V2] frustration weight perturbation → small random Δw on frustrated morphons (skip consolidated)

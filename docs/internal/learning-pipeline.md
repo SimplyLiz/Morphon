@@ -33,7 +33,8 @@ The biological learning rule. Applies to all synapses on Motor and Associative m
 - Motor morphons respond to Reward + Arousal channels
 - Associative morphons respond to Reward + Novelty channels
 - `dw = eligibility * M(t) * plasticity_rate`
-- Plasticity rate is novelty-modulated: `0.01 + 0.09 * novelty`
+- Each channel signal is scaled by Endoquilibrium `channel_gains` (default 1.0 when disabled)
+- Plasticity rate is `novelty_modulated * per_morphon_rate * endo.plasticity_mult`
 - Reward uses **advantage** (reward - baseline EMA, clamped >= 0)
 - L2 decay: `w -= 0.0005 * w`
 

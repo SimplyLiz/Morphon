@@ -19,6 +19,15 @@ const CELL_COLORS = {
   Fused:       new THREE.Color(0xf472b6),
 };
 
+// V3: Epistemic state colors
+const EPISTEMIC_COLORS = {
+  Hypothesis:  new THREE.Color(0x3b82f6), // blue — exploring
+  Supported:   new THREE.Color(0x22c55e), // green — stable
+  Outdated:    new THREE.Color(0xeab308), // amber — stale
+  Contested:   new THREE.Color(0xef4444), // red — conflicting
+  none:        new THREE.Color(0x4b5563), // gray — no cluster
+};
+
 const BALL_RADIUS = 12;
 const NODE_BASE_SIZE = 0.25;
 const MAX_NODES = 2000;
@@ -39,14 +48,26 @@ let lastSpikeCount = 0; // for dynamic bloom calculation
 let connectedToSelected = new Set();
 // Cell type filter: null = none, string = highlight that type
 let filterCellType = null;
+// Color mode: 'celltype' (default) or 'pe' (prediction error heatmap)
+let colorMode = 'celltype';
 // Per-node dim factor: 0 = full color, 1 = dimmed. Keyed by morphon ID for stable mapping.
 const nodeDim = new Map();
 const nodeDimTarget = new Map();
 // Per-node glow: approaches 1.0 on fire, decays toward 0. Keyed by morphon ID.
 const nodeGlow = new Map();
+// Smooth epistemic color: lerp toward target to prevent photosensitive flashing
+const nodeEpistemicColor = new Map(); // id → THREE.Color (current blended color)
+
+// Death animation: nodes that just died fade out over DEATH_ANIM_FRAMES
+const DEATH_ANIM_FRAMES = 50;
+const dyingNodes = []; // { px, py, pz, color: THREE.Color, size, age }
+let prevNodeIds = new Set();
 
 const firingHistory = [];
 const morphonHistory = [];
+const synapseHistory = [];
+const fieldPeHistory = [];
+const justifiedHistory = [];  // V3: justified fraction sparkline
 const MAX_HISTORY = 120;
 
 // === HEATMAP STATE ===
@@ -488,6 +509,7 @@ function updateRaycast() {
 const dummy = new THREE.Object3D();
 const tempColor = new THREE.Color();
 const dimColor = new THREE.Color();
+const peColor = new THREE.Color();
 
 function updateScene() {
   if (!system) return;
@@ -503,7 +525,28 @@ function updateScene() {
   nodeMap.clear();
 
   const nodeCount = Math.min(nodes.length, MAX_NODES);
-  nodesMesh.count = nodeCount;
+
+  // === DETECT DEATHS — IDs present last frame but missing now ===
+  const currentIds = new Set(nodes.map(n => n.id));
+  for (const id of prevNodeIds) {
+    if (!currentIds.has(id)) {
+      // Capture last known position + color for the fade-out
+      const idx = nodeMap.get(id); // from previous frame's map
+      if (idx !== undefined) {
+        const ct = nodeData[idx]?.cell_type;
+        const c = CELL_COLORS[ct] || CELL_COLORS.Stem;
+        dyingNodes.push({
+          px: nodePositions[idx * 3],
+          py: nodePositions[idx * 3 + 1],
+          pz: nodePositions[idx * 3 + 2],
+          color: c.clone(),
+          size: Math.abs(dummy.matrix?.elements?.[0]) || 0.25,
+          age: 0,
+        });
+      }
+    }
+  }
+  prevNodeIds = currentIds;
 
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
   // Scale nodes down as population grows to prevent z-fighting from overlapping spheres
@@ -529,7 +572,22 @@ function updateScene() {
     dummy.updateMatrix();
     nodesMesh.setMatrixAt(i, dummy.matrix);
 
-    const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
+    let color;
+    if (colorMode === 'pe') {
+      // Heatmap: blue (low PE) → yellow → red (high PE)
+      const pe = Math.max(0, Math.min(1, n.prediction_error || 0));
+      peColor.setHSL(0.66 - pe * 0.66, 0.9, 0.35 + pe * 0.3);
+      color = peColor;
+    } else if (colorMode === 'epistemic') {
+      // V3: color by epistemic state — smooth transitions to avoid flashing
+      const target = EPISTEMIC_COLORS[n.epistemic_state] || EPISTEMIC_COLORS.none;
+      let cur = nodeEpistemicColor.get(n.id);
+      if (!cur) { cur = target.clone(); nodeEpistemicColor.set(n.id, cur); }
+      cur.lerp(target, 0.06); // ~30 frame blend — no hard color snaps
+      color = cur;
+    } else {
+      color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
+    }
 
     // === GLOW: only active or near-threshold morphons ===
     const prevGlow = nodeGlow.get(n.id) || 0;
@@ -574,6 +632,34 @@ function updateScene() {
     nodePositions[i * 3 + 2] = pz;
   }
 
+  // === DYING NODES — flash bright, shrink, fade out ===
+  let dyingRendered = 0;
+  for (let di = dyingNodes.length - 1; di >= 0; di--) {
+    const d = dyingNodes[di];
+    d.age++;
+    if (d.age > DEATH_ANIM_FRAMES) { dyingNodes.splice(di, 1); continue; }
+    const slot = nodeCount + dyingRendered;
+    if (slot >= MAX_NODES) continue;
+
+    const t = d.age / DEATH_ANIM_FRAMES; // 0→1
+    // Quick flash then fade: bright at t=0, dim by t=0.3, gone by t=1
+    const brightness = t < 0.15 ? 1.5 + (1 - t / 0.15) * 1.5 : (1 - t) * 0.8;
+    // Shrink: hold size briefly, then collapse
+    const scale = t < 0.2 ? d.size * (1 + t * 2) : d.size * Math.max(0, 1 - (t - 0.2) * 1.25);
+
+    dummy.position.set(d.px, d.py, d.pz);
+    dummy.scale.setScalar(scale * popScale);
+    dummy.updateMatrix();
+    nodesMesh.setMatrixAt(slot, dummy.matrix);
+
+    // Flash white then fade to cell color then dim
+    tempColor.copy(d.color).multiplyScalar(brightness);
+    if (t < 0.15) tempColor.lerp(WHITE, (1 - t / 0.15) * 0.7);
+    nodesMesh.setColorAt(slot, tempColor);
+    dyingRendered++;
+  }
+  nodesMesh.count = nodeCount + dyingRendered;
+
   // === GLOW OVERLAY — additive emissive layer for active/near-active nodes ===
   let glowCount = 0;
   for (let i = 0; i < nodeCount; i++) {
@@ -593,11 +679,37 @@ function updateScene() {
     dummy.updateMatrix();
     glowMesh.setMatrixAt(glowCount, dummy.matrix);
 
-    const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
-    tempColor.copy(color).multiplyScalar(glow * 1.5); // drives bloom when glow > ~0.5
+    let glowColor;
+    if (colorMode === 'pe') {
+      const pe = Math.max(0, Math.min(1, n.prediction_error || 0));
+      peColor.setHSL(0.66 - pe * 0.66, 0.9, 0.35 + pe * 0.3);
+      glowColor = peColor;
+    } else if (colorMode === 'epistemic') {
+      glowColor = nodeEpistemicColor.get(n.id) || EPISTEMIC_COLORS.none;
+    } else {
+      glowColor = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
+    }
+    tempColor.copy(glowColor).multiplyScalar(glow * 1.5);
     glowMesh.setColorAt(glowCount, tempColor);
     glowCount++;
   }
+  // Dying nodes get a strong bloom flash during early animation
+  for (const d of dyingNodes) {
+    const t = d.age / DEATH_ANIM_FRAMES;
+    if (t > 0.4 || glowCount >= MAX_NODES) continue;
+    const bloomIntensity = t < 0.15 ? 2.5 * (1 - t / 0.15) : (0.4 - t) * 2;
+    if (bloomIntensity <= 0) continue;
+    const scale = t < 0.2 ? d.size * (1 + t * 2) : d.size * Math.max(0, 1 - (t - 0.2) * 1.25);
+    dummy.position.set(d.px, d.py, d.pz);
+    dummy.scale.setScalar(scale * popScale * 1.5);
+    dummy.updateMatrix();
+    glowMesh.setMatrixAt(glowCount, dummy.matrix);
+    tempColor.copy(d.color).multiplyScalar(bloomIntensity);
+    tempColor.lerp(WHITE, 0.5);
+    glowMesh.setColorAt(glowCount, tempColor);
+    glowCount++;
+  }
+
   glowMesh.count = glowCount;
   if (glowCount > 0) {
     glowMesh.instanceMatrix.needsUpdate = true;
@@ -677,6 +789,8 @@ function updateScene() {
     }
 
     if (e.consolidated && edgeDimFactor < 0.3) { r += 0.05; g += 0.04; b += 0.02; }
+    // V3: justified synapses get subtle gold tint
+    if (e.justified && edgeDimFactor < 0.3) { r += 0.03; g += 0.025; }
 
     // Apply same color to all 4 vertices
     for (let v = 0; v < 4; v++) {
@@ -756,6 +870,8 @@ function updatePanels() {
   document.getElementById('s-fired').textContent = frameFired.size;
   document.getElementById('s-energy').textContent = stats.avg_energy.toFixed(2);
   document.getElementById('s-error').textContent = stats.avg_prediction_error.toFixed(3);
+  document.getElementById('s-field-pe-max').textContent = (stats.field_pe_max || 0).toFixed(3);
+  document.getElementById('s-field-pe-mean').textContent = (stats.field_pe_mean || 0).toFixed(3);
   document.getElementById('s-wmem').textContent = stats.working_memory_items;
   document.getElementById('s-born').textContent = stats.total_born || 0;
   document.getElementById('s-died').textContent = stats.total_died || 0;
@@ -772,6 +888,21 @@ function updatePanels() {
   setModBar('mod-arousal', 'mod-arousal-v', mod.arousal);
   setModBar('mod-homeo', 'mod-homeo-v', mod.homeostasis);
 
+  // V3: Governance panel
+  if (system.governance_json) {
+    const gov = JSON.parse(system.governance_json());
+    document.getElementById('s-justified').textContent = (gov.justified_fraction * 100).toFixed(0) + '%';
+    document.getElementById('s-consolidated').textContent = (gov.consolidated_fraction * 100).toFixed(0) + '%';
+    document.getElementById('s-skepticism').textContent = gov.avg_skepticism.toFixed(2);
+    const cs = gov.cluster_states;
+    document.getElementById('s-epistemic').textContent =
+      `H${cs.hypothesis} S${cs.supported} O${cs.outdated} C${cs.contested}`;
+
+    justifiedHistory.push(gov.justified_fraction);
+    if (justifiedHistory.length > MAX_HISTORY) justifiedHistory.shift();
+    drawSparkline('spark-justified', justifiedHistory, '#eab308');
+  }
+
   // Sparklines
   firingHistory.push(stats.firing_rate);
   if (firingHistory.length > MAX_HISTORY) firingHistory.shift();
@@ -780,6 +911,14 @@ function updatePanels() {
   morphonHistory.push(stats.total_morphons);
   if (morphonHistory.length > MAX_HISTORY) morphonHistory.shift();
   drawSparkline('spark-morphons', morphonHistory, '#34d399');
+
+  synapseHistory.push(stats.total_synapses);
+  if (synapseHistory.length > MAX_HISTORY) synapseHistory.shift();
+  drawSparkline('spark-synapses', synapseHistory, '#a78bfa');
+
+  fieldPeHistory.push(stats.field_pe_mean || 0);
+  if (fieldPeHistory.length > MAX_HISTORY) fieldPeHistory.shift();
+  drawSparkline('spark-field-pe', fieldPeHistory, '#ef4444');
 
   // Motor output bar chart
   updateMotorOutput();
@@ -903,12 +1042,36 @@ function updateDetailPanel() {
   document.getElementById('d-desire').textContent = node.desire.toFixed(3);
   document.getElementById('d-fired').textContent = node.fired ? 'YES' : '-';
 
-  let inCount = 0, outCount = 0;
+  let inCount = 0, outCount = 0, justifiedCount = 0, reinforcedCount = 0;
   for (const e of edgeData) {
-    if (e.to === selectedNodeId) inCount++;
+    if (e.to === selectedNodeId) {
+      inCount++;
+      if (e.justified) justifiedCount++;
+      if (e.reinforcement_count > 0) reinforcedCount++;
+    }
     if (e.from === selectedNodeId) outCount++;
   }
   document.getElementById('d-conns').textContent = `${inCount}\u2193 ${outCount}\u2191`;
+
+  // V3: Epistemic state for clustered morphons
+  const epRow = document.getElementById('d-epistemic-row');
+  const skRow = document.getElementById('d-skepticism-row');
+  const jfRow = document.getElementById('d-justified-row');
+  if (node.fused && node.epistemic_state !== 'none') {
+    epRow.style.display = '';
+    skRow.style.display = '';
+    jfRow.style.display = '';
+    document.getElementById('d-epistemic').textContent = node.epistemic_state;
+    document.getElementById('d-skepticism').textContent = node.skepticism.toFixed(2);
+    document.getElementById('d-justified').textContent = `${justifiedCount}/${inCount} in, ${reinforcedCount} reinforced`;
+  } else {
+    epRow.style.display = 'none';
+    skRow.style.display = 'none';
+    jfRow.style.display = inCount > 0 ? '' : 'none';
+    if (inCount > 0) {
+      document.getElementById('d-justified').textContent = `${justifiedCount}/${inCount} justified`;
+    }
+  }
 }
 
 // ============================================================
@@ -916,6 +1079,7 @@ function updateDetailPanel() {
 // ============================================================
 let lastMorphonCount = 0;
 let lastSynapseCount = 0;
+let lastEpistemicKey = null;  // V3: track epistemic state changes for logging
 
 function detectEvents() {
   if (!system || !cachedStats) return;
@@ -932,6 +1096,19 @@ function detectEvents() {
   }
   lastMorphonCount = mc;
   lastSynapseCount = sc;
+
+  // V3: Log epistemic state transitions
+  if (system.governance_json) {
+    const gov = JSON.parse(system.governance_json());
+    const cs = gov.cluster_states;
+    const key = `H${cs.hypothesis}S${cs.supported}O${cs.outdated}C${cs.contested}`;
+    if (lastEpistemicKey && key !== lastEpistemicKey) {
+      if (cs.supported > 0) addEvent(step, `Cluster(s) → Supported`, 'event-other');
+      if (cs.outdated > 0) addEvent(step, `Cluster(s) → Outdated`, 'event-death');
+      if (cs.contested > 0) addEvent(step, `Cluster(s) → Contested`, 'event-death');
+    }
+    lastEpistemicKey = key;
+  }
 }
 
 // Buffer for events added while paused — flushed on resume
@@ -1023,10 +1200,13 @@ function setupControls() {
     connectedToSelected.clear();
     nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
     lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0; spikeCooldowns.clear();
+    dyingNodes.length = 0; prevNodeIds.clear(); nodeEpistemicColor.clear();
     rasterScrollX = 0; rasterMorphonCount = 0;
     groupRateHistory = []; heatmapBinAccum = []; heatmapBinSteps = 0;
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
     firingHistory.length = 0;
+    synapseHistory.length = 0;
+    fieldPeHistory.length = 0;
     // Reset graph
     for (const k in graphData) graphData[k].length = 0;
     lastBorn = 0; lastDied = 0;
@@ -1278,9 +1458,24 @@ function setupControls() {
     if (e.target === helpOverlay) helpOverlay.classList.remove('visible');
   });
 
+  // Color mode toggle (Cell Type / PE Heatmap)
+  document.querySelectorAll('.color-mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.color-mode-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      colorMode = btn.dataset.mode;
+      // Clear cell type filter when switching to PE/epistemic mode
+      if (colorMode === 'pe' || colorMode === 'epistemic') {
+        filterCellType = null;
+        clearCellTypeActive();
+      }
+    });
+  });
+
   // Cell type filtering — click to highlight, click again to clear
   document.querySelectorAll('.cell-type-row[data-type]').forEach(row => {
     row.addEventListener('click', () => {
+      if (colorMode !== 'celltype') return;
       const type = row.dataset.type;
       if (filterCellType === type) {
         // Toggle off
@@ -1627,6 +1822,7 @@ const graphData = {
   synapses: [],
   born: [],
   died: [],
+  fieldPe: [],
 };
 let lastBorn = 0, lastDied = 0;
 
@@ -1651,6 +1847,7 @@ function initGraph() {
         makeDataset('Synapses',    '#a78bfa', 'y', true),
         makeDataset('Born',        '#22d3ee', 'y'),
         makeDataset('Died',        '#f87171', 'y'),
+        makeDataset('Field PE',    '#ef4444', 'y1', true),
       ],
     },
     options: {
@@ -1724,6 +1921,7 @@ function updateGraph(stats) {
   graphData.synapses.push(stats.total_synapses);
   graphData.born.push(born - lastBorn);
   graphData.died.push(died - lastDied);
+  graphData.fieldPe.push(stats.field_pe_mean || 0);
   lastBorn = born;
   lastDied = died;
 
@@ -1738,6 +1936,7 @@ function updateGraph(stats) {
   liveChart.data.datasets[3].data = graphData.synapses.slice(start);
   liveChart.data.datasets[4].data = graphData.born.slice(start);
   liveChart.data.datasets[5].data = graphData.died.slice(start);
+  liveChart.data.datasets[6].data = graphData.fieldPe.slice(start);
 
   liveChart.update('none');
 }

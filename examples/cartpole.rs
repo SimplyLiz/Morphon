@@ -10,6 +10,7 @@
 //! Run: cargo run --example cartpole --release -- --extended
 
 use morphon_core::developmental::DevelopmentalConfig;
+use morphon_core::endoquilibrium::EndoConfig;
 use morphon_core::homeostasis::HomeostasisParams;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
@@ -150,7 +151,7 @@ fn create_system() -> System {
             a_minus: -0.5,          // weaker LTD to prevent inhibitory drift
             tau_tag: 500.0,
             tag_threshold: 0.3,
-            capture_threshold: 10.0, // disable consolidation — stay plastic
+            capture_threshold: 0.7,  // consolidate on strong reward only
             capture_rate: 0.2,
             weight_max: 3.0,        // tighter bounds prevent weight divergence
             weight_min: 0.01,
@@ -181,6 +182,7 @@ fn create_system() -> System {
             migration: false,
         },
         metabolic: MetabolicConfig::default(),
+        endoquilibrium: EndoConfig { enabled: true, ..Default::default() },
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 200,
@@ -188,6 +190,7 @@ fn create_system() -> System {
     };
     let mut sys = System::new(config);
     sys.enable_analog_readout(); // Purkinje-style analog output bypass
+    sys.set_consolidation_gate(20.0); // consolidate once consistently above 2× random
     sys
 }
 
@@ -304,6 +307,7 @@ fn main() {
             let out_diff = if test_out.len() >= 2 { (test_out[0] - test_out[1]).abs() } else { 0.0 };
             println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | V={:.2} Δout {:.3} | {}",
                 ep + 1, steps, avg, best, critic_v, out_diff, diag.summary());
+            println!("       {}", system.endo.summary());
         }
 
         if recent.len() >= 100 && avg >= 195.0 {
@@ -319,6 +323,7 @@ fn main() {
         s.total_morphons, s.total_synapses, s.fused_clusters, s.max_generation, s.firing_rate);
     println!("Types: {:?}", s.differentiation_map);
     println!("Learning: {}", diag.summary());
+    println!("Endo: {}", system.endo.summary());
 
     let avg_100 = recent.iter().sum::<usize>() as f64 / recent.len().max(1) as f64;
     let solved = recent.len() >= 100 && avg_100 >= 195.0;

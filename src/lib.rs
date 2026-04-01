@@ -58,6 +58,7 @@ pub mod field;
 pub mod justification;
 pub mod governance;
 pub mod epistemic;
+pub mod endoquilibrium;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "wasm")]
@@ -76,3 +77,4 @@ pub use neuromodulation::Neuromodulation;
 pub use governance::ConstitutionalConstraints;
 pub use epistemic::{EpistemicState, EpistemicHistory};
 pub use justification::{FormationCause, SynapticJustification};
+pub use endoquilibrium::{Endoquilibrium, EndoConfig, ChannelState, DevelopmentalStage};

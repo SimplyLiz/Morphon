@@ -279,7 +279,7 @@ fn test_tag_and_capture_delayed_reward() {
 
     let weight_before = syn.weight;
     let motor_receptors = default_receptors(CellType::Motor); // Reward + Arousal
-    apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors);
+    apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
 
     if syn.consolidated {
         assert!(

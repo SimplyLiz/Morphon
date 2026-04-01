@@ -20,6 +20,7 @@ mod bindings {
     use wasm_bindgen::prelude::*;
 
     use crate::developmental::DevelopmentalConfig;
+    use crate::field::FieldConfig;
     use crate::system::{System, SystemConfig};
 
     /// MI System for WebAssembly.
@@ -55,6 +56,7 @@ mod bindings {
                     dimensions,
                     ..dev_config
                 },
+                field: FieldConfig { enabled: true, ..Default::default() },
                 ..Default::default()
             };
 
@@ -194,6 +196,20 @@ mod bindings {
                 .morphons
                 .values()
                 .map(|m| {
+                    // V3: look up cluster epistemic state if morphon is fused
+                    let (cluster_id, epistemic_state, skepticism) = m.fused_with
+                        .and_then(|cid| self.inner.clusters.get(&cid).map(|c| (cid, c)))
+                        .map(|(cid, c)| {
+                            let state_label = match &c.epistemic_state {
+                                crate::epistemic::EpistemicState::Supported { .. } => "Supported",
+                                crate::epistemic::EpistemicState::Hypothesis { .. } => "Hypothesis",
+                                crate::epistemic::EpistemicState::Outdated { .. } => "Outdated",
+                                crate::epistemic::EpistemicState::Contested { .. } => "Contested",
+                            };
+                            (Some(cid), state_label, c.epistemic_history.skepticism)
+                        })
+                        .unwrap_or((None, "none", 0.0));
+
                     serde_json::json!({
                         "id": m.id,
                         "cell_type": format!("{:?}", m.cell_type),
@@ -214,6 +230,10 @@ mod bindings {
                         "division_pressure": m.division_pressure,
                         "firing_rate": m.activity_history.mean(),
                         "fused": m.fused_with.is_some(),
+                        // V3: epistemic data
+                        "cluster_id": cluster_id,
+                        "epistemic_state": epistemic_state,
+                        "skepticism": skepticism,
                     })
                 })
                 .collect();
@@ -225,12 +245,30 @@ mod bindings {
                 .into_iter()
                 .filter_map(|(from, to, ei)| {
                     self.inner.topology.graph.edge_weight(ei).map(|syn| {
+                        let (justified, formation_cause, reinforcement_count) = syn.justification
+                            .as_ref()
+                            .map(|j| {
+                                let cause = match &j.formation_cause {
+                                    crate::justification::FormationCause::HebbianCoincidence { .. } => "Hebbian",
+                                    crate::justification::FormationCause::InheritedFromDivision { .. } => "Division",
+                                    crate::justification::FormationCause::ProximityFormation { .. } => "Proximity",
+                                    crate::justification::FormationCause::FusionBridge { .. } => "Fusion",
+                                    crate::justification::FormationCause::External { .. } => "External",
+                                };
+                                (true, cause, j.reinforcement_history.len())
+                            })
+                            .unwrap_or((false, "none", 0));
+
                         serde_json::json!({
                             "from": from,
                             "to": to,
                             "weight": syn.weight,
                             "eligibility": syn.eligibility,
                             "consolidated": syn.consolidated,
+                            // V3: justification data
+                            "justified": justified,
+                            "formation_cause": formation_cause,
+                            "reinforcement_count": reinforcement_count,
                         })
                     })
                 })
@@ -239,6 +277,41 @@ mod bindings {
             serde_json::json!({
                 "nodes": nodes,
                 "edges": edges,
+            })
+            .to_string()
+        }
+
+        /// Get V3 governance metrics as a JSON string.
+        pub fn governance_json(&self) -> String {
+            let diag = &self.inner.diag;
+            let mut supported = 0usize;
+            let mut hypothesis = 0usize;
+            let mut outdated = 0usize;
+            let mut contested = 0usize;
+            let mut skepticism_sum = 0.0f64;
+
+            for c in self.inner.clusters.values() {
+                match &c.epistemic_state {
+                    crate::epistemic::EpistemicState::Supported { .. } => supported += 1,
+                    crate::epistemic::EpistemicState::Hypothesis { .. } => hypothesis += 1,
+                    crate::epistemic::EpistemicState::Outdated { .. } => outdated += 1,
+                    crate::epistemic::EpistemicState::Contested { .. } => contested += 1,
+                }
+                skepticism_sum += c.epistemic_history.skepticism;
+            }
+            let n_clusters = self.inner.clusters.len().max(1) as f64;
+
+            serde_json::json!({
+                "justified_fraction": diag.justified_fraction,
+                "consolidated_fraction": diag.consolidated_fraction,
+                "cluster_states": {
+                    "supported": supported,
+                    "hypothesis": hypothesis,
+                    "outdated": outdated,
+                    "contested": contested,
+                },
+                "avg_skepticism": skepticism_sum / n_clusters,
+                "total_clusters": self.inner.clusters.len(),
             })
             .to_string()
         }
