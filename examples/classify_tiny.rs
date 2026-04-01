@@ -167,8 +167,7 @@ fn main() {
             let input = make_sample(label, &mut rng);
             let pred = classify(&mut system, &input);
 
-            // Pure supervised delta rule — stronger learning rate
-            system.teach_supervised(label, 0.05);
+            system.teach_supervised(label, 0.01);
             system.step();
 
             if pred == label { correct += 1; }

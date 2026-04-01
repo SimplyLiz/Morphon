@@ -32,8 +32,8 @@ let running = true;
 let stepsPerFrame = 10;
 let selectedNodeId = null;
 let hoveredNodeId = null;
-let prevFired = new Set();
 let frameFired = new Set(); // accumulates all fired IDs across multi-step frames
+const spikeSpawnCooldown = new Map(); // id → frames remaining before next spike spawn
 
 // Connected node IDs for context dimming
 let connectedToSelected = new Set();

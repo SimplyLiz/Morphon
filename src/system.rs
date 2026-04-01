@@ -911,13 +911,19 @@ impl System {
             let motor_id = self.output_ports[j];
             let incoming = self.topology.incoming_synapses_mut(motor_id);
             for (pre_id, edge_idx) in incoming {
-                // Pre-synaptic activity: use potential (continuous) for graded signal
+                // Pre-synaptic activity: binary (fired or not in recent history).
+                // Using sigmoid(potential) fails because cold morphons have sigmoid≈0.
+                // Using a floor erases class discrimination.
+                // Binary firing is the clearest signal: this sensory neuron was active
+                // for this input, so its connection to the correct output should strengthen.
                 let pre_act = self.morphons.get(&pre_id)
-                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+                    .map(|m| if m.fired || m.activity_history.mean() > 0.05 { 1.0 } else { 0.0 })
                     .unwrap_or(0.0);
 
+                if pre_act < 0.01 { continue; } // skip inactive pre-synaptic neurons
+
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    let delta_w = learning_rate * pre_act * error_j;
+                    let delta_w = learning_rate * error_j; // pre_act is binary gate, not multiplier
                     syn.weight += delta_w;
                     syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
                 }

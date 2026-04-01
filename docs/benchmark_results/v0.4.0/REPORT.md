@@ -4,7 +4,7 @@
 |---|---|
 | **Version** | 0.4.0 |
 | **Profile** | quick |
-| **Date** | 2026-04-01 04:34 UTC |
+| **Date** | 2026-04-01 04:39 UTC |
 | **Platform** | macos aarch64 |
 
 ## Micro-Benchmarks
@@ -52,14 +52,14 @@ Scaling exponent: **0.52** (linear)
 | Metric | Value |
 |--------|-------|
 | **Status** | Not solved |
-| Best Steps | 60 |
-| Avg (last 100) | 14.4 |
-| Episodes | 200 |
-| Profile | quick |
+| Best Steps | 77 |
+| Avg (last 100) | 15.5 |
+| Episodes | 1000 |
+| Profile | standard |
 
-**System State:** 300 morphons, 1056 synapses, 41 clusters, gen 2
-**Firing Rate:** 0.087 | **Prediction Error:** 0.082
-**Learning:** weight mean -0.561, std 1.709, 552 active tags, 956 captures
+**System State:** 300 morphons, 1387 synapses, 69 clusters, gen 2
+**Firing Rate:** 0.097 | **Prediction Error:** 0.136
+**Learning:** weight mean -0.532, std 1.619, 729 active tags, 3338 captures
 
 ## Anomaly Detection
 
@@ -76,22 +76,22 @@ Series length: 800 | Anomaly rate: 5% | Total anomalies: 39 | Profile: quick
 
 ## MNIST
 
-**Test Accuracy: 9.2%** | Train samples: 2000 | Test samples: 500 | Epochs: 3 | Profile: ?
+**Test Accuracy: 7.5%** | Train samples: 500 | Test samples: 200 | Epochs: 1 | Profile: quick
 
 | Digit | Accuracy | Correct | Total |
 |-------|----------|---------|-------|
-| 0 | 0.0% | 0 | 56 |
-| 1 | 0.0% | 0 | 57 |
-| 2 | 27.5% | 14 | 51 |
-| 3 | 0.0% | 0 | 49 |
-| 4 | 0.0% | 0 | 46 |
-| 5 | 39.1% | 18 | 46 |
-| 6 | 0.0% | 0 | 50 |
-| 7 | 0.0% | 0 | 51 |
-| 8 | 35.0% | 14 | 40 |
-| 9 | 0.0% | 0 | 54 |
+| 0 | 0.0% | 0 | 21 |
+| 1 | 0.0% | 0 | 24 |
+| 2 | 0.0% | 0 | 23 |
+| 3 | 0.0% | 0 | 18 |
+| 4 | 0.0% | 0 | 16 |
+| 5 | 29.4% | 5 | 17 |
+| 6 | 0.0% | 0 | 16 |
+| 7 | 0.0% | 0 | 21 |
+| 8 | 58.8% | 10 | 17 |
+| 9 | 0.0% | 0 | 27 |
 
-**System State:** 2007 morphons, 409790 synapses, 38 clusters
+**System State:** 35192 morphons, 11881446 synapses, 261 clusters
 
 ---
 
