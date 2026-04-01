@@ -11,7 +11,7 @@ use crate::homeostasis::{self, HomeostasisParams};
 use crate::learning::{self, LearningParams};
 use crate::memory::TripleMemory;
 use crate::morphogenesis::{self, Cluster, MorphogenesisParams, MorphogenesisReport};
-use crate::morphon::Morphon;
+use crate::morphon::{MetabolicConfig, Morphon};
 use crate::neuromodulation::Neuromodulation;
 use crate::resonance::ResonanceEngine;
 use crate::scheduler::SchedulerConfig;
@@ -30,6 +30,8 @@ pub struct SystemConfig {
     pub homeostasis: HomeostasisParams,
     pub scheduler: SchedulerConfig,
     pub lifecycle: LifecycleConfig,
+    /// V3 Metabolic Budget parameters.
+    pub metabolic: MetabolicConfig,
     pub working_memory_capacity: usize,
     pub episodic_memory_capacity: usize,
     /// Timestep size for simulation.
@@ -61,6 +63,7 @@ impl Default for SystemConfig {
             homeostasis: HomeostasisParams::default(),
             scheduler: SchedulerConfig::default(),
             lifecycle: LifecycleConfig::default(),
+            metabolic: MetabolicConfig::default(),
             working_memory_capacity: 7,
             episodic_memory_capacity: 1000,
             dt: 1.0,
@@ -342,10 +345,21 @@ impl System {
         // 3. Update all Morphon states (integrate input, fire/not-fire).
         //    Must run BEFORE spike-timing eligibility so post_fired reflects
         //    whether the delivered spike caused the target to fire this step.
+        //    V3 Metabolic Budget: pre-compute synapse counts for energy cost.
+        let metabolic = &self.config.metabolic;
+        let degree_map: HashMap<MorphonId, usize> = self.morphons.keys()
+            .map(|&id| (id, self.topology.degree(id)))
+            .collect();
         #[cfg(feature = "parallel")]
-        self.morphons.par_iter_mut().for_each(|(_, m)| m.step(dt));
+        self.morphons.par_iter_mut().for_each(|(id, m)| {
+            let sc = degree_map.get(id).copied().unwrap_or(0);
+            m.step(dt, sc, metabolic);
+        });
         #[cfg(not(feature = "parallel"))]
-        self.morphons.values_mut().for_each(|m| m.step(dt));
+        self.morphons.values_mut().for_each(|m| {
+            let sc = degree_map.get(&m.id).copied().unwrap_or(0);
+            m.step(dt, sc, metabolic);
+        });
 
         // 4. Spike-timing: boost pre_trace on delivered synapses.
         //    The spike delivery is direct evidence that pre fired recently.
@@ -469,9 +483,29 @@ impl System {
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
                                 let dfa_lr = 0.02;
-                                let weight_decay = 0.001 * synapse.weight; // L2 prevents drift
+                                let weight_decay = 0.001 * synapse.weight;
                                 let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
+
+                                // Tag-and-Capture on DFA path: consolidate synapses where
+                                // the DFA update was strong AND reward is high.
+                                // This gives the hidden layer long-term memory.
+                                let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
+                                if dfa_strength > 0.1 && !synapse.consolidated {
+                                    synapse.tag = 1.0;
+                                    synapse.tag_strength = dfa_strength;
+                                }
+                                // Capture: strong DFA update + high reward → consolidate
+                                if synapse.tag > 0.1
+                                    && self.modulation.reward > 0.3
+                                    && !synapse.consolidated
+                                {
+                                    synapse.weight += 0.1 * synapse.tag_strength * self.modulation.reward;
+                                    synapse.weight = synapse.weight.clamp(-wmax, wmax);
+                                    synapse.consolidated = true;
+                                    synapse.tag = 0.0;
+                                    captures_this_step += 1;
+                                }
                                 synapse.age += 1;
                                 if synapse.eligibility.abs() > 0.1 {
                                     synapse.usage_count += 1;
@@ -793,7 +827,31 @@ impl System {
                 }
             }
             if let Some(m) = self.morphons.get_mut(&assoc_id) {
-                m.feedback_signal = fb; // stored for the three-factor rule to use
+                m.feedback_signal = fb;
+            }
+
+            // Tag-and-capture on sensory→associative synapses during readout training.
+            // This is the RIGHT moment: we have fresh error signals, the feedback_signal
+            // is just computed, and the reward reflects the current action quality.
+            // Consolidates input→hidden connections that contribute to correct outputs.
+            // Accumulate tag from repeated positive feedback (not one-shot).
+            // Capture after sustained positive tagging across many presentations.
+            if fb > 0.01 {
+                let incoming = self.topology.incoming_synapses_mut(assoc_id);
+                for (_, edge_idx) in incoming {
+                    if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                        if !syn.consolidated {
+                            syn.tag += fb.abs() * 0.5; // aggressive accumulation
+                            syn.tag = syn.tag.min(1.0);
+                            syn.tag_strength = syn.tag;
+                        }
+                        if syn.tag > 0.1 && !syn.consolidated {
+                            syn.consolidated = true;
+                            syn.tag = 0.0;
+                            self.diag.total_captures += 1;
+                        }
+                    }
+                }
             }
         }
     }
