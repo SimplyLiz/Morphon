@@ -819,9 +819,38 @@
   /* Speed value label */
   .speed-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); min-width: 24px; }
 
+  /* === V3: LIGHT THEME === */
+  [data-theme="light"] {
+    --bg: #f0f2f5;
+    --panel: rgba(255, 255, 255, 0.88);
+    --panel-border: rgba(0, 30, 80, 0.08);
+    --panel-border-hover: rgba(0, 30, 80, 0.18);
+    --text: #1a2332;
+    --text-dim: #6b7a8d;
+    --text-bright: #0a1020;
+    --accent: #3366cc;
+  }
+  [data-theme="light"] #tooltip { background: rgba(255,255,255,0.95); color: #1a2332; border-color: rgba(0,30,80,0.15); }
+  [data-theme="light"] .tip-sep { border-color: rgba(0,0,0,0.1); }
+  [data-theme="light"] .log-entry { border-bottom-color: rgba(0,0,0,0.04); }
+  [data-theme="light"] canvas { filter: none; }
+
   /* === RESPONSIVE === */
   @media (max-width: 900px) {
     #left-panel, #right-panel { display: none !important; }
+    #timeline-bar { display: none !important; }
+  }
+  @media (max-width: 600px) {
+    #header .header-stats { display: none; }
+    #header .header-controls select { display: none; }
+    #bottom-panel { max-height: 30vh; }
+  }
+
+  /* === V3: Mobile touch === */
+  @media (pointer: coarse) {
+    button { min-height: 36px; min-width: 36px; }
+    .cell-type-row { padding: 6px 8px; }
+    #tooltip { font-size: 11px; }
   }
 </style>
 </head>
@@ -860,9 +889,18 @@
     <button id="btn-reset">RESET</button>
     <button id="btn-save" title="Save state">SAVE</button>
     <button id="btn-load" title="Load state">LOAD</button>
+    <button id="btn-theme" title="Toggle dark/light theme">&#x2600;</button>
+    <button id="btn-screenshot" title="Export screenshot (P)">&#x1F4F7;</button>
     <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
     <button id="btn-help" title="Help">?</button>
   </div>
+</div>
+
+<!-- TIMELINE SCRUBBER -->
+<div id="timeline-bar" style="position:fixed;top:45px;left:50%;transform:translateX(-50%);z-index:20;display:flex;align-items:center;gap:6px;padding:2px 10px;background:var(--panel);border:1px solid var(--panel-border);border-radius:4px;font-size:9px;color:var(--text-dim)">
+  <span>TIMELINE</span>
+  <input type="range" id="timeline-scrubber" min="0" max="0" value="0" style="width:120px;height:4px;accent-color:var(--accent)">
+  <span id="timeline-step" style="color:var(--text);min-width:40px">0</span>
 </div>
 
 <!-- LEFT PANEL -->
@@ -917,23 +955,7 @@
     </div>
   </div>
 
-  <div class="panel">
-    <div class="section-title">Color Mode</div>
-    <div style="display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap;">
-      <button class="color-mode-btn active" data-mode="celltype">Cell Type</button>
-      <button class="color-mode-btn" data-mode="pe">PE Heatmap</button>
-      <button class="color-mode-btn" data-mode="epistemic">Epistemic</button>
-    </div>
-    <div class="section-title">Cell Types</div>
-    <div class="cell-types" id="cell-types">
-      <div class="cell-type-row" data-type="Stem"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
-      <div class="cell-type-row" data-type="Sensory"><span class="name"><span class="cell-dot" style="background:var(--sensory)"></span>Sensory</span><span class="count" id="ct-Sensory">0</span></div>
-      <div class="cell-type-row" data-type="Associative"><span class="name"><span class="cell-dot" style="background:var(--associative)"></span>Associative</span><span class="count" id="ct-Associative">0</span></div>
-      <div class="cell-type-row" data-type="Motor"><span class="name"><span class="cell-dot" style="background:var(--motor)"></span>Motor</span><span class="count" id="ct-Motor">0</span></div>
-      <div class="cell-type-row" data-type="Modulatory"><span class="name"><span class="cell-dot" style="background:var(--modulatory)"></span>Modulatory</span><span class="count" id="ct-Modulatory">0</span></div>
-      <div class="cell-type-row" data-type="Fused"><span class="name"><span class="cell-dot" style="background:var(--fused)"></span>Fused</span><span class="count" id="ct-Fused">0</span></div>
-    </div>
-  </div>
+
 </div>
 
 <!-- RIGHT PANEL -->
@@ -970,6 +992,29 @@
     <div class="motor-bars" id="motor-output"></div>
   </div>
 
+  <div class="panel">
+    <div class="section-title">Color Mode</div>
+    <div style="display:flex; gap:4px; margin-bottom:8px; flex-wrap:wrap;">
+      <button class="color-mode-btn active" data-mode="celltype">Cell Type</button>
+      <button class="color-mode-btn" data-mode="pe">PE Heatmap</button>
+      <button class="color-mode-btn" data-mode="epistemic">Epistemic</button>
+    </div>
+    <div class="section-title">Cell Types</div>
+    <div class="cell-types" id="cell-types">
+      <div class="cell-type-row" data-type="Stem"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
+      <div class="cell-type-row" data-type="Sensory"><span class="name"><span class="cell-dot" style="background:var(--sensory)"></span>Sensory</span><span class="count" id="ct-Sensory">0</span></div>
+      <div class="cell-type-row" data-type="Associative"><span class="name"><span class="cell-dot" style="background:var(--associative)"></span>Associative</span><span class="count" id="ct-Associative">0</span></div>
+      <div class="cell-type-row" data-type="Motor"><span class="name"><span class="cell-dot" style="background:var(--motor)"></span>Motor</span><span class="count" id="ct-Motor">0</span></div>
+      <div class="cell-type-row" data-type="Modulatory"><span class="name"><span class="cell-dot" style="background:var(--modulatory)"></span>Modulatory</span><span class="count" id="ct-Modulatory">0</span></div>
+      <div class="cell-type-row" data-type="Fused"><span class="name"><span class="cell-dot" style="background:var(--fused)"></span>Fused</span><span class="count" id="ct-Fused">0</span></div>
+    </div>
+  </div>
+
+  <div class="panel" id="cluster-panel">
+    <div class="section-title">Clusters</div>
+    <div id="cluster-list" style="max-height:120px;overflow-y:auto"></div>
+  </div>
+
   <div class="panel" id="detail-panel">
     <div class="section-title">Selected Morphon</div>
     <div class="detail-header">
@@ -1000,6 +1045,7 @@
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
+    <button class="tab-btn" data-tab="tab-lineage">LINEAGE</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -1053,6 +1099,13 @@
       <canvas id="graph-canvas"></canvas>
     </div>
   </div>
+
+  <!-- TAB 4: LINEAGE TREE -->
+  <div id="tab-lineage" class="tab-content">
+    <div id="lineage-canvas-wrap" style="width:100%;height:100%;overflow-x:auto">
+      <canvas id="lineage-canvas" style="width:100%;height:100%"></canvas>
+    </div>
+  </div>
 </div>
 
 <!-- HELP OVERLAY -->
@@ -1084,14 +1137,18 @@
       <li><kbd>F</kbd> Fullscreen</li>
       <li><kbd>Esc</kbd> Deselect / Close help</li>
       <li><kbd>?</kbd> Toggle this help</li>
+      <li><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> Color: Cell Type / PE / Epistemic</li>
+      <li><kbd>P</kbd> Export screenshot</li>
     </ul>
 
     <h3>Interaction</h3>
     <ul>
       <li><strong>Orbit</strong> — drag to rotate, scroll to zoom</li>
-      <li><strong>Hover</strong> — tooltip with morphon info</li>
-      <li><strong>Click node</strong> — select, highlight connections</li>
+      <li><strong>Hover node</strong> — tooltip with morphon info</li>
+      <li><strong>Hover edge</strong> — synapse details (weight, cause, reinforcements)</li>
+      <li><strong>Click node</strong> — select, highlight connections by provenance</li>
       <li><strong>Click cell type</strong> — highlight all of that type</li>
+      <li><strong>Click cluster</strong> — zoom to cluster, show members</li>
       <li><strong>Click empty</strong> — deselect</li>
     </ul>
 

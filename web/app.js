@@ -205,7 +205,7 @@ function initScene() {
   const container = document.getElementById('scene-container');
 
   // Renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+  renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const sceneH = window.innerHeight - (document.getElementById('bottom-panel')?.offsetHeight || 160);
   renderer.setSize(window.innerWidth, sceneH);
@@ -501,7 +501,15 @@ function updateRaycast() {
       `;
     }
   } else {
-    tooltip.style.display = 'none';
+    // Check for edge hover when not hovering a node
+    const edgeIdx = findClosestEdge(mouseClientX, mouseClientY);
+    if (edgeIdx !== null) {
+      hoveredEdgeIdx = edgeIdx;
+      showEdgeTooltip(edgeIdx);
+    } else {
+      hoveredEdgeIdx = null;
+      tooltip.style.display = 'none';
+    }
   }
 }
 
@@ -790,7 +798,13 @@ function updateScene() {
     const heat = Math.min(Math.abs(e.eligibility || 0), 1.0);
 
     let r, g, b;
-    if (isHighlighted) {
+    // V3: When a node is selected, color incoming edges by formation cause (provenance)
+    const isIncoming = hasSelection && e.to === selectedNodeId;
+    if (isIncoming && colorMode === 'celltype') {
+      const pc = getProvenanceColor(e.formation_cause);
+      const brightness = 0.3 + w * 0.4;
+      r = pc.r * brightness; g = pc.g * brightness; b = pc.b * brightness;
+    } else if (isHighlighted) {
       r = 0.5; g = 0.7; b = 1.0;
     } else {
       // Base brightness from weight + heat boost from recent activity
@@ -822,6 +836,11 @@ function updateScene() {
   edgesMesh.geometry.attributes.position.needsUpdate = true;
   edgesMesh.geometry.attributes.color.needsUpdate = true;
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
+
+  // V3: Cluster hulls
+  updateClusterHulls(nodes, edges);
+  // V3: Detect reinforcement pulses (compare edge data between frames)
+  detectReinforcementPulses();
 
   // === SPIKE SPAWNING from real engine firing data ===
   // One representative spike per firing morphon, with cooldown to prevent stacking.
@@ -942,6 +961,10 @@ function updatePanels() {
 
   updateGraph(stats);
   if (selectedNodeId !== null) updateDetailPanel();
+
+  // V3: Cluster list + timeline + lineage
+  updateClusterList();
+  recordTimelineSnapshot();
 }
 
 function updateMotorOutput() {
@@ -1224,6 +1247,13 @@ function setupControls() {
     firingHistory.length = 0;
     synapseHistory.length = 0;
     fieldPeHistory.length = 0;
+    justifiedHistory.length = 0;
+    // V3: Reset timeline and cluster hulls
+    timelineSnapshots.length = 0; timelineLastStep = 0; timelineScrubbing = false;
+    prevEdgeReinforcementCounts.clear(); learningPulses.length = 0;
+    lastEpistemicKey = null;
+    for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); scene.remove(m.fill); }
+    clusterHullMeshes.clear(); clusterHullCache.clear();
     // Reset graph
     for (const k in graphData) graphData[k].length = 0;
     lastBorn = 0; lastDied = 0;
@@ -1547,6 +1577,20 @@ function setupControls() {
           updateDetailPanel();
         }
         break;
+      case '1': case '2': case '3': {
+        const modes = { '1': 'celltype', '2': 'pe', '3': 'epistemic' };
+        colorMode = modes[e.key];
+        document.querySelectorAll('.color-mode-btn').forEach(b => {
+          b.classList.toggle('active', b.dataset.mode === colorMode);
+        });
+        if (colorMode !== 'celltype') { filterCellType = null; clearCellTypeActive(); }
+        break;
+      }
+      case 'p': case 'P': {
+        // Screenshot
+        if (!e.metaKey && !e.ctrlKey) exportScreenshot();
+        break;
+      }
     }
   });
 }
@@ -1843,6 +1887,8 @@ const graphData = {
   born: [],
   died: [],
   fieldPe: [],
+  justifiedPct: [],  // V3
+  skepticism: [],    // V3
 };
 let lastBorn = 0, lastDied = 0;
 
@@ -1868,6 +1914,8 @@ function initGraph() {
         makeDataset('Born',        '#22d3ee', 'y'),
         makeDataset('Died',        '#f87171', 'y'),
         makeDataset('Field PE',    '#ef4444', 'y1', true),
+        makeDataset('Justified %', '#eab308', 'y1', true),   // V3
+        makeDataset('Skepticism',  '#f97316', 'y1', true),   // V3
       ],
     },
     options: {
@@ -1942,6 +1990,15 @@ function updateGraph(stats) {
   graphData.born.push(born - lastBorn);
   graphData.died.push(died - lastDied);
   graphData.fieldPe.push(stats.field_pe_mean || 0);
+  // V3: push governance data
+  if (system && system.governance_json) {
+    const gov = JSON.parse(system.governance_json());
+    graphData.justifiedPct.push(gov.justified_fraction);
+    graphData.skepticism.push(gov.avg_skepticism);
+  } else {
+    graphData.justifiedPct.push(0);
+    graphData.skepticism.push(0);
+  }
   lastBorn = born;
   lastDied = died;
 
@@ -1957,6 +2014,8 @@ function updateGraph(stats) {
   liveChart.data.datasets[4].data = graphData.born.slice(start);
   liveChart.data.datasets[5].data = graphData.died.slice(start);
   liveChart.data.datasets[6].data = graphData.fieldPe.slice(start);
+  liveChart.data.datasets[7].data = graphData.justifiedPct.slice(start);  // V3
+  liveChart.data.datasets[8].data = graphData.skepticism.slice(start);    // V3
 
   liveChart.update('none');
 }
@@ -2017,6 +2076,7 @@ function animate() {
   }
 
   updateSpikes();
+  updateLearningPulses(); // V3: gold learning pulse particles
 
   // Subtle ball rotation
   if (diskMesh) {
@@ -2035,6 +2095,520 @@ function animate() {
   camera.updateMatrixWorld();
   updateRaycast();
   composer.render();
+}
+
+// ============================================================
+// V3: SCREENSHOT EXPORT
+// ============================================================
+function exportScreenshot() {
+  if (!renderer) return;
+  // Render one frame with preserveDrawingBuffer
+  composer.render();
+  const dataUrl = renderer.domElement.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = dataUrl;
+  a.download = `morphon_${Date.now()}.png`;
+  a.click();
+  addEvent('', 'Screenshot exported', 'event-diff');
+}
+
+// ============================================================
+// V3: SYNAPSE PROVENANCE COLORS
+// ============================================================
+const PROVENANCE_COLORS = {
+  External:  { r: 0.89, g: 0.91, b: 0.94 }, // white-ish
+  Proximity: { r: 0.13, g: 0.83, b: 0.93 }, // cyan
+  Division:  { r: 0.75, g: 0.52, b: 0.99 }, // purple
+  Fusion:    { r: 0.96, g: 0.45, b: 0.71 }, // pink
+  Hebbian:   { r: 0.98, g: 0.75, b: 0.14 }, // yellow
+  none:      { r: 0.4,  g: 0.4,  b: 0.5  }, // gray
+};
+
+function getProvenanceColor(formationCause) {
+  return PROVENANCE_COLORS[formationCause] || PROVENANCE_COLORS.none;
+}
+
+// ============================================================
+// V3: CLUSTER HULLS (2D convex hull rendered as translucent shapes)
+// ============================================================
+const clusterHullMeshes = new Map(); // clusterId → { line, fill }
+const clusterHullCache = new Map();  // clusterId → memberCount (for invalidation)
+
+function convexHull2D(points) {
+  // Graham scan on XZ plane
+  if (points.length < 3) return points.slice();
+  points.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (O, A, B) => (A[0]-O[0])*(B[1]-O[1]) - (A[1]-O[1])*(B[0]-O[0]);
+  const lower = [];
+  for (const p of points) {
+    while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = points.length - 1; i >= 0; i--) {
+    const p = points[i];
+    while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  upper.pop(); lower.pop();
+  return lower.concat(upper);
+}
+
+function updateClusterHulls(nodes, edges) {
+  if (!scene) return;
+  // Group nodes by cluster_id
+  const clusterNodes = new Map();
+  for (const n of nodes) {
+    if (n.cluster_id != null) {
+      if (!clusterNodes.has(n.cluster_id)) clusterNodes.set(n.cluster_id, []);
+      clusterNodes.get(n.cluster_id).push(n);
+    }
+  }
+
+  // Remove stale hulls
+  for (const [cid, meshes] of clusterHullMeshes) {
+    if (!clusterNodes.has(cid)) {
+      scene.remove(meshes.line);
+      scene.remove(meshes.fill);
+      meshes.line.geometry.dispose();
+      meshes.fill.geometry.dispose();
+      clusterHullMeshes.delete(cid);
+      clusterHullCache.delete(cid);
+    }
+  }
+
+  for (const [cid, members] of clusterNodes) {
+    if (members.length < 3) continue;
+
+    // Check cache — skip if unchanged
+    if (clusterHullCache.get(cid) === members.length && clusterHullMeshes.has(cid)) continue;
+    clusterHullCache.set(cid, members.length);
+
+    // Remove old meshes
+    if (clusterHullMeshes.has(cid)) {
+      const old = clusterHullMeshes.get(cid);
+      scene.remove(old.line);
+      scene.remove(old.fill);
+      old.line.geometry.dispose();
+      old.fill.geometry.dispose();
+    }
+
+    // Get epistemic state color
+    const epState = members[0].epistemic_state || 'none';
+    const epColor = EPISTEMIC_COLORS[epState] || EPISTEMIC_COLORS.none;
+
+    // Project to 3D positions (use same BALL_RADIUS scale as nodes)
+    const pts2d = members.map(n => [n.x * BALL_RADIUS, n.z * BALL_RADIUS]);
+    const hull = convexHull2D(pts2d);
+    if (hull.length < 3) continue;
+
+    // Compute average Y for the hull plane
+    const avgY = members.reduce((s, n) => s + n.y * BALL_RADIUS, 0) / members.length;
+
+    // Create line loop
+    const linePoints = hull.map(p => new THREE.Vector3(p[0], avgY, p[1]));
+    linePoints.push(linePoints[0].clone()); // close loop
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: epColor, transparent: true, opacity: 0.15, depthWrite: false, depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const line = new THREE.Line(lineGeo, lineMat);
+
+    // Create translucent fill
+    const shape = new THREE.Shape();
+    shape.moveTo(hull[0][0], hull[0][1]);
+    for (let i = 1; i < hull.length; i++) shape.lineTo(hull[i][0], hull[i][1]);
+    shape.closePath();
+    const fillGeo = new THREE.ShapeGeometry(shape);
+    // Rotate from XY plane to XZ plane
+    fillGeo.rotateX(-Math.PI / 2);
+    fillGeo.translate(0, avgY, 0);
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: epColor, transparent: true, opacity: 0.03, side: THREE.DoubleSide,
+      depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+    });
+    const fill = new THREE.Mesh(fillGeo, fillMat);
+
+    scene.add(line);
+    scene.add(fill);
+    clusterHullMeshes.set(cid, { line, fill });
+  }
+}
+
+// ============================================================
+// V3: EDGE TOOLTIP (on hover)
+// ============================================================
+let hoveredEdgeIdx = null;
+const prevEdgeReinforcementCounts = new Map(); // edge key → count (for pulse detection)
+
+function findClosestEdge(mouseX, mouseY) {
+  if (!edgeData || edgeData.length === 0) return null;
+  // Project mouse to NDC
+  const ndcX = (mouseX / window.innerWidth) * 2 - 1;
+  const ndcY = -(mouseY / window.innerHeight) * 2 + 1;
+
+  let bestDist = 12; // pixel threshold (squared)
+  let bestIdx = null;
+
+  for (let i = 0; i < edgeData.length; i++) {
+    const e = edgeData[i];
+    const fi = nodeMap.get(e.from);
+    const ti = nodeMap.get(e.to);
+    if (fi === undefined || ti === undefined) continue;
+
+    const fp = new THREE.Vector3(
+      nodePositions[fi*3], nodePositions[fi*3+1], nodePositions[fi*3+2]
+    ).project(camera);
+    const tp = new THREE.Vector3(
+      nodePositions[ti*3], nodePositions[ti*3+1], nodePositions[ti*3+2]
+    ).project(camera);
+
+    // Point-to-segment distance in NDC
+    const dx = tp.x - fp.x, dy = tp.y - fp.y;
+    const lenSq = dx*dx + dy*dy;
+    if (lenSq < 0.0001) continue;
+    const t = Math.max(0, Math.min(1, ((ndcX-fp.x)*dx + (ndcY-fp.y)*dy) / lenSq));
+    const px = fp.x + t*dx, py = fp.y + t*dy;
+    const distSq = (ndcX-px)*(ndcX-px) + (ndcY-py)*(ndcY-py);
+
+    // Convert to approximate pixels (NDC range is 2, screen is ~1000px)
+    const pixDist = Math.sqrt(distSq) * Math.min(window.innerWidth, window.innerHeight) * 0.5;
+    if (pixDist < bestDist) {
+      bestDist = pixDist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
+
+function showEdgeTooltip(edgeIdx) {
+  const tooltip = document.getElementById('tooltip');
+  const e = edgeData[edgeIdx];
+  if (!e) { tooltip.style.display = 'none'; return; }
+
+  tooltip.style.display = 'block';
+  tooltip.style.left = (mouseClientX + 16) + 'px';
+  tooltip.style.top = (mouseClientY - 10) + 'px';
+
+  const wPct = Math.min(Math.abs(e.weight) / 2, 1) * 100;
+  const wColor = e.weight >= 0 ? 'var(--accent)' : '#ff4466';
+  const cause = e.formation_cause || 'unknown';
+  const causeColor = PROVENANCE_COLORS[cause] || PROVENANCE_COLORS.none;
+  const causeHex = `rgb(${Math.round(causeColor.r*255)},${Math.round(causeColor.g*255)},${Math.round(causeColor.b*255)})`;
+
+  tooltip.innerHTML = `
+    <div class="tip-header">
+      <span class="tip-id">${e.from} &rarr; ${e.to}</span>
+      <span class="tip-type" style="font-size:9px">${e.consolidated ? 'CONSOLIDATED' : 'plastic'}</span>
+    </div>
+    <hr class="tip-sep">
+    <div class="tip-row">
+      <span class="label">Weight</span>
+      <span class="tip-bar"><span class="fill" style="width:${wPct}%;background:${wColor}"></span></span>
+      <span class="value">${e.weight.toFixed(3)}</span>
+    </div>
+    <div class="tip-row">
+      <span class="label">Cause</span>
+      <span class="value" style="color:${causeHex}">${cause}</span>
+    </div>
+    <div class="tip-row">
+      <span class="label">Reinforced</span>
+      <span class="value">${e.reinforcement_count || 0}x</span>
+    </div>
+    <div class="tip-row">
+      <span class="label">Eligibility</span>
+      <span class="value">${(e.eligibility || 0).toFixed(3)}</span>
+    </div>
+  `;
+}
+
+// ============================================================
+// V3: REINFORCEMENT PULSES
+// ============================================================
+const learningPulses = [];
+const PULSE_FRAMES = 40;
+
+function detectReinforcementPulses() {
+  if (!edgeData) return;
+  for (let i = 0; i < edgeData.length; i++) {
+    const e = edgeData[i];
+    const key = `${e.from}-${e.to}`;
+    const prev = prevEdgeReinforcementCounts.get(key) || 0;
+    const curr = e.reinforcement_count || 0;
+    if (curr > prev && prev > 0) {
+      const fi = nodeMap.get(e.from);
+      const ti = nodeMap.get(e.to);
+      if (fi !== undefined && ti !== undefined) {
+        learningPulses.push({ fromIdx: fi, toIdx: ti, age: 0 });
+      }
+    }
+    prevEdgeReinforcementCounts.set(key, curr);
+  }
+}
+
+function updateLearningPulses() {
+  // Render learning pulses using the spikesMesh (shared with spike particles)
+  // They get added after the regular spikes
+  for (let i = learningPulses.length - 1; i >= 0; i--) {
+    const p = learningPulses[i];
+    p.age++;
+    if (p.age > PULSE_FRAMES) { learningPulses.splice(i, 1); continue; }
+
+    const t = p.age / PULSE_FRAMES;
+    const fi = p.fromIdx * 3, ti = p.toIdx * 3;
+    const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
+    const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
+    const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
+
+    const fade = t < 0.7 ? 1.0 : (1.0 - t) * 3.3;
+    const count = spikesMesh.count;
+    if (count < MAX_SPIKES) {
+      const dummy = new THREE.Object3D();
+      dummy.position.set(x, y, z);
+      dummy.scale.setScalar(0.055); // larger than spikes
+      dummy.updateMatrix();
+      spikesMesh.setMatrixAt(count, dummy.matrix);
+      const goldColor = new THREE.Color(0.98, 0.75, 0.14);
+      goldColor.multiplyScalar(2.0 * fade);
+      spikesMesh.setColorAt(count, goldColor);
+      spikesMesh.count = count + 1;
+    }
+  }
+}
+
+// ============================================================
+// V3: CLUSTER LIST PANEL
+// ============================================================
+function updateClusterList() {
+  const container = document.getElementById('cluster-list');
+  if (!container || !system || !system.governance_json) return;
+
+  const gov = JSON.parse(system.governance_json());
+  if (gov.total_clusters === 0) {
+    container.innerHTML = '<div style="color:var(--text-dim);font-size:9px;padding:4px">No clusters</div>';
+    return;
+  }
+
+  // Build cluster info from node data
+  const clusters = new Map();
+  for (const n of nodeData) {
+    if (n.cluster_id != null) {
+      if (!clusters.has(n.cluster_id)) {
+        clusters.set(n.cluster_id, {
+          id: n.cluster_id,
+          state: n.epistemic_state,
+          skepticism: n.skepticism,
+          members: [],
+          cx: 0, cy: 0, cz: 0,
+        });
+      }
+      const c = clusters.get(n.cluster_id);
+      c.members.push(n.id);
+      c.cx += n.x; c.cy += n.y; c.cz += n.z;
+    }
+  }
+
+  let html = '';
+  for (const [cid, c] of clusters) {
+    c.cx /= c.members.length; c.cy /= c.members.length; c.cz /= c.members.length;
+    const epColor = EPISTEMIC_COLORS[c.state]?.getStyle() || '#4b5563';
+    const stateLabel = (c.state || 'none').charAt(0);
+    html += `<div class="cluster-row" data-cid="${cid}" style="cursor:pointer;padding:3px 4px;border-radius:3px;display:flex;align-items:center;gap:6px;font-size:10px" title="Click to zoom">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${epColor};flex-shrink:0"></span>
+      <span style="color:var(--text)">#${cid}</span>
+      <span style="color:${epColor};font-weight:600">${stateLabel}</span>
+      <span style="color:var(--text-dim)">${c.members.length}m</span>
+      <span style="color:var(--text-dim);margin-left:auto">${c.skepticism.toFixed(2)}</span>
+    </div>`;
+  }
+  container.innerHTML = html;
+
+  // Click handler — zoom to cluster
+  container.querySelectorAll('.cluster-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const cid = parseInt(row.dataset.cid);
+      const c = clusters.get(cid);
+      if (!c) return;
+
+      // Select all members
+      selectedNodeId = c.members[0];
+      connectedToSelected.clear();
+      for (const mid of c.members) connectedToSelected.add(mid);
+
+      // Zoom camera to cluster centroid
+      const target = new THREE.Vector3(c.cx * BALL_RADIUS, c.cy * BALL_RADIUS, c.cz * BALL_RADIUS);
+      controls.target.copy(target);
+      camera.position.copy(target).add(new THREE.Vector3(0, 5, 10));
+      controls.update();
+
+      updateDetailPanel();
+    });
+  });
+}
+
+// ============================================================
+// V3: TIMELINE SCRUBBER
+// ============================================================
+const timelineSnapshots = [];
+const TIMELINE_INTERVAL = 100;  // steps between snapshots
+const TIMELINE_MAX = 50;        // max snapshots stored
+let timelineLastStep = 0;
+let timelineScrubbing = false;
+
+function recordTimelineSnapshot() {
+  if (!system) return;
+  const step = Number(system.step_count());
+  if (step - timelineLastStep >= TIMELINE_INTERVAL) {
+    try {
+      const json = system.save_json();
+      timelineSnapshots.push({ step, json });
+      if (timelineSnapshots.length > TIMELINE_MAX) timelineSnapshots.shift();
+      timelineLastStep = step;
+
+      // Update scrubber range
+      const scrubber = document.getElementById('timeline-scrubber');
+      if (scrubber && timelineSnapshots.length > 1) {
+        scrubber.min = 0;
+        scrubber.max = timelineSnapshots.length - 1;
+        scrubber.value = timelineSnapshots.length - 1;
+        document.getElementById('timeline-step').textContent = step;
+      }
+    } catch (_) {}
+  }
+}
+
+function scrubTimeline(index) {
+  if (index < 0 || index >= timelineSnapshots.length) return;
+  const snap = timelineSnapshots[index];
+  try {
+    if (system) { try { system.free(); } catch(_) {} }
+    system = WasmSystem.loadJson(snap.json);
+    timelineScrubbing = true;
+    document.getElementById('timeline-step').textContent = snap.step;
+    updateScene();
+    updatePanels();
+  } catch(e) {
+    addEvent('', 'Timeline scrub failed: ' + e.message, 'event-death');
+  }
+}
+
+// ============================================================
+// V3: LINEAGE TREE (Canvas 2D in bottom panel tab)
+// ============================================================
+function drawLineageTree() {
+  const canvas = document.getElementById('lineage-canvas');
+  if (!canvas || !system) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  let lineageData;
+  try {
+    lineageData = JSON.parse(system.lineage_json());
+  } catch(_) { return; }
+
+  if (!lineageData || !lineageData.nodes || lineageData.nodes.length === 0) {
+    ctx.fillStyle = '#5a6a88';
+    ctx.font = '10px "JetBrains Mono", monospace';
+    ctx.fillText('No lineage data', 10, 20);
+    return;
+  }
+
+  const nodes = lineageData.nodes;
+  const edges = lineageData.edges || [];
+
+  // Layout: group by generation (Y), spread within generation (X)
+  const genMap = new Map();
+  for (const n of nodes) {
+    const gen = n.generation || 0;
+    if (!genMap.has(gen)) genMap.set(gen, []);
+    genMap.get(gen).push(n);
+  }
+
+  const gens = [...genMap.keys()].sort((a, b) => a - b);
+  const maxGen = gens.length;
+  const nodePositions = new Map();
+  const rowH = Math.min(h / (maxGen + 1), 30);
+  const aliveSet = new Set(nodeData.map(n => n.id));
+
+  for (let gi = 0; gi < gens.length; gi++) {
+    const gen = gens[gi];
+    const row = genMap.get(gen);
+    const y = 15 + gi * rowH;
+    const spacing = Math.min(w / (row.length + 1), 20);
+    const startX = (w - row.length * spacing) / 2;
+    for (let ni = 0; ni < row.length; ni++) {
+      const x = startX + ni * spacing + spacing / 2;
+      nodePositions.set(row[ni].id, { x, y });
+    }
+  }
+
+  // Draw edges
+  ctx.strokeStyle = 'rgba(80, 140, 255, 0.15)';
+  ctx.lineWidth = 0.5;
+  for (const e of edges) {
+    const from = nodePositions.get(e.parent);
+    const to = nodePositions.get(e.child);
+    if (from && to) {
+      ctx.beginPath();
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    }
+  }
+
+  // Draw nodes
+  const CELL_HEX = {
+    Stem: '#8890a4', Sensory: '#00d4ff', Associative: '#a78bfa',
+    Motor: '#ff6b35', Modulatory: '#34d399', Fused: '#f472b6',
+  };
+  for (const n of nodes) {
+    const pos = nodePositions.get(n.id);
+    if (!pos) continue;
+    const alive = aliveSet.has(n.id);
+    const color = alive ? (CELL_HEX[n.cell_type] || '#888') : '#333';
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, alive ? 3 : 2, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+}
+
+// ============================================================
+// V3: DARK/LIGHT THEME TOGGLE
+// ============================================================
+let currentTheme = localStorage.getItem('morphon-theme') || 'dark';
+
+function applyTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('morphon-theme', theme);
+
+  // Update Three.js scene
+  if (scene) {
+    if (theme === 'light') {
+      scene.fog = new THREE.FogExp2(0xe8ecf2, 0.004);
+      scene.background = new THREE.Color(0xe8ecf2);
+    } else {
+      scene.fog = new THREE.FogExp2(0x050510, 0.006);
+      scene.background = new THREE.Color(0x050510);
+    }
+  }
+
+  // Update theme button icon
+  const btn = document.getElementById('btn-theme');
+  if (btn) btn.textContent = theme === 'light' ? '\u263E' : '\u2600';
+}
+
+function toggleTheme() {
+  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
 }
 
 // ============================================================
@@ -2059,6 +2633,33 @@ async function main() {
   setTimeout(() => loading.remove(), 600);
 
   addEvent(0, 'System initialized [cortical, 60 seed, 3D]', 'event-diff');
+
+  // V3: Apply saved theme
+  applyTheme(currentTheme);
+
+  // V3: Theme toggle button
+  document.getElementById('btn-theme')?.addEventListener('click', toggleTheme);
+
+  // V3: Screenshot button
+  document.getElementById('btn-screenshot')?.addEventListener('click', exportScreenshot);
+
+  // V3: Timeline scrubber
+  const scrubber = document.getElementById('timeline-scrubber');
+  if (scrubber) {
+    scrubber.addEventListener('input', (e) => {
+      scrubTimeline(parseInt(e.target.value));
+    });
+  }
+
+  // V3: Lineage tab — redraw on tab switch
+  document.querySelectorAll('#bottom-panel .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.tab === 'tab-lineage') {
+        setTimeout(drawLineageTree, 50);
+      }
+    });
+  });
+
   renderer.setAnimationLoop(animate);
 }
 
