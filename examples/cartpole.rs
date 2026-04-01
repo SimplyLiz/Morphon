@@ -221,9 +221,17 @@ fn run_episode(
             system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
         }
 
-        // Also inject neuromodulation for the three-factor hidden layer
+        // Neuromodulation for the three-factor hidden layer
         let scaled_td = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
         system.inject_reward(scaled_td);
+
+        // TD(λ)-like trace stretching: when pole is in danger (>50% of threshold),
+        // inject novelty to boost plasticity. This extends the effective eligibility
+        // window during critical moments — the system learns more from near-failures.
+        let danger = (env.theta.abs() / THETA_THRESHOLD).min(1.0);
+        if danger > 0.5 {
+            system.inject_novelty((danger - 0.5) * 2.0); // 0→1 as danger goes 0.5→1.0
+        }
 
         if !alive {
             system.inject_arousal(0.8);

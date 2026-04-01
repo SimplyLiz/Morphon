@@ -299,11 +299,20 @@ impl Morphon {
         let max_threshold = self.activation_fn.max_output();
         self.threshold = self.threshold.clamp(0.05, max_threshold);
 
-        // Division pressure accumulates when chronically overloaded
+        // Division pressure accumulates from two sources:
+        // 1. Chronic overload (activity > 50%) — original mechanism
+        // 2. High DFA feedback error — "error-driven proliferation"
+        //    Morphons in high-error regions divide, creating fresh capacity
+        //    where the system is failing. "Disturbance-induced Growth."
         if actual_rate > 0.5 {
             self.division_pressure += 0.01;
         } else {
             self.division_pressure = (self.division_pressure - 0.005).max(0.0);
+        }
+        // DFA-driven pressure: strong feedback signal means this morphon is in
+        // a region where the output is wrong. More capacity needed here.
+        if self.feedback_signal.abs() > 0.1 {
+            self.division_pressure += self.feedback_signal.abs() * 0.005;
         }
 
         // V3 Metabolic Budget: energy earned through utility, not flat regen.
