@@ -80,10 +80,10 @@ impl Default for MetabolicConfig {
     fn default() -> Self {
         Self {
             base_cost: 0.001,
-            synapse_cost: 0.0005,
+            synapse_cost: 0.0001,  // reduced 5× — was starving hidden layer
             utility_reward: 0.02,
-            basal_regen: 0.001,
-            firing_cost: 0.004,
+            basal_regen: 0.003,    // increased 3× — morphons need energy to explore
+            firing_cost: 0.002,    // reduced 2× — firing should be cheap
         }
     }
 }

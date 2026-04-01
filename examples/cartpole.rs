@@ -212,15 +212,13 @@ fn run_episode(
         let chosen = if action > 0.0 { 1 } else { 0 };
 
         // Train analog readout with learning rate schedule:
-        // Warm-start with 3× lr for first 500 episodes → stronger DFA error → faster hidden adaptation
-        // Then decay to base lr for stability.
-        let lr_scale = if episode < 500 { 3.0 } else { 1.0 };
-        let base_lr = 0.1;
+        // Constant lr — no schedule. The lr decay was causing degradation after ep 500.
+        let base_lr = 0.2;
         if td_error > 0.0 {
-            system.train_readout(chosen, td_error.min(1.0) * base_lr * lr_scale);
+            system.train_readout(chosen, td_error.min(1.0) * base_lr);
         } else {
             let other = 1 - chosen;
-            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5 * lr_scale);
+            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
         }
 
         // Also inject neuromodulation for the three-factor hidden layer

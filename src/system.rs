@@ -928,11 +928,11 @@ impl System {
                 for (_, edge_idx) in incoming {
                     if let Some(syn) = self.topology.synapse_mut(edge_idx) {
                         if !syn.consolidated {
-                            syn.tag += fb.abs() * 0.5; // aggressive accumulation
+                            syn.tag += fb.abs() * 0.02; // gradual accumulation
                             syn.tag = syn.tag.min(1.0);
                             syn.tag_strength = syn.tag;
                         }
-                        if syn.tag > 0.1 && !syn.consolidated {
+                        if syn.tag > 0.3 && !syn.consolidated {
                             syn.consolidated = true;
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
