@@ -159,6 +159,8 @@ pub struct System {
     pub(crate) total_born: usize,
     /// Cumulative morphon death count.
     pub(crate) total_died: usize,
+    /// k-WTA winners from current step (for post-step threshold boost).
+    pub(crate) kwta_winners: Vec<MorphonId>,
     /// Cumulative transdifferentiation count.
     pub(crate) total_transdifferentiations: usize,
 
@@ -264,6 +266,7 @@ impl System {
             diag: Diagnostics::default(),
             total_born: 0,
             total_died: 0,
+            kwta_winners: Vec::new(),
             total_transdifferentiations: 0,
             recent_performance: 0.0,
             consolidation_gate: 10.0, // consolidate once above random baseline
@@ -384,10 +387,40 @@ impl System {
 
         let spikes_delivered = delivered.len();
 
-        // 3. Update all Morphon states (integrate input, fire/not-fire).
-        //    Must run BEFORE spike-timing eligibility so post_fired reflects
-        //    whether the delivered spike caused the target to fire this step.
-        //    V3 Metabolic Budget: pre-compute synapse counts for energy cost.
+        // 3. k-WTA lateral inhibition BEFORE firing decision.
+        //    Suppress non-winners' input_accumulator so they never fire.
+        //    No "unfiring" — spikes that happen are real.
+        {
+            // Rank associative/stem morphons by input_accumulator (pre-firing potential)
+            let mut assoc_inputs: Vec<(MorphonId, f64)> = self.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                .map(|m| (m.id, m.input_accumulator))
+                .collect();
+
+            if !assoc_inputs.is_empty() {
+                let k = (assoc_inputs.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
+                let k = k.max(3).min(20).min(assoc_inputs.len());
+
+                // Sort by input descending — top-k keep their input
+                assoc_inputs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                // Zero out losers' input — they won't fire this step
+                for &(id, _) in &assoc_inputs[k..] {
+                    if let Some(m) = self.morphons.get_mut(&id) {
+                        m.input_accumulator = 0.0;
+                    }
+                }
+
+                // Collect winner IDs for threshold boost after step()
+                let winners: Vec<MorphonId> = assoc_inputs[..k]
+                    .iter().map(|(id, _)| *id).collect();
+
+                // Store for post-step threshold update
+                self.kwta_winners = winners;
+            }
+        }
+
+        // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
         let degree_map: HashMap<MorphonId, usize> = self.morphons.keys()
             .map(|&id| (id, self.topology.degree(id)))
@@ -403,57 +436,10 @@ impl System {
             m.step(dt, sc, metabolic);
         });
 
-        // 4. k-Winner-Take-All lateral inhibition in the Associative layer.
-        //    Only the top-k most active associative morphons survive each step.
-        //    All others have their firing suppressed and potential clamped.
-        //    This forces different neurons to specialize on different input patterns
-        //    (Diehl & Cook 2015). k = ~5% of population allows sparse distributed
-        //    representations while maintaining diversity.
-        {
-            let mut assoc_potentials: Vec<(MorphonId, f64, bool)> = self.morphons.values()
-                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
-                .map(|m| (m.id, m.potential, m.fired))
-                .collect();
-
-            if !assoc_potentials.is_empty() {
-                // k = configurable fraction of population, CAPPED at 20.
-                // Without cap: 500 morphons × 5% = 25 winners. Over 100 steps,
-                // most morphons win at least once → nobody qualifies as "silent"
-                // for apoptosis → dead neurons never die → population explodes.
-                let k = (assoc_potentials.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
-                let k = k.max(3).min(20).min(assoc_potentials.len());
-
-                // Sort by potential descending — top-k winners survive
-                assoc_potentials.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-                let winners: std::collections::HashSet<MorphonId> = assoc_potentials[..k]
-                    .iter().map(|(id, _, _)| *id).collect();
-
-                // Suppress non-winners: reset fired flag, correct activity history.
-                // morphon.step() already ran and may have pushed 1.0 to activity_history
-                // for neurons that fired. We need to OVERWRITE that entry, not add another.
-                // Double-pushing (1.0 then 0.0) inflates the mean to ~0.5, which prevents
-                // apoptosis from ever detecting these neurons as "silent."
-                for &(id, _, _) in &assoc_potentials[k..] {
-                    if let Some(m) = self.morphons.get_mut(&id) {
-                        if m.fired {
-                            m.fired = false;
-                            // Overwrite the 1.0 that step() just pushed by replacing
-                            // the most recent entry (rewind head, then push 0.0)
-                            m.activity_history.overwrite_last(0.0);
-                        }
-                        m.potential = m.potential.min(m.threshold * 0.5);
-                    }
-                }
-
-                // Adaptive threshold: winners get a small threshold boost (Diehl & Cook).
-                // Prevents any single neuron from dominating all inputs.
-                // Slow decay via homeostatic regulation restores threshold over time.
-                for &id in &winners {
-                    if let Some(m) = self.morphons.get_mut(&id) {
-                        m.threshold += 0.02;
-                    }
-                }
+        // 5. Adaptive threshold boost for k-WTA winners (Diehl & Cook).
+        for &id in &self.kwta_winners {
+            if let Some(m) = self.morphons.get_mut(&id) {
+                m.threshold += 0.02;
             }
         }
 

@@ -445,6 +445,35 @@
     height: 100%;
     cursor: crosshair;
   }
+  #tab-graph { padding: 4px 8px; }
+  .graph-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-bottom: 3px;
+    flex-shrink: 0;
+  }
+  .graph-scale-btn, .graph-window-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 1px 5px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .graph-scale-btn.active, .graph-window-btn.active { color: var(--text-bright); border-color: var(--panel-border-hover); }
+  .graph-scale-btn:hover, .graph-window-btn:hover { color: var(--text); }
+  #graph-canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  #graph-canvas-wrap canvas {
+    width: 100% !important;
+    height: 100% !important;
+  }
   #tab-log {
     padding: 4px 10px 6px;
     flex-direction: column;
@@ -789,6 +818,7 @@
   <div class="header-stats">
     <div class="header-stat"><span class="label">STEP</span><span class="value" id="h-step">0</span></div>
     <div class="header-stat"><span class="label">FIRED</span><span class="value" id="h-fired" style="color:#fbbf24">0</span></div>
+    <div class="header-stat"><span class="label">UPTIME</span><span class="value" id="h-uptime" style="color:var(--text-dim)">0:00</span></div>
   </div>
   <div class="header-controls">
     <button id="btn-pause" class="active" title="Play / Pause">&#9654;</button>
@@ -910,6 +940,7 @@
   <div class="tab-bar">
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
+    <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -947,6 +978,20 @@
     </div>
     <div id="raster-canvas-wrap">
       <canvas id="raster-canvas"></canvas>
+    </div>
+  </div>
+  <div id="tab-graph" class="tab-content">
+    <div class="graph-toolbar">
+      <button class="graph-scale-btn active" data-scale="linear">Linear</button>
+      <button class="graph-scale-btn" data-scale="logarithmic">Log</button>
+      <span style="color:var(--text-dim);font-size:9px;margin-left:8px">WINDOW</span>
+      <button class="graph-window-btn" data-win="200">200</button>
+      <button class="graph-window-btn active" data-win="500">500</button>
+      <button class="graph-window-btn" data-win="2000">2k</button>
+      <button class="graph-window-btn" data-win="0">All</button>
+    </div>
+    <div id="graph-canvas-wrap">
+      <canvas id="graph-canvas"></canvas>
     </div>
   </div>
 </div>
@@ -995,6 +1040,7 @@
   </div>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script type="importmap">
 {
   "imports": {

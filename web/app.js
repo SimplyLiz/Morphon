@@ -77,6 +77,7 @@ let heatmapBinSteps = 0;     // steps accumulated in current bin
 let cachedStats = null;
 // Saved state for save/load
 let savedState = null;
+let systemStartTime = performance.now();
 
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
@@ -739,6 +740,13 @@ function updatePanels() {
 
   document.getElementById('h-step').textContent = stats.step_count;
   document.getElementById('h-fired').textContent = frameFired.size;
+  // Uptime since last reset
+  const uptimeSec = Math.floor((performance.now() - systemStartTime) / 1000);
+  const m = Math.floor(uptimeSec / 60), s = uptimeSec % 60;
+  const h = Math.floor(m / 60);
+  document.getElementById('h-uptime').textContent = h > 0
+    ? `${h}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    : `${m}:${String(s).padStart(2, '0')}`;
 
   document.getElementById('s-morphons').textContent = stats.total_morphons;
   document.getElementById('s-synapses').textContent = stats.total_synapses;
@@ -776,6 +784,7 @@ function updatePanels() {
   // Motor output bar chart
   updateMotorOutput();
 
+  updateGraph(stats);
   if (selectedNodeId !== null) updateDetailPanel();
 }
 
@@ -981,6 +990,7 @@ function setupControls() {
     if (system) { try { system.free(); } catch(_) {} } // free WASM memory
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
+    systemStartTime = performance.now();
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
     nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
@@ -989,6 +999,9 @@ function setupControls() {
     groupRateHistory = []; heatmapBinAccum = []; heatmapBinSteps = 0;
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
     firingHistory.length = 0;
+    // Reset graph
+    for (const k in graphData) graphData[k].length = 0;
+    lastBorn = 0; lastDied = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
     document.getElementById('events').innerHTML = '';
     addEvent(0, `System reset [${program}]`, 'event-diff');
@@ -1042,6 +1055,24 @@ function setupControls() {
   // Pause heatmap on hover
   document.getElementById('raster-canvas')?.addEventListener('mouseenter', () => { heatmapPaused = true; });
   document.getElementById('raster-canvas')?.addEventListener('mouseleave', () => { heatmapPaused = false; });
+
+  // Graph scale buttons
+  document.querySelectorAll('.graph-scale-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.graph-scale-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      setGraphScale(btn.dataset.scale);
+    });
+  });
+
+  // Graph window buttons
+  document.querySelectorAll('.graph-window-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.graph-window-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      graphWindowSize = parseInt(btn.dataset.win);
+    });
+  });
 
   // Maximize / restore
   document.getElementById('btn-panel-maximize')?.addEventListener('click', () => {
@@ -1547,6 +1578,147 @@ function drawRasterPlot() {
 }
 
 // ============================================================
+// LIVE GRAPH (Chart.js)
+// ============================================================
+let liveChart = null;
+let graphWindowSize = 500; // 0 = show all
+const graphData = {
+  steps: [],
+  fired: [],
+  firingRate: [],
+  morphons: [],
+  synapses: [],
+  born: [],
+  died: [],
+};
+let lastBorn = 0, lastDied = 0;
+
+function initGraph() {
+  const ctx = document.getElementById('graph-canvas');
+  if (!ctx || typeof Chart === 'undefined') return;
+
+  const makeDataset = (label, color, yAxisID, hidden = false) => ({
+    label, borderColor: color, backgroundColor: color + '18',
+    borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false,
+    yAxisID, hidden, data: [],
+  });
+
+  liveChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        makeDataset('Fired',       '#fbbf24', 'y'),
+        makeDataset('Firing %',    '#508cff', 'y1'),
+        makeDataset('Morphons',    '#34d399', 'y'),
+        makeDataset('Synapses',    '#a78bfa', 'y', true),
+        makeDataset('Born',        '#22d3ee', 'y'),
+        makeDataset('Died',        '#f87171', 'y'),
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'top',
+          labels: {
+            color: '#8899bb',
+            font: { family: '"JetBrains Mono", monospace', size: 9 },
+            boxWidth: 10, boxHeight: 2, padding: 8,
+            usePointStyle: false,
+          },
+          onClick(e, item, legend) {
+            // Default toggle behavior
+            const idx = item.datasetIndex;
+            const meta = legend.chart.getDatasetMeta(idx);
+            meta.hidden = meta.hidden === null ? !legend.chart.data.datasets[idx].hidden : null;
+            legend.chart.update('none');
+          },
+        },
+        tooltip: {
+          animation: false,
+          position: 'nearest',
+          backgroundColor: 'rgba(8,12,24,0.9)',
+          titleFont: { family: '"JetBrains Mono", monospace', size: 9 },
+          bodyFont: { family: '"JetBrains Mono", monospace', size: 9 },
+          borderColor: 'rgba(80,140,255,0.15)', borderWidth: 1,
+          padding: 6,
+        },
+      },
+      scales: {
+        x: {
+          display: true,
+          ticks: { color: '#5a6a88', font: { size: 8 }, maxTicksLimit: 6 },
+          grid: { color: 'rgba(255,255,255,0.03)' },
+        },
+        y: {
+          type: 'linear', position: 'left',
+          ticks: { color: '#5a6a88', font: { size: 8 }, maxTicksLimit: 5 },
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          beginAtZero: true,
+        },
+        y1: {
+          type: 'linear', position: 'right',
+          ticks: {
+            color: '#508cff', font: { size: 8 }, maxTicksLimit: 4,
+            callback: v => (v * 100).toFixed(0) + '%',
+          },
+          grid: { drawOnChartArea: false },
+          beginAtZero: true, max: 1,
+        },
+      },
+    },
+  });
+}
+
+function updateGraph(stats) {
+  if (!liveChart) return;
+  const step = stats.step_count;
+  const born = stats.total_born || 0;
+  const died = stats.total_died || 0;
+
+  graphData.steps.push(step);
+  graphData.fired.push(frameFired.size);
+  graphData.firingRate.push(stats.firing_rate);
+  graphData.morphons.push(stats.total_morphons);
+  graphData.synapses.push(stats.total_synapses);
+  graphData.born.push(born - lastBorn);
+  graphData.died.push(died - lastDied);
+  lastBorn = born;
+  lastDied = died;
+
+  // Apply window
+  const win = graphWindowSize > 0 ? graphWindowSize : graphData.steps.length;
+  const start = Math.max(0, graphData.steps.length - win);
+
+  liveChart.data.labels = graphData.steps.slice(start);
+  liveChart.data.datasets[0].data = graphData.fired.slice(start);
+  liveChart.data.datasets[1].data = graphData.firingRate.slice(start);
+  liveChart.data.datasets[2].data = graphData.morphons.slice(start);
+  liveChart.data.datasets[3].data = graphData.synapses.slice(start);
+  liveChart.data.datasets[4].data = graphData.born.slice(start);
+  liveChart.data.datasets[5].data = graphData.died.slice(start);
+
+  liveChart.update('none');
+}
+
+function setGraphScale(type) {
+  if (!liveChart) return;
+  liveChart.options.scales.y.type = type;
+  if (type === 'logarithmic') {
+    liveChart.options.scales.y.beginAtZero = false;
+    liveChart.options.scales.y.min = 1;
+  } else {
+    liveChart.options.scales.y.beginAtZero = true;
+    delete liveChart.options.scales.y.min;
+  }
+  liveChart.update('none');
+}
+
+// ============================================================
 // ANIMATION LOOP
 // ============================================================
 let frameCount = 0;
@@ -1616,6 +1788,7 @@ async function main() {
   initScene();
   setupControls();
   initRaster();
+  initGraph();
   await init();
 
   system = new WasmSystem(60, 'cortical', 3);
