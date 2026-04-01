@@ -1289,7 +1289,10 @@ function setupControls() {
     const isMax = panel.classList.contains('maximized');
     document.getElementById('btn-panel-maximize').textContent = isMax ? '\u25BD' : '\u25A1';
     // Update scene container bottom to match
-    document.getElementById('scene-container').style.bottom = isMax ? '45vh' : '160px';
+    const panelBottom = isMax ? '45vh' : '160px';
+    document.getElementById('scene-container').style.bottom = panelBottom;
+    document.getElementById('left-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
+    document.getElementById('right-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
     setTimeout(() => { onResize(); }, 260); // after CSS transition
   });
   // Clear: context-dependent (raster or log)

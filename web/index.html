@@ -159,11 +159,19 @@
   /* === LEFT PANEL === */
   #left-panel {
     top: 64px; left: 16px;
+    bottom: 170px;
     display: flex;
     flex-direction: column;
     gap: 10px;
     width: 220px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.1) transparent;
   }
+  #left-panel::-webkit-scrollbar { width: 3px; }
+  #left-panel::-webkit-scrollbar-track { background: transparent; }
+  #left-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
   .section-title {
     font-size: 9px;
@@ -249,11 +257,19 @@
   /* === RIGHT PANEL === */
   #right-panel {
     top: 64px; right: 16px;
+    bottom: 170px;
     display: flex;
     flex-direction: column;
     gap: 10px;
     width: 230px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.1) transparent;
   }
+  #right-panel::-webkit-scrollbar { width: 3px; }
+  #right-panel::-webkit-scrollbar-track { background: transparent; }
+  #right-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
   /* Neuromodulation bars */
   .mod-channel {
