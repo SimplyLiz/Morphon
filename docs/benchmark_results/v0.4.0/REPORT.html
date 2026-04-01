@@ -149,7 +149,7 @@
     <span>|</span>
     <span>quick</span>
     <span>|</span>
-    <span>2026-04-01 04:39 UTC</span>
+    <span>2026-04-01 07:26 UTC</span>
     <span>|</span>
     <span>macos aarch64</span>
   </div>
@@ -161,11 +161,11 @@
     <h2>CartPole Control</h2>
     <div class="stat-row">
       <div class="stat">
-        <div class="value ">77</div>
+        <div class="value ">54</div>
         <div class="label">Best Steps</div>
       </div>
       <div class="stat">
-        <div class="value">15.5</div>
+        <div class="value">11.6</div>
         <div class="label">Avg (100)</div>
       </div>
       <div class="stat">
@@ -173,17 +173,17 @@
         <div class="label">Morphons</div>
       </div>
       <div class="stat">
-        <div class="value">1387</div>
+        <div class="value">2046</div>
         <div class="label">Synapses</div>
       </div>
     </div>
     <div class="stat-row">
       <div class="stat">
-        <div class="value">69</div>
+        <div class="value">11</div>
         <div class="label">Clusters</div>
       </div>
       <div class="stat">
-        <div class="value">0.097</div>
+        <div class="value">0.013</div>
         <div class="label">Firing Rate</div>
       </div>
       <div class="stat">
@@ -250,15 +250,15 @@
     <h2>MNIST Classification</h2>
     <div class="stat-row">
       <div class="stat">
-        <div class="value danger">7.5%</div>
+        <div class="value danger">10.0%</div>
         <div class="label">Test Accuracy</div>
       </div>
       <div class="stat">
-        <div class="value">35192</div>
+        <div class="value">2000</div>
         <div class="label">Morphons</div>
       </div>
       <div class="stat">
-        <div class="value">11881446</div>
+        <div class="value">107646</div>
         <div class="label">Synapses</div>
       </div>
     </div>
@@ -391,7 +391,7 @@ new Chart(document.getElementById('mnistChart'), {
     labels: [0,1,2,3,4,5,6,7,8,9],
     datasets: [{
       label: 'Accuracy %',
-      data: [0.0,0.0,0.0,0.0,0.0,29.4,0.0,0.0,58.8,0.0],
+      data: [0.0,0.0,0.0,0.0,0.0,0.0,100.0,0.0,0.0,0.0],
       backgroundColor: function(ctx) {
         const v = ctx.raw;
         if (v > 30) return 'rgba(52, 211, 153, 0.7)';

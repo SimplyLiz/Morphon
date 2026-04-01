@@ -13,6 +13,7 @@
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
+use morphon_core::morphon::MetabolicConfig;
 use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
@@ -80,6 +81,7 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
             differentiation: false,
             migration: false,
         },
+        metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 50,
@@ -187,6 +189,7 @@ fn run_option_c(rng: &mut impl Rng) -> Vec<f64> {
             differentiation: false,
             migration: false,
         },
+        metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 3,
         episodic_memory_capacity: 10,
@@ -248,6 +251,7 @@ fn main() {
         morphogenesis: MorphogenesisParams { max_morphons: 20, ..Default::default() },
         homeostasis: Default::default(),
         lifecycle: LifecycleConfig { division: false, fusion: false, apoptosis: false, differentiation: false, migration: false },
+        metabolic: MetabolicConfig::default(),
         dt: 1.0, working_memory_capacity: 3, episodic_memory_capacity: 10,
     });
     // Train

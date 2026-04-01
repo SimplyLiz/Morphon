@@ -34,12 +34,15 @@ pub struct SpikeEvent {
 pub struct ResonanceEngine {
     /// Queue of pending spike events (delayed delivery).
     pending_spikes: VecDeque<SpikeEvent>,
+    /// Spikes delivered on the most recent deliver() call (for visualization).
+    last_delivered: Vec<SpikeEvent>,
 }
 
 impl ResonanceEngine {
     pub fn new() -> Self {
         Self {
             pending_spikes: VecDeque::new(),
+            last_delivered: Vec::new(),
         }
     }
 
@@ -102,7 +105,13 @@ impl ResonanceEngine {
         }
 
         self.pending_spikes = still_pending;
+        self.last_delivered = delivered.clone();
         delivered
+    }
+
+    /// Spikes delivered on the most recent deliver() call.
+    pub fn last_delivered(&self) -> &[SpikeEvent] {
+        &self.last_delivered
     }
 
     /// Number of spikes currently in transit.

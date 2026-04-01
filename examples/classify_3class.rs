@@ -11,6 +11,7 @@
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
+use morphon_core::morphon::MetabolicConfig;
 use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
@@ -57,6 +58,7 @@ fn main() {
             division: false, fusion: false, apoptosis: false,
             differentiation: false, migration: false,
         },
+        metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 3,
         episodic_memory_capacity: 10,

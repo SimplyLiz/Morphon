@@ -361,7 +361,46 @@ impl System {
             m.step(dt, sc, metabolic);
         });
 
-        // 4. Spike-timing: boost pre_trace on delivered synapses.
+        // 4. Winner-Take-All lateral inhibition in the Associative layer.
+        //    When an associative morphon fires, it suppresses all other associative
+        //    morphons by injecting strong negative current. This forces DIFFERENT
+        //    neurons to respond to DIFFERENT input patterns — the mechanism that
+        //    creates specialized feature detectors (Diehl & Cook 2015).
+        //    Without WTA, all hidden neurons converge to the mean input pattern.
+        {
+            let fired_assoc: Vec<MorphonId> = self.morphons.values()
+                .filter(|m| m.fired && (m.cell_type == CellType::Associative || m.cell_type == CellType::Stem))
+                .map(|m| m.id)
+                .collect();
+
+            if !fired_assoc.is_empty() {
+                let inhibition_strength = -2.0; // strong enough to prevent secondary firing
+                let assoc_ids: Vec<MorphonId> = self.morphons.values()
+                    .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                    .map(|m| m.id)
+                    .collect();
+
+                for &id in &assoc_ids {
+                    if !fired_assoc.contains(&id) {
+                        if let Some(m) = self.morphons.get_mut(&id) {
+                            // Suppress non-winners: push potential below threshold
+                            m.potential += inhibition_strength * fired_assoc.len() as f64
+                                / assoc_ids.len().max(1) as f64;
+                        }
+                    }
+                }
+
+                // Adaptive threshold: winners get a small threshold boost to prevent
+                // them from dominating all inputs (Diehl & Cook homeostatic mechanism).
+                for &id in &fired_assoc {
+                    if let Some(m) = self.morphons.get_mut(&id) {
+                        m.threshold += 0.05; // accumulates, decayed by homeostatic regulation
+                    }
+                }
+            }
+        }
+
+        // 5. Spike-timing: boost pre_trace on delivered synapses.
         //    The spike delivery is direct evidence that pre fired recently.
         //    By incrementing pre_trace here, the trace-based STDP in the medium
         //    path will detect the causal relationship even if the pre-synaptic
@@ -525,6 +564,47 @@ impl System {
                                 }
                                 // L2 weight decay on all three-factor synapses
                                 synapse.weight -= 0.0005 * synapse.weight;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // === WEIGHT NORMALIZATION (after STDP updates) ===
+        // Per-neuron L1 normalization for Associative morphons' incoming weights.
+        // Strengthening some inputs forces weakening others — creates synaptic
+        // competition that, combined with WTA, produces specialized feature detectors.
+        // (Diehl & Cook 2015: "sum of all incoming weights kept constant")
+        if tick.medium {
+            let assoc_ids: Vec<MorphonId> = self.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                .map(|m| m.id)
+                .collect();
+
+            for &aid in &assoc_ids {
+                let incoming = self.topology.incoming_synapses_mut(aid);
+                let edge_indices: Vec<_> = incoming.into_iter().map(|(_, ei)| ei).collect();
+                if edge_indices.is_empty() { continue; }
+
+                // Compute current L1 norm of positive incoming weights
+                let mut pos_sum = 0.0_f64;
+                for &ei in &edge_indices {
+                    if let Some(syn) = self.topology.graph.edge_weight(ei) {
+                        if syn.weight > 0.0 {
+                            pos_sum += syn.weight;
+                        }
+                    }
+                }
+
+                // Target norm: proportional to number of connections
+                let target_norm = edge_indices.len() as f64 * 0.3; // ~0.3 per synapse avg
+                if pos_sum > 0.01 {
+                    let scale = target_norm / pos_sum;
+                    for &ei in &edge_indices {
+                        if let Some(syn) = self.topology.synapse_mut(ei) {
+                            if syn.weight > 0.0 {
+                                syn.weight *= scale;
                             }
                         }
                     }

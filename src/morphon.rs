@@ -56,6 +56,38 @@ impl Synapse {
     }
 }
 
+/// V3 Metabolic Budget — energy earned through utility, not flat regeneration.
+///
+/// Morphons pay a base cost plus per-synapse maintenance each step.
+/// Energy is earned by reducing prediction error (utility) instead of
+/// unconditional regeneration. This forces the system toward minimal
+/// topology at maximal performance — ideal for edge deployment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetabolicConfig {
+    /// Base energy cost per step for being alive.
+    pub base_cost: f64,
+    /// Additional cost per outgoing synapse per step.
+    pub synapse_cost: f64,
+    /// Energy earned per unit of prediction error reduction.
+    pub utility_reward: f64,
+    /// Small unconditional trickle to prevent total starvation of quiet morphons.
+    pub basal_regen: f64,
+    /// Extra firing cost on top of the base cost when the morphon spikes.
+    pub firing_cost: f64,
+}
+
+impl Default for MetabolicConfig {
+    fn default() -> Self {
+        Self {
+            base_cost: 0.001,
+            synapse_cost: 0.0005,
+            utility_reward: 0.02,
+            basal_regen: 0.001,
+            firing_cost: 0.004,
+        }
+    }
+}
+
 /// The Morphon — an autonomous agent in the MI network.
 ///
 /// Not a classical neuron, but a self-governing compute unit with identity,
@@ -203,7 +235,10 @@ impl Morphon {
     }
 
     /// Process accumulated input and determine if the Morphon fires.
-    pub fn step(&mut self, dt: f64) {
+    ///
+    /// `synapse_count`: number of outgoing synapses (for metabolic maintenance cost).
+    /// `metabolic`: V3 metabolic budget configuration.
+    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig) {
         self.age += 1;
 
         // Refractory period
@@ -242,7 +277,7 @@ impl Morphon {
         self.fired = activation > self.threshold && self.energy > 0.0;
         if self.fired {
             self.refractory_timer = 1.0; // refractory period (1 step)
-            self.energy = (self.energy - 0.005).max(0.0); // firing costs energy, floor at 0
+            self.energy -= metabolic.firing_cost;
             self.activity_history.push(1.0);
         } else {
             self.activity_history.push(0.0);
@@ -271,9 +306,22 @@ impl Morphon {
             self.division_pressure = (self.division_pressure - 0.005).max(0.0);
         }
 
-        // Energy regeneration, clamped to [0, 1].
-        // Rate (0.003) vs fire cost (0.005) allows ~60% max sustained firing rate.
-        self.energy = (self.energy + 0.003).clamp(0.0, 1.0);
+        // V3 Metabolic Budget: energy earned through utility, not flat regen.
+        // 1. Base maintenance cost (just being alive)
+        self.energy -= metabolic.base_cost;
+        // 2. Per-synapse maintenance cost (connections are expensive)
+        self.energy -= synapse_count as f64 * metabolic.synapse_cost;
+        // 3. Utility reward: earn energy by reducing prediction error
+        //    PE decrease means the morphon is doing useful work.
+        let pe_delta = self.prev_potential.abs() - self.prediction_error;
+        if pe_delta > 0.0 {
+            self.energy += pe_delta * metabolic.utility_reward;
+        }
+        // 4. Basal trickle: small unconditional regen prevents total starvation
+        //    of quiet morphons that may become useful later.
+        self.energy += metabolic.basal_regen;
+        // Clamp to [0, 1]
+        self.energy = self.energy.clamp(0.0, 1.0);
 
         // Tick down migration cooldown
         if self.migration_cooldown > 0.0 {

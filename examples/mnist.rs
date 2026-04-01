@@ -11,6 +11,7 @@ use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::homeostasis::HomeostasisParams;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
+use morphon_core::morphon::MetabolicConfig;
 use morphon_core::scheduler::SchedulerConfig;
 use morphon_core::system::{System, SystemConfig};
 use morphon_core::types::LifecycleConfig;
@@ -72,6 +73,7 @@ fn create_system() -> System {
         },
         homeostasis: HomeostasisParams::default(),
         lifecycle: LifecycleConfig::default(),
+        metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,

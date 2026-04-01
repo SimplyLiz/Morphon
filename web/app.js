@@ -919,6 +919,40 @@ function toggleFullscreen() {
 // SPIKE PARTICLE ANIMATION
 // ============================================================
 const spikeDummy = new THREE.Object3D();
+const INV_BALL = 1.0 / BALL_RADIUS;
+
+// Poincaré ball geodesic interpolation (same math as Rust exp_map/log_map).
+// Operates in unit-ball coordinates (‖x‖ < 1).
+
+// Möbius addition: x ⊕ y (curvature c=1)
+function mobiusAdd(x0, x1, x2, y0, y1, y2) {
+  const xdy = x0*y0 + x1*y1 + x2*y2;
+  const xsq = x0*x0 + x1*x1 + x2*x2;
+  const ysq = y0*y0 + y1*y1 + y2*y2;
+  const d = 1.0 / Math.max(1 + 2*xdy + xsq*ysq, 1e-10);
+  const a = (1 + 2*xdy + ysq) * d;
+  const b = (1 - xsq) * d;
+  return [a*x0 + b*y0, a*x1 + b*y1, a*x2 + b*y2];
+}
+
+// Geodesic point at parameter t between p and q in the Poincaré ball.
+// γ(t) = p ⊕ (t ⊗ ((-p) ⊕ q))
+function geodesicPoint(p0, p1, p2, q0, q1, q2, t) {
+  // diff = (-p) ⊕ q
+  const d = mobiusAdd(-p0, -p1, -p2, q0, q1, q2);
+  // Möbius scalar: t ⊗ diff
+  const norm = Math.sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+  let s0, s1, s2;
+  if (norm < 1e-10) {
+    s0 = 0; s1 = 0; s2 = 0;
+  } else {
+    const atanh_n = Math.atanh(Math.min(norm, 0.999));
+    const coeff = Math.tanh(t * atanh_n) / norm;
+    s0 = d[0] * coeff; s1 = d[1] * coeff; s2 = d[2] * coeff;
+  }
+  // result = p ⊕ scaled
+  return mobiusAdd(p0, p1, p2, s0, s1, s2);
+}
 
 function updateSpikes() {
   if (!system) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
@@ -943,13 +977,16 @@ function updateSpikes() {
       ? Math.max(0, Math.min(1, 1.0 - remainingDelay / initialDelay))
       : 1.0;
 
+    // Interpolate along Poincaré geodesic (unit-ball coords)
     const fi = fromIdx * 3, ti = toIdx * 3;
-    const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
-    const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
-    const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
+    const g = geodesicPoint(
+      nodePositions[fi]   * INV_BALL, nodePositions[fi+1] * INV_BALL, nodePositions[fi+2] * INV_BALL,
+      nodePositions[ti]   * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
+      t
+    );
 
     const sizeCurve = Math.sin(t * Math.PI);
-    spikeDummy.position.set(x, y, z);
+    spikeDummy.position.set(g[0] * BALL_RADIUS, g[1] * BALL_RADIUS, g[2] * BALL_RADIUS);
     spikeDummy.scale.setScalar(0.08 + sizeCurve * 0.12);
     spikeDummy.updateMatrix();
 

@@ -93,17 +93,27 @@ mod bindings {
         }
 
         /// Get pending spike data as a flat array for visualization.
-        /// Layout: [source_id, target_id, initial_delay, remaining_delay] × N
+        /// Layout: [source_id, target_id, initial_delay, remaining_delay, strength] × N
         pub fn pending_spikes_flat(&self) -> Vec<f64> {
             let pending = self.inner.resonance.pending_spikes();
-            let mut buf = Vec::with_capacity(pending.len() * 4);
+            let mut buf = Vec::with_capacity(pending.len() * 5);
             for s in pending.iter() {
                 buf.push(s.source as f64);
                 buf.push(s.target as f64);
                 buf.push(s.initial_delay);
                 buf.push(s.delay);
+                buf.push(s.strength);
             }
             buf
+        }
+
+        /// Get IDs of morphons that received a spike delivery this step.
+        /// Used for arrival flash effect in the visualizer.
+        pub fn delivered_target_ids(&self) -> Vec<u32> {
+            self.inner.resonance.last_delivered()
+                .iter()
+                .map(|s| s.target as u32)
+                .collect()
         }
 
         /// Inject a reward signal (dopamine analog, 0.0-1.0).

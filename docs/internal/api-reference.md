@@ -108,7 +108,21 @@ Methods: `new(capacity)`, `push(value)`, `mean()`, `variance()`, `max()`, `len()
 
 ---
 
-## `morphon.rs` — Morphon & Synapse
+## `morphon.rs` — Morphon, Synapse & MetabolicConfig
+
+### `MetabolicConfig` (struct)
+
+V3 Metabolic Budget — controls how morphons earn and spend energy.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `base_cost` | 0.001 | Energy cost per step for being alive |
+| `synapse_cost` | 0.0005 | Additional cost per connection per step |
+| `utility_reward` | 0.02 | Energy earned per unit of prediction error reduction |
+| `basal_regen` | 0.001 | Small unconditional regen (prevents total starvation) |
+| `firing_cost` | 0.004 | Extra cost when the morphon spikes |
+
+Part of `SystemConfig`. All fields are tunable at system construction time.
 
 ### `Synapse` (struct)
 
@@ -154,12 +168,13 @@ Constructors: `new(weight)`, `.with_delay(delay)`
 | Fusion | `fused_with` | `Option<ClusterId>` | None |
 | | `autonomy` | `f64` | 1.0 |
 | Homeostasis | `migration_cooldown` | `f64` | 0.0 |
+| | `feedback_signal` | `f64` | 0.0 |
 | | `homeostatic_setpoint` | `f64` | 0.1 |
 
 Methods:
 - `new(id, position) -> Self` — create stem-cell Morphon
 - `divide(child_id, rng) -> Self` — mitosis (exp_map offset, inherit ~50% state, stochastic mutation)
-- `step(dt)` — integrate input, fire/not-fire, update prediction error, desire, threshold, division pressure, energy, cooldown
+- `step(dt, synapse_count, metabolic)` — integrate input, fire/not-fire, update prediction error, desire, threshold, division pressure, metabolic budget (V3), cooldown
 - `should_apoptose() -> bool` — age > 1000 && energy < 0.1 && activity < 0.01 && not fused
 - `should_divide() -> bool` — division_pressure > 1.0 && energy > 0.3
 - `differentiate(target) -> bool` — change cell type + activation function + receptors
@@ -447,7 +462,7 @@ Presets: `cortical()`, `hippocampal()`, `cerebellar()`.
 ### `SystemConfig` (struct)
 
 Aggregates all subsystem configs:
-- `developmental`, `learning`, `morphogenesis`, `homeostasis`, `scheduler`, `lifecycle`
+- `developmental`, `learning`, `morphogenesis`, `homeostasis`, `scheduler`, `lifecycle`, `metabolic` (V3)
 - `working_memory_capacity` (default 7), `episodic_memory_capacity` (default 1000)
 - `dt` (default 1.0)
 

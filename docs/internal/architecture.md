@@ -58,11 +58,14 @@ Step N
 ├─ FAST (every step) — parallelized via rayon
 │  ├─ resonance.propagate()     → generate SpikeEvents from firing Morphons (par_iter)
 │  ├─ resonance.deliver()       → deliver spikes that reached their target
-│  └─ morphons.par_iter_mut()   → integrate input, fire/not-fire, update state
+│  ├─ compute degree_map        → pre-compute synapse count per morphon for metabolic cost
+│  ├─ morphons.par_iter_mut()   → integrate input, fire/not-fire, metabolic budget, update state
+│  └─ DFA feedback injection    → project output error to associative layer via fixed random weights
 │
 ├─ MEDIUM (every 10 steps)
 │  ├─ update_eligibility()      → fast eligibility traces + slow synaptic tags
-│  └─ apply_weight_update()     → three-factor rule + tag-and-capture
+│  ├─ apply_weight_update()     → three-factor rule + tag-and-capture
+│  └─ DFA climbing-fiber rule   → Δw = pre_trace × feedback_signal × lr - L2 decay
 │
 ├─ SLOW (every 100 steps)
 │  ├─ synaptogenesis()          → grow new connections between correlated pairs
@@ -122,6 +125,53 @@ The reward channel uses **advantage modulation** (reward - baseline EMA) instead
 
 Two-timescale learning: fast eligibility traces (tau=20) for immediate credit assignment, slow synaptic tags (tau=6000) for delayed reward. Tags are "captured" into permanent weight changes when strong reward arrives, solving the credit assignment problem without backpropagation. Consolidated synapses are protected from pruning.
 
+Tag-and-capture fires in two locations:
+1. **DFA path** (medium learning): when `|pre_trace × feedback_signal| > 0.1`, tags the synapse; captures on strong reward (> 0.3).
+2. **Readout training path**: during classification error backprop on sensory→associative synapses. Tags accumulate aggressively (`tag += fb.abs() * 0.5`), capture threshold lowered to 0.1. This is where most consolidations occur because fresh error signals are available.
+
+### Direct Feedback Alignment (DFA)
+
+Hidden layer credit assignment without backpropagation (Lillicrap et al. 2016). Each associative morphon gets a fixed set of random weights projecting from all motor morphons. These weights are initialized once during `System::new()` and **never updated**.
+
+When output error occurs, it's projected backward: `feedback = Σ(fixed_weight_j × error_j)`. This signal is injected into associative morphons as both input current (`input_accumulator += 0.5 × feedback`) and a stored modulation signal (`feedback_signal`).
+
+**Climbing-fiber rule**: The DFA learning update on incoming synapses uses `Δw = pre_trace × feedback_signal × 0.02 - 0.001 × w` (L2 decay). The key choice is `pre_trace` over binary `pre_fired` (too sparse at 5% firing rate) or `eligibility` (STDP-gated, attenuates signal). `pre_trace` is the Goldilocks gate — recent firing memory that persists ~10 steps.
+
+### Analog Readout Bypass (Purkinje-style)
+
+A parallel output pathway that bypasses spike propagation entirely. Enabled via `enable_analog_readout()` for classification tasks.
+
+`readout_weights[output_j][assoc_i]` maps each associative morphon's potential to each output. The motor output becomes: `V_j = Σ_i readout_weights[j][i] × sigmoid(potential_i)`. Sensory morphons are also included for fast direct shortcuts.
+
+Weights are initialized with Xavier scaling (`1/√n_assoc`) and trained with the **delta rule**: `Δw = lr × sigmoid(P_i) × (target_j - output_j) - L2_decay`. Targets are one-hot encoded (1.0 for correct class, 0.0 otherwise).
+
+Output errors are backprojected through the same fixed DFA weights (not the readout weights) as "dendritic injection" to the hidden layer. This creates a loop: readout trains the output, DFA feedback trains the hidden layer.
+
+### Motor Drift Prevention
+
+Motor morphons have three special treatments to prevent potential saturation:
+1. **Full leak**: `leak_rate = 1.0` (vs 0.1 for other types) — potential resets each step, reflecting only current input with no accumulation.
+2. **Zero noise**: `noise_scale = 0.0` (vs 0.1) — prevents noise accumulation that drives saturation over hundreds of steps.
+3. **Potential clamp**: `[-10, 10]` — prevents overflow from dense connectivity (300+ simultaneous inputs).
+
+This makes motor morphons memoryless frame-to-frame — they track current input without historical drift.
+
+### Sparse Zero-Bias Input Encoding
+
+External inputs are fed through `feed_input()` as raw values with no bias transformation. For tasks like CartPole, each observation dimension is split into positive/negative channels (e.g., `max(0, velocity)` and `max(0, -velocity)`), giving 8 inputs for 4 observations.
+
+Previous approach used `sigmoid(input + 2.0)` which squashed dynamic range to 0.11 (sigmoid(2) ≈ 0.88). Zero-bias gives 0.49 range — a 4.5× improvement. Homeostatic threshold regulation handles firing rate instead of input bias.
+
+### V3 Constitutional Guards
+
+Apoptosis is gated by cell-type diversity constraints in `MorphogenesisParams`:
+- `min_morphons` (10) — apoptosis stops below this total count
+- `min_sensory_fraction` (0.05) — at least 5% must be Sensory
+- `min_motor_fraction` (0.02) — at least 2% must be Motor
+- `max_single_type_fraction` (0.80) — no single type exceeds 80%
+
+These prevent I/O starvation, output death, modulatory explosion, and total system collapse.
+
 ### Homeostatic Protection
 
 Four mechanisms prevent the "stable-dynamic paradox":
@@ -135,6 +185,28 @@ Four mechanisms prevent the "stable-dynamic paradox":
 The developmental program (Phase 4) creates guaranteed feedforward connections: Sensory → Associative → Motor, plus direct Sensory → Motor shortcuts. This ensures signal flow from input to output regardless of random connectivity. Developmental differentiation sets `differentiation_level = 0.6` so I/O morphons resist dedifferentiation under stress.
 
 Feedforward Sensory→Associative connections use **excitatory-only initialization** (weights in [0.3, 0.8]) instead of Xavier-style mixed signs. Mixed-sign feedforward creates dead pathways that never activate — signal propagation needs positive weights above the firing threshold.
+
+### V3 Metabolic Budget
+
+Morphon energy is governed by a metabolic budget system (`MetabolicConfig` in `morphon.rs`) rather than flat regeneration. The core principle: **energy is earned through utility, not given unconditionally**.
+
+Each step, a morphon pays:
+- `base_cost` (0.001) — the cost of being alive
+- `synapse_cost × degree` (0.0005 per connection) — maintaining connections is expensive
+- `firing_cost` (0.004) — extra cost when the morphon spikes
+
+And earns:
+- `utility_reward × PE_reduction` (0.02 per unit) — reducing prediction error earns energy
+- `basal_regen` (0.001) — a small unconditional trickle prevents total starvation of quiet morphons
+
+**Economics of a typical morphon** (10 synapses):
+- Outflow: `0.001 + 10×0.0005 = 0.006/step` (plus 0.004 per spike)
+- Inflow: `0.001 + utility`
+- Net: must earn `0.005/step` through PE reduction to stay alive
+
+This creates selection pressure: morphons that don't contribute to reducing prediction error drain to zero energy and become apoptosis candidates (energy < 0.1). Morphons with many connections pay proportionally more, preventing topological bloat. The result is a system that self-organizes toward minimal topology at maximal performance — ideal for edge hardware.
+
+The `MetabolicConfig` is part of `SystemConfig` and all parameters are tunable. The degree map is pre-computed per step and passed into `Morphon::step()` to avoid topology access during parallel iteration.
 
 ### Parallelization
 
