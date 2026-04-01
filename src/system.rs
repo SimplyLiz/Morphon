@@ -455,7 +455,7 @@ impl System {
                 .collect();
 
             // Project error to each Associative morphon through fixed random weights
-            let feedback_strength = 0.5;
+            let feedback_strength = 1.0;
             for (&assoc_id, weights) in &self.feedback_weights {
                 let feedback: f64 = weights.iter()
                     .filter_map(|(mid, bw)| {

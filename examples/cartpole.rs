@@ -91,10 +91,8 @@ impl CartPole {
 
 /// Linear TD-error critic — external to the MI system.
 /// Biologically: dopamine neurons in VTA/SNc computing δ from striatal input.
-/// V(s) = w · features(s) + b; δ = R + γV(s') - V(s)
-/// Critic operates on raw CartPole state (4D), not the sparse encoding (8D).
 struct Critic {
-    weights: [f64; 8],  // 4 raw + 4 squared
+    weights: [f64; 8],
     bias: f64,
     lr: f64,
 }
@@ -146,19 +144,19 @@ fn create_system() -> System {
             memory_period: 25,
         },
         learning: LearningParams {
-            tau_eligibility: 3.0,   // short window — CartPole is reactive, not delayed-reward
-            tau_trace: 5.0,         // tighter STDP window for precise credit
+            tau_eligibility: 3.0,   // short — CartPole is reactive
+            tau_trace: 5.0,
             a_plus: 1.0,
             a_minus: -0.5,          // weaker LTD to prevent inhibitory drift
             tau_tag: 500.0,
             tag_threshold: 0.3,
-            capture_threshold: 10.0, // effectively disable consolidation — stay plastic
+            capture_threshold: 10.0, // disable consolidation — stay plastic
             capture_rate: 0.2,
             weight_max: 3.0,        // tighter bounds prevent weight divergence
             weight_min: 0.01,
-            alpha_reward: 2.0,      // reduced — was overwhelming with fixed DFA signal
+            alpha_reward: 2.0,
             alpha_novelty: 0.5,
-            alpha_arousal: 0.5,     // reduced — high arousal was destabilizing
+            alpha_arousal: 0.5,
             alpha_homeostasis: 0.1,
         },
         morphogenesis: MorphogenesisParams {
@@ -196,14 +194,13 @@ fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> f64 {
 
 fn run_episode(
     system: &mut System, env: &mut CartPole, critic: &mut Critic,
-    max_steps: usize, epsilon: f64, episode: usize, rng: &mut impl Rng,
+    max_steps: usize, epsilon: f64, rng: &mut impl Rng,
 ) -> usize {
     env.reset(rng);
     let mut steps = 0;
 
     for _ in 0..max_steps {
         let obs = env.observe();
-        // Save pre-action state for critic
         let pre_state = CartPole { x: env.x, x_dot: env.x_dot, theta: env.theta, theta_dot: env.theta_dot };
         let outputs = system.process_steps(&obs, INTERNAL_STEPS);
         let action = select_action(&outputs, epsilon, rng);
@@ -214,23 +211,20 @@ fn run_episode(
             1.0 + 0.5 * (1.0 - (env.theta / THETA_THRESHOLD).abs())
         } else { -1.0 }; // negative terminal signal for stronger TD error on failure
 
-        // Use the MI system's built-in TD critic. This:
-        // 1. Computes δ = R + γV(s') - V(s) from internal critic morphons
-        // 2. Sets last_td_error (enabling DFA feedback to hidden layer)
-        // 3. Injects reward signal for three-factor learning
-        let _td_error = system.inject_td_error(reward, GAMMA);
+        // Internal TD critic: sets last_td_error (DFA) + injects reward
+        let _int_td = system.inject_td_error(reward, GAMMA);
 
-        // Also update external critic for readout training signal
-        let ext_td = critic.update(&pre_state, reward, env, !alive);
+        // External critic: better value estimates for readout training
+        let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
-        // Train analog readout — primary learning signal for action selection
-        let base_lr = 0.2;
-        if ext_td > 0.0 {
-            system.train_readout(chosen, ext_td.min(1.0) * base_lr);
+        // Train analog readout
+        let base_lr = 0.15;
+        if td_error > 0.0 {
+            system.train_readout(chosen, td_error.min(1.0) * base_lr);
         } else {
             let other = 1 - chosen;
-            system.train_readout(other, ext_td.abs().min(1.0) * base_lr * 0.5);
+            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
         }
 
         // TD(λ)-like trace stretching: when pole is in danger (>50% of threshold),
@@ -284,7 +278,7 @@ fn main() {
 
     for ep in 0..num_episodes {
         let epsilon = (0.5 * (1.0 - ep as f64 / num_episodes as f64)).max(0.05);
-        let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, ep, &mut rng);
+        let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, &mut rng);
         recent.push(steps);
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
@@ -294,9 +288,12 @@ fn main() {
         if (ep + 1) % 100 == 0 || steps >= 200 {
             let s = system.inspect();
             let diag = system.diagnostics();
-            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | m {} s {} fr {:.3} pe {:.3} | {}",
+            // Probe: run a test observation to see output differentiation
+            let test_out = system.read_output();
+            let out_diff = if test_out.len() >= 2 { (test_out[0] - test_out[1]).abs() } else { 0.0 };
+            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | m {} s {} fr {:.3} pe {:.3} Δout {:.3} | {}",
                 ep + 1, steps, avg, best, s.total_morphons, s.total_synapses, s.firing_rate, s.avg_prediction_error,
-                diag.summary());
+                out_diff, diag.summary());
         }
 
         if recent.len() >= 100 && avg >= 195.0 {

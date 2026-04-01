@@ -173,7 +173,7 @@ function initScene() {
   const container = document.getElementById('scene-container');
 
   // Renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   const sceneH = window.innerHeight - (document.getElementById('bottom-panel')?.offsetHeight || 160);
   renderer.setSize(window.innerWidth, sceneH);
@@ -187,7 +187,7 @@ function initScene() {
   scene.fog = new THREE.FogExp2(0x050510, 0.006);
 
   // Camera
-  camera = new THREE.PerspectiveCamera(55, window.innerWidth / sceneH, 0.1, 500);
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth / sceneH, 1.0, 200);
   camera.position.set(0, 8, 22);
 
   // Controls
@@ -204,7 +204,7 @@ function initScene() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.5,   // strength
+    0.25,  // strength — halved
     0.3,   // radius — tight halos
     0.85   // threshold
   );
@@ -274,11 +274,12 @@ function initScene() {
 
   // === NODE MESH — PBR with emissive for glow + 3D shading ===
   const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
-  const nodeMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,           // tinted by instance color — this IS the visible color
-    emissive: 0x000000,       // no emissive — avoids white wash
-    metalness: 0.15,
-    roughness: 0.5,
+  // MeshBasicMaterial: no lighting interaction, purely instance-colored.
+  // Eliminates z-fighting visibility — overlapping surfaces render the same color
+  // regardless of normal direction, so depth buffer flicker is invisible.
+  // The 3D look comes from bloom, glow variation, and size — not from shading.
+  const nodeMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,  // multiplied by instance color
   });
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
@@ -304,7 +305,7 @@ function initScene() {
   const spikeGeo = new THREE.SphereGeometry(1, 6, 6);
   const spikeMat = new THREE.MeshBasicMaterial({
     transparent: true, opacity: 0.85,
-    blending: THREE.AdditiveBlending, depthWrite: false,
+    blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false,
   });
   spikesMesh = new THREE.InstancedMesh(spikeGeo, spikeMat, MAX_SPIKES);
   spikesMesh.count = 0;
@@ -431,6 +432,9 @@ function updateScene() {
   nodesMesh.count = nodeCount;
 
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
+  // Scale nodes down as population grows to prevent z-fighting from overlapping spheres
+  // At 100: 1.0×, at 500: 0.45×, at 1000: 0.32×, at 2000: 0.22×
+  const popScale = Math.min(1.0, 10.0 / Math.sqrt(nodeCount));
 
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
@@ -443,9 +447,8 @@ function updateScene() {
     if (!isFinite(py)) py = 0;
     if (!isFinite(pz)) pz = 0;
 
-    // Clamp energy to [0, 2] for sizing — negative energy should not invert the mesh
     const energy = Math.max(0, Math.min(2, isFinite(n.energy) ? n.energy : 0));
-    const size = NODE_BASE_SIZE + energy * 0.2;
+    const size = (NODE_BASE_SIZE + energy * 0.2) * popScale;
 
     dummy.position.set(px, py, pz);
     dummy.scale.setScalar(size);
@@ -454,9 +457,11 @@ function updateScene() {
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
 
-    // === GLOW: soft ramp up on fire, gentle decay ===
+    // === GLOW: only active or near-threshold morphons ===
     const prevGlow = nodeGlow.get(n.id) || 0;
-    const glowTarget = frameFired.has(n.id) ? 1.0 : 0.0;
+    // Pre-glow: morphons approaching threshold get a subtle hint
+    const nearThreshold = (n.potential > n.threshold * 0.6 && !n.fired) ? 0.15 : 0.0;
+    const glowTarget = frameFired.has(n.id) ? 1.0 : nearThreshold;
     const glow = glowTarget > prevGlow
       ? prevGlow + (glowTarget - prevGlow) * 0.35
       : prevGlow * 0.92;
@@ -476,11 +481,11 @@ function updateScene() {
     const bright = 1.0 - dim * 0.85;
 
     if (n.id === selectedNodeId) {
-      tempColor.copy(color).multiplyScalar(3.0);
+      tempColor.copy(color).multiplyScalar(2.5);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Resting: vivid cell color. Firing: gentle bloom-worthy brightening.
-      const intensity = bright * (0.85 + glow * 1.2);
+      // Resting: dim. Firing: glow (25% less than before). Only active nodes bloom.
+      const intensity = bright * (0.5 + glow * 0.9);
       tempColor.copy(color).multiplyScalar(intensity);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -1445,7 +1450,7 @@ function animate() {
   // Dynamic bloom
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
-    bloomPass.strength = 0.45 + activity * 0.25;
+    bloomPass.strength = 0.2 + activity * 0.15;
   }
 
   controls.update();
