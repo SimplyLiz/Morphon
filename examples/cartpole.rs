@@ -190,7 +190,14 @@ fn create_system() -> System {
     };
     let mut sys = System::new(config);
     sys.enable_analog_readout(); // Purkinje-style analog output bypass
-    sys.set_consolidation_gate(20.0); // consolidate once consistently above 2× random
+    sys.set_consolidation_gate(40.0); // consolidate only when performance is clearly good
+
+    // Sensory-only readout: zero out associative weights.
+    // Tests whether the readout can learn from the raw population-coded input.
+    let sensory_ids: std::collections::HashSet<u64> = sys.morphons.values()
+        .filter(|m| m.cell_type == morphon_core::CellType::Sensory)
+        .map(|m| m.id).collect();
+    sys.filter_readout_weights(|id| sensory_ids.contains(&id));
     sys
 }
 
@@ -209,6 +216,7 @@ fn run_episode(
     max_steps: usize, epsilon: f64, rng: &mut impl Rng,
 ) -> usize {
     env.reset(rng);
+    system.reset_voltages(); // clean slate — same input → same activity pattern
     let mut steps = 0;
 
     for _ in 0..max_steps {
@@ -230,16 +238,19 @@ fn run_episode(
         let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
-        // Train analog readout — both positive and negative TD
-        let base_lr = 0.15;
-        if td_error > 0.0 {
-            system.train_readout(chosen, td_error.min(1.0) * base_lr);
-            // Contrastive reward: reinforce correct motor, inhibit wrong one
-            system.reward_contrastive(chosen, td_error.min(1.0) * 0.3, 0.1);
-        } else {
-            let other = 1 - chosen;
-            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
-        }
+        // Train analog readout with supervised hint from pole angle.
+        // Correct action = push in the direction the pole is leaning.
+        // This gives the readout the directional signal that scalar TD error lacks.
+        // The MI network still learns representations unsupervised — only the
+        // readout mapping is supervised. Cerebellar circuit pattern:
+        // granule cells (Associative) = unsupervised features,
+        // Purkinje cells (readout) = supervised climbing-fiber error.
+        let correct_action = if env.theta > 0.0 { 1 } else { 0 }; // lean right → push right
+        // Constant learning rate — learn from every step, not just high-TD moments.
+        // TD-scaled lr concentrated learning on failure moments where theta is at threshold,
+        // giving no useful signal for small-angle balancing.
+        system.train_readout(correct_action, 0.05);
+        system.reward_contrastive(correct_action, 0.2, 0.1);
 
         // TD(λ)-like trace stretching: when pole is in danger (>50% of threshold),
         // inject novelty to boost plasticity. This extends the effective eligibility
@@ -287,6 +298,86 @@ fn main() {
     println!("Types: {:?}\n", stats.differentiation_map);
 
     for _ in 0..20 { system.process_steps(&[2.0, 2.0, 2.0, 2.0], INTERNAL_STEPS); }
+
+    // === ACTIVITY STABILITY DIAGNOSTIC ===
+    // Present the same input 5 times with voltage reset, check pattern consistency
+    {
+        let test_env = CartPole { x: 0.1, x_dot: 0.0, theta: 0.05, theta_dot: 0.0 };
+        let test_obs = test_env.observe();
+        let mut patterns: Vec<Vec<u64>> = Vec::new();
+        for _ in 0..5 {
+            system.reset_voltages();
+            system.process_steps(&test_obs, INTERNAL_STEPS);
+            let fired: Vec<u64> = system.morphons.values()
+                .filter(|m| m.fired && m.cell_type == morphon_core::CellType::Associative)
+                .map(|m| m.id)
+                .collect();
+            patterns.push(fired);
+        }
+        // Compare consecutive pairs
+        let mut total_overlap = 0.0;
+        let mut comparisons = 0;
+        for i in 0..patterns.len()-1 {
+            let a: std::collections::HashSet<u64> = patterns[i].iter().copied().collect();
+            let b: std::collections::HashSet<u64> = patterns[i+1].iter().copied().collect();
+            let intersection = a.intersection(&b).count();
+            let union = a.union(&b).count();
+            let jaccard = if union > 0 { intersection as f64 / union as f64 } else { 1.0 };
+            total_overlap += jaccard;
+            comparisons += 1;
+        }
+        let avg_overlap = total_overlap / comparisons as f64;
+        let sizes: Vec<usize> = patterns.iter().map(|p| p.len()).collect();
+        println!("Activity stability: Jaccard={:.3} (1.0=identical) | fired per trial: {:?}", avg_overlap, sizes);
+
+        // Check if different inputs produce different output patterns
+        let test_inputs = [
+            CartPole { x: 0.0, x_dot: 0.0, theta: 0.1, theta_dot: 0.0 },  // lean right
+            CartPole { x: 0.0, x_dot: 0.0, theta: -0.1, theta_dot: 0.0 }, // lean left
+        ];
+        let mut output_pairs = Vec::new();
+        for ti in &test_inputs {
+            system.reset_voltages();
+            let out = system.process_steps(&ti.observe(), INTERNAL_STEPS);
+            output_pairs.push(out.clone());
+        }
+        if output_pairs.len() == 2 && output_pairs[0].len() >= 2 {
+            println!("Output for θ=+0.1: [{:.3}, {:.3}]  θ=-0.1: [{:.3}, {:.3}]",
+                output_pairs[0][0], output_pairs[0][1],
+                output_pairs[1][0], output_pairs[1][1]);
+        }
+
+        // Count recurrent Assoc→Assoc connections
+        let assoc_ids: std::collections::HashSet<u64> = system.morphons.values()
+            .filter(|m| m.cell_type == morphon_core::CellType::Associative
+                     || m.cell_type == morphon_core::CellType::Stem)
+            .map(|m| m.id).collect();
+        let recurrent = system.topology.all_edges().iter()
+            .filter(|(from, to, _)| assoc_ids.contains(from) && assoc_ids.contains(to))
+            .count();
+        let total_syn = system.topology.synapse_count();
+        println!("Recurrent A→A: {}/{} ({:.0}%)", recurrent, total_syn, recurrent as f64 / total_syn as f64 * 100.0);
+
+        // Weight distribution of S→A connections
+        let sensory_ids: std::collections::HashSet<u64> = system.morphons.values()
+            .filter(|m| m.cell_type == morphon_core::CellType::Sensory)
+            .map(|m| m.id).collect();
+        let sa_weights: Vec<f64> = system.topology.all_edges().iter()
+            .filter_map(|(from, to, ei)| {
+                if sensory_ids.contains(from) && assoc_ids.contains(to) {
+                    system.topology.graph.edge_weight(*ei).map(|s| s.weight)
+                } else { None }
+            }).collect();
+        if !sa_weights.is_empty() {
+            let mean = sa_weights.iter().sum::<f64>() / sa_weights.len() as f64;
+            let std = (sa_weights.iter().map(|w| (w - mean).powi(2)).sum::<f64>() / sa_weights.len() as f64).sqrt();
+            let min = sa_weights.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = sa_weights.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            println!("S→A weights: n={} mean={:.4} std={:.4} range=[{:.3}, {:.3}]", sa_weights.len(), mean, std, min, max);
+        }
+        println!();
+    }
+
     let mut best = 0usize;
     let mut recent: Vec<usize> = Vec::new();
 
@@ -297,16 +388,42 @@ fn main() {
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
         system.report_performance(steps as f64);
+        system.report_episode_end(steps as f64);
         let avg = recent.iter().sum::<usize>() as f64 / recent.len() as f64;
 
-        if (ep + 1) % 100 == 0 || steps >= 200 {
-            let s = system.inspect();
+        if (ep + 1) % 100 == 0 || ep == 0 || steps >= 200 {
+            // Probe: present 4 test states, check if output direction matches pole lean
+            let test_states = [
+                (0.0, 0.0, 0.1, 0.0),   // pole leaning right → should push right (out[1]>out[0])
+                (0.0, 0.0, -0.1, 0.0),  // pole leaning left → should push left (out[0]>out[1])
+                (0.0, 0.0, 0.05, 0.5),  // pole right, moving right → push right
+                (0.0, 0.0, -0.05, -0.5),// pole left, moving left → push left
+            ];
+            let mut correct = 0;
+            // Save state, probe without reset, restore — tests readout in warm context
+            for (x, xd, th, thd) in &test_states {
+                let probe = CartPole { x: *x, x_dot: *xd, theta: *th, theta_dot: *thd };
+                let out = system.process_steps(&probe.observe(), INTERNAL_STEPS);
+                if out.len() >= 2 {
+                    let chose_right = out[1] > out[0];
+                    let should_right = *th > 0.0;
+                    if chose_right == should_right { correct += 1; }
+                }
+            }
+
+            // Test output discrimination for opposite pole leans
+            system.reset_voltages();
+            let out_right = system.process_steps(&CartPole { x: 0.0, x_dot: 0.0, theta: 0.1, theta_dot: 0.0 }.observe(), INTERNAL_STEPS);
+            system.reset_voltages();
+            let out_left = system.process_steps(&CartPole { x: 0.0, x_dot: 0.0, theta: -0.1, theta_dot: 0.0 }.observe(), INTERNAL_STEPS);
+            let disc = if out_right.len() >= 2 && out_left.len() >= 2 {
+                let d_right = out_right[1] - out_right[0];
+                let d_left = out_left[1] - out_left[0];
+                format!("d+={:.3} d-={:.3}", d_right, d_left)
+            } else { "n/a".to_string() };
             let diag = system.diagnostics();
-            let critic_v = critic.predict(&env); // external critic's value estimate
-            let test_out = system.read_output();
-            let out_diff = if test_out.len() >= 2 { (test_out[0] - test_out[1]).abs() } else { 0.0 };
-            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | V={:.2} Δout {:.3} | {}",
-                ep + 1, steps, avg, best, critic_v, out_diff, diag.summary());
+            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | policy={}/4 | {} | {}",
+                ep + 1, steps, avg, best, correct, disc, diag.summary());
             println!("       {}", system.endo.summary());
         }
 
