@@ -479,6 +479,46 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  /* Cell type row clickable */
+  .cell-type-row { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
+  .cell-type-row:hover { background: rgba(255,255,255,0.04); }
+  .cell-type-row.active { background: rgba(80, 140, 255, 0.12); }
+
+  /* Motor output bars */
+  .motor-bars { display: flex; flex-direction: column; gap: 3px; max-height: 80px; overflow-y: auto; }
+  .motor-bar { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+  .motor-bar .bar-track { flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.04); overflow: hidden; }
+  .motor-bar .bar-fill { height: 100%; border-radius: 2px; background: var(--motor); transition: width 0.1s; }
+  .motor-bar .bar-val { font-family: 'JetBrains Mono', monospace; font-size: 9px; color: var(--text-dim); width: 34px; text-align: right; }
+
+  /* Help overlay */
+  #help-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(5, 5, 16, 0.85);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  #help-overlay.visible { display: flex; }
+  #help-content {
+    background: var(--panel); border: 1px solid var(--panel-border-hover);
+    border-radius: 16px; padding: 28px 32px; max-width: 520px; width: 90%;
+    max-height: 80vh; overflow-y: auto;
+  }
+  #help-content h2 { font-size: 16px; font-weight: 500; color: var(--text-bright); margin-bottom: 16px; letter-spacing: 1px; }
+  #help-content h3 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-dim); margin: 14px 0 6px; }
+  #help-content p, #help-content li { font-size: 12px; color: var(--text); line-height: 1.6; }
+  #help-content ul { padding-left: 16px; }
+  #help-content kbd {
+    background: rgba(80, 140, 255, 0.1); border: 1px solid rgba(80, 140, 255, 0.2);
+    border-radius: 4px; padding: 1px 6px; font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--text-bright);
+  }
+  .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; margin: 3px 0; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Speed value label */
+  .speed-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); min-width: 24px; }
+
   /* === RESPONSIVE === */
   @media (max-width: 900px) {
     #left-panel, #right-panel { display: none !important; }
@@ -511,12 +551,17 @@
     <button id="btn-step" title="Single Step">&#9197;</button>
     <span style="color:var(--text-dim);font-size:10px;margin:0 2px;">SPEED</span>
     <input type="range" id="speed-slider" min="1" max="50" value="10">
+    <span class="speed-val" id="speed-val">10x</span>
     <select id="program-select">
       <option value="cortical">Cortical</option>
       <option value="hippocampal">Hippocampal</option>
       <option value="cerebellar">Cerebellar</option>
     </select>
     <button id="btn-reset">RESET</button>
+    <button id="btn-save" title="Save state">SAVE</button>
+    <button id="btn-load" title="Load state">LOAD</button>
+    <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
+    <button id="btn-help" title="Help">?</button>
   </div>
 </div>
 
@@ -538,17 +583,21 @@
       <div class="sparkline-label">Firing Rate</div>
       <canvas class="sparkline" id="spark-firing" width="188" height="32"></canvas>
     </div>
+    <div class="sparkline-container">
+      <div class="sparkline-label">Morphon Count</div>
+      <canvas class="sparkline" id="spark-morphons" width="188" height="32"></canvas>
+    </div>
   </div>
 
   <div class="panel">
     <div class="section-title">Cell Types</div>
     <div class="cell-types" id="cell-types">
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--sensory)"></span>Sensory</span><span class="count" id="ct-Sensory">0</span></div>
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--associative)"></span>Associative</span><span class="count" id="ct-Associative">0</span></div>
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--motor)"></span>Motor</span><span class="count" id="ct-Motor">0</span></div>
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--modulatory)"></span>Modulatory</span><span class="count" id="ct-Modulatory">0</span></div>
-      <div class="cell-type-row"><span class="name"><span class="cell-dot" style="background:var(--fused)"></span>Fused</span><span class="count" id="ct-Fused">0</span></div>
+      <div class="cell-type-row" data-type="Stem"><span class="name"><span class="cell-dot" style="background:var(--stem)"></span>Stem</span><span class="count" id="ct-Stem">0</span></div>
+      <div class="cell-type-row" data-type="Sensory"><span class="name"><span class="cell-dot" style="background:var(--sensory)"></span>Sensory</span><span class="count" id="ct-Sensory">0</span></div>
+      <div class="cell-type-row" data-type="Associative"><span class="name"><span class="cell-dot" style="background:var(--associative)"></span>Associative</span><span class="count" id="ct-Associative">0</span></div>
+      <div class="cell-type-row" data-type="Motor"><span class="name"><span class="cell-dot" style="background:var(--motor)"></span>Motor</span><span class="count" id="ct-Motor">0</span></div>
+      <div class="cell-type-row" data-type="Modulatory"><span class="name"><span class="cell-dot" style="background:var(--modulatory)"></span>Modulatory</span><span class="count" id="ct-Modulatory">0</span></div>
+      <div class="cell-type-row" data-type="Fused"><span class="name"><span class="cell-dot" style="background:var(--fused)"></span>Fused</span><span class="count" id="ct-Fused">0</span></div>
     </div>
   </div>
 </div>
@@ -582,6 +631,11 @@
     </div>
   </div>
 
+  <div class="panel">
+    <div class="section-title">Motor Output</div>
+    <div class="motor-bars" id="motor-output"></div>
+  </div>
+
   <div class="panel" id="detail-panel">
     <div class="section-title">Selected Morphon</div>
     <div class="detail-header">
@@ -611,6 +665,50 @@
       <button id="btn-clear-log" style="font-size:9px;padding:2px 8px;">CLEAR</button>
     </div>
     <div class="events-scroll" id="events"></div>
+  </div>
+</div>
+
+<!-- HELP OVERLAY -->
+<div id="help-overlay">
+  <div id="help-content">
+    <h2>MORPHON ENGINE</h2>
+    <p>A living neural network that grows, learns, and self-organizes at runtime inside a 3D Poincar&eacute; ball. Center = general, surface = specialized.</p>
+
+    <h3>Cell Types</h3>
+    <div class="legend-row"><span class="legend-dot" style="background:#8890a4"></span> Stem — pluripotent, undifferentiated</div>
+    <div class="legend-row"><span class="legend-dot" style="background:#00d4ff"></span> Sensory — input processing</div>
+    <div class="legend-row"><span class="legend-dot" style="background:#a78bfa"></span> Associative — pattern recognition</div>
+    <div class="legend-row"><span class="legend-dot" style="background:#ff6b35"></span> Motor — output generation</div>
+    <div class="legend-row"><span class="legend-dot" style="background:#34d399"></span> Modulatory — internal regulation</div>
+    <div class="legend-row"><span class="legend-dot" style="background:#f472b6"></span> Fused — cluster member</div>
+
+    <h3>Signals</h3>
+    <ul>
+      <li><strong>Reward</strong> — reinforces recently active connections (dopamine)</li>
+      <li><strong>Novelty</strong> — increases plasticity systemwide (acetylcholine)</li>
+      <li><strong>Arousal</strong> — increases sensitivity (noradrenaline)</li>
+    </ul>
+
+    <h3>Keyboard Shortcuts</h3>
+    <ul>
+      <li><kbd>Space</kbd> Pause / Resume</li>
+      <li><kbd>&rarr;</kbd> Single step</li>
+      <li><kbd>R</kbd> Reset system</li>
+      <li><kbd>F</kbd> Fullscreen</li>
+      <li><kbd>Esc</kbd> Deselect / Close help</li>
+      <li><kbd>?</kbd> Toggle this help</li>
+    </ul>
+
+    <h3>Interaction</h3>
+    <ul>
+      <li><strong>Orbit</strong> — drag to rotate, scroll to zoom</li>
+      <li><strong>Hover</strong> — tooltip with morphon info</li>
+      <li><strong>Click node</strong> — select, highlight connections</li>
+      <li><strong>Click cell type</strong> — highlight all of that type</li>
+      <li><strong>Click empty</strong> — deselect</li>
+    </ul>
+
+    <p style="margin-top:16px;color:var(--text-dim);font-size:10px;text-align:center;">Click anywhere or press <kbd>Esc</kbd> to close</p>
   </div>
 </div>
 

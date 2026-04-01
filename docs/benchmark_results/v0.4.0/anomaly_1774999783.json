@@ -1,0 +1,68 @@
+{
+  "anomaly_rate": 0.05,
+  "benchmark": "anomaly",
+  "diagnostics": {
+    "active_tags": 114,
+    "total_captures": 183,
+    "weight_mean": -1.8262873071544923,
+    "weight_std": 1.3590529678637973
+  },
+  "learning_phase": 500,
+  "results": [
+    {
+      "f1": 0.056818181818181816,
+      "fn": 71,
+      "fp": 95,
+      "precision": 0.05,
+      "recall": 0.06578947368421052,
+      "sigma": 1.5,
+      "threshold": 1.570218485862883,
+      "tn": 1329,
+      "tp": 5
+    },
+    {
+      "f1": 0.06153846153846154,
+      "fn": 72,
+      "fp": 50,
+      "precision": 0.07407407407407407,
+      "recall": 0.05263157894736842,
+      "sigma": 2.0,
+      "threshold": 1.6960515741341609,
+      "tn": 1374,
+      "tp": 4
+    },
+    {
+      "f1": 0.038834951456310676,
+      "fn": 74,
+      "fp": 25,
+      "precision": 0.07407407407407407,
+      "recall": 0.02631578947368421,
+      "sigma": 2.5,
+      "threshold": 1.8218846624054388,
+      "tn": 1399,
+      "tp": 2
+    },
+    {
+      "f1": 0.04395604395604395,
+      "fn": 74,
+      "fp": 13,
+      "precision": 0.13333333333333333,
+      "recall": 0.02631578947368421,
+      "sigma": 3.0,
+      "threshold": 1.9477177506767165,
+      "tn": 1411,
+      "tp": 2
+    }
+  ],
+  "series_length": 2000,
+  "system": {
+    "clusters": 0,
+    "firing_rate": 0.11538461538461539,
+    "morphons": 78,
+    "prediction_error": 0.7947846674168382,
+    "synapses": 727
+  },
+  "timestamp": 1774999783,
+  "total_anomalies": 95,
+  "version": "0.4.0"
+}

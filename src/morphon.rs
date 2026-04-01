@@ -208,6 +208,10 @@ impl Morphon {
         let noise = (noise_raw - 0.5) * 0.1;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
+        // Guard against NaN/Inf from numerical instability
+        if !self.potential.is_finite() {
+            self.potential = 0.0;
+        }
 
         // Apply activation function to determine output
         let activation = self.activation_fn.apply(self.potential);

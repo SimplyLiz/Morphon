@@ -1,0 +1,87 @@
+{
+  "benchmark": "mnist",
+  "diagnostics": {
+    "active_tags": 385,
+    "total_captures": 6950,
+    "weight_mean": -2.2378876380795876,
+    "weight_std": 1.2398490104751614
+  },
+  "epochs": 3,
+  "results": {
+    "per_class": [
+      {
+        "accuracy": 1.7857142857142856,
+        "correct": 1,
+        "digit": 0,
+        "total": 56
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 1,
+        "total": 57
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 2,
+        "total": 51
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 3,
+        "total": 49
+      },
+      {
+        "accuracy": 39.130434782608695,
+        "correct": 18,
+        "digit": 4,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 5,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 6,
+        "total": 50
+      },
+      {
+        "accuracy": 7.8431372549019605,
+        "correct": 4,
+        "digit": 7,
+        "total": 51
+      },
+      {
+        "accuracy": 40.0,
+        "correct": 16,
+        "digit": 8,
+        "total": 40
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 9,
+        "total": 54
+      }
+    ],
+    "test_accuracy": 7.8
+  },
+  "system": {
+    "clusters": 2,
+    "firing_rate": 0.012756909992912827,
+    "generation": 2,
+    "morphons": 1411,
+    "prediction_error": 3.6679853933497295,
+    "synapses": 105081
+  },
+  "test_samples": 500,
+  "timestamp": 1775000136,
+  "train_samples": 2000,
+  "version": "0.4.0"
+}

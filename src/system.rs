@@ -143,7 +143,7 @@ impl System {
             .collect();
         motor_ids.sort();
 
-        System {
+        let mut system = System {
             morphons,
             topology,
             resonance: ResonanceEngine::new(),
@@ -160,7 +160,44 @@ impl System {
             next_cluster_id: 0,
             step_count: 0,
             diag: Diagnostics::default(),
+        };
+
+        // === Spontaneous developmental activity ===
+        // Analogous to retinal waves and cortical spontaneous bursting in utero.
+        // Before external input begins, drive noise through the network with sustained
+        // high modulation to establish initial firing correlations across the feedforward
+        // pathway. Without this, associative/motor morphons never fire, no positive
+        // Hebbian coincidences form, and the learning rule can only produce LTD.
+        //
+        // Modulation is re-injected every step because it decays (reward 0.95x, novelty
+        // 0.90x, arousal 0.85x per step). Without continuous injection, the signal
+        // vanishes before weight updates can accumulate meaningful changes.
+        for step in 0..100_u64 {
+            // Inject noise as pseudo-sensory input to drive activity through the network
+            let n_inputs = system.input_ports.len();
+            if n_inputs > 0 {
+                let noise_input: Vec<f64> = (0..n_inputs)
+                    .map(|i| {
+                        let v = ((i as u64).wrapping_mul(step.wrapping_add(997)) % 1000) as f64 / 1000.0;
+                        0.5 + v * 1.0 // range [0.5, 1.5] — strong enough to propagate
+                    })
+                    .collect();
+                system.feed_input(&noise_input);
+            }
+            // Sustain high modulation so the three-factor rule produces positive
+            // weight changes on feedforward synapses where pre+post both fire.
+            system.modulation.inject_reward(0.3);
+            system.modulation.inject_novelty(0.3);
+            system.modulation.inject_arousal(0.3);
+            system.step();
         }
+        // Reset to clean state after developmental activity — the system should
+        // appear freshly created to the caller, with step_count = 0.
+        system.modulation = Neuromodulation::default();
+        system.step_count = 0;
+        system.resonance.clear();
+
+        system
     }
 
     /// Run one simulation step using the dual-clock architecture.
@@ -186,16 +223,25 @@ impl System {
         // 2. Deliver spikes that have reached their targets
         let delivered = self.resonance.deliver(&mut self.morphons, dt);
 
-        // 3. Spike-timing eligibility: update eligibility traces at the moment
-        //    of spike delivery for precise pre->post timing information.
-        //    This uses the actual spike arrival (not just the coarse "fired" flag)
-        //    to provide STDP-like precision to the three-factor learning rule.
+        let spikes_delivered = delivered.len();
+
+        // 3. Update all Morphon states (integrate input, fire/not-fire).
+        //    Must run BEFORE spike-timing eligibility so post_fired reflects
+        //    whether the delivered spike caused the target to fire this step.
+        #[cfg(feature = "parallel")]
+        self.morphons.par_iter_mut().for_each(|(_, m)| m.step(dt));
+        #[cfg(not(feature = "parallel"))]
+        self.morphons.values_mut().for_each(|m| m.step(dt));
+
+        // 4. Spike-timing eligibility: now that morphon.step() has run, post_fired
+        //    correctly reflects whether the delivered spike triggered firing.
+        //    This captures the causal "pre fired → spike arrived → post fired"
+        //    chain that the medium path misses due to refractory timing.
         for spike in &delivered {
             let post_fired = self.morphons.get(&spike.target).map_or(false, |m| m.fired);
             if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
                     // Spike arrival is direct evidence of pre-synaptic firing.
-                    // Uses same balanced LTD as hebbian_coincidence (pre=true case).
                     let h = if post_fired { 1.0 } else { -0.06 };
                     synapse.eligibility +=
                         (-synapse.eligibility / self.config.learning.tau_eligibility + h) * dt;
@@ -209,13 +255,6 @@ impl System {
                 }
             }
         }
-        let spikes_delivered = delivered.len();
-
-        // 4. Update all Morphon states (integrate input, fire/not-fire)
-        #[cfg(feature = "parallel")]
-        self.morphons.par_iter_mut().for_each(|(_, m)| m.step(dt));
-        #[cfg(not(feature = "parallel"))]
-        self.morphons.values_mut().for_each(|m| m.step(dt));
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
 
         // === MEDIUM PATH ===
@@ -471,38 +510,79 @@ impl System {
 
     /// Inject a targeted reward at a specific output port's morphon.
     ///
-    /// Instead of global broadcast, this directly boosts the eligibility traces
-    /// of all incoming synapses to the specified motor morphon. This provides
-    /// output-specific credit assignment within the three-factor framework:
-    /// the modulation is still local (eligibility × reward), but spatially targeted.
+    /// Two-hop credit assignment (inspired by SADP's population agreement):
+    /// 1. Boost eligibility on all incoming synapses to the motor morphon (hop 0)
+    /// 2. Propagate backward: for each pre-synaptic morphon that connects to the
+    ///    motor, boost eligibility on THEIR incoming synapses proportional to the
+    ///    connecting weight (hop 1). This gives the associative layer credit.
     ///
-    /// Analogous to how dopaminergic projections target specific brain regions,
-    /// not the whole cortex uniformly.
+    /// This is local (no chain rule), but provides output-specific credit to
+    /// the hidden layer — the critical missing piece for classification tasks.
     pub fn inject_reward_at(&mut self, output_index: usize, strength: f64) {
-        if let Some(&id) = self.output_ports.get(output_index) {
-            // Boost eligibility traces on all incoming synapses to this motor morphon
-            let incoming = self.topology.incoming_synapses_mut(id);
-            for (_, edge_idx) in incoming {
+        let Some(&motor_id) = self.output_ports.get(output_index) else { return };
+
+        // Hop 0: boost eligibility on motor's incoming synapses
+        let motor_incoming = self.topology.incoming_synapses_mut(motor_id);
+        let pre_ids_and_weights: Vec<(MorphonId, f64)> = motor_incoming
+            .into_iter()
+            .filter_map(|(pre_id, edge_idx)| {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
                     syn.eligibility += strength;
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                    Some((pre_id, syn.weight))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Hop 1: propagate credit backward to the associative layer.
+        // Each pre-synaptic morphon's incoming synapses get a boost proportional
+        // to the weight of the pre→motor connection (stronger connection = more credit).
+        let decay = 0.5; // credit attenuates per hop
+        for (pre_id, weight) in pre_ids_and_weights {
+            let hop1_strength = strength * decay * weight.abs();
+            if hop1_strength < 0.01 { continue; }
+            let pre_incoming = self.topology.incoming_synapses_mut(pre_id);
+            for (_, edge_idx) in pre_incoming {
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    syn.eligibility += hop1_strength;
                     syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
                 }
             }
         }
-        // Also inject globally (but weaker) so interior paths benefit too
-        self.modulation.inject_reward(strength * 0.3);
+
+        // Weak global signal for paths deeper than 2 hops
+        self.modulation.inject_reward(strength * 0.1);
     }
 
     /// Inject a targeted inhibition at a specific output port's morphon.
-    ///
-    /// Reduces eligibility traces on incoming synapses to the specified motor morphon,
-    /// making those paths less likely to be strengthened by future reward.
+    /// Same two-hop propagation as inject_reward_at but negative.
     pub fn inject_inhibition_at(&mut self, output_index: usize, strength: f64) {
-        if let Some(&id) = self.output_ports.get(output_index) {
-            let incoming = self.topology.incoming_synapses_mut(id);
-            for (_, edge_idx) in incoming {
+        let Some(&motor_id) = self.output_ports.get(output_index) else { return };
+
+        let motor_incoming = self.topology.incoming_synapses_mut(motor_id);
+        let pre_ids_and_weights: Vec<(MorphonId, f64)> = motor_incoming
+            .into_iter()
+            .filter_map(|(pre_id, edge_idx)| {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
                     syn.eligibility -= strength;
+                    syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
+                    Some((pre_id, syn.weight))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let decay = 0.5;
+        for (pre_id, weight) in pre_ids_and_weights {
+            let hop1_strength = strength * decay * weight.abs();
+            if hop1_strength < 0.01 { continue; }
+            let pre_incoming = self.topology.incoming_synapses_mut(pre_id);
+            for (_, edge_idx) in pre_incoming {
+                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                    syn.eligibility -= hop1_strength;
                     syn.eligibility = syn.eligibility.clamp(-1.0, 1.0);
                 }
             }

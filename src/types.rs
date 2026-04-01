@@ -295,15 +295,24 @@ impl HyperbolicPoint {
     pub fn exp_map(&self, tangent: &[f64]) -> HyperbolicPoint {
         let c = self.curvature;
         let sqrt_c = c.sqrt();
-        let lambda = 2.0 / (1.0 - c * self.norm_sq()).max(1e-10);
+        let conformal = 1.0 - c * self.norm_sq();
+        // If too close to the boundary, just return self (can't move further out)
+        if conformal < 1e-6 {
+            return self.clone();
+        }
+        let lambda = 2.0 / conformal;
         let t_norm = euclidean_norm(tangent).max(1e-10);
 
-        let coeff = (sqrt_c * lambda * t_norm / 2.0).tanh() / (sqrt_c * t_norm);
+        let arg = (sqrt_c * lambda * t_norm / 2.0).min(18.0); // clamp to prevent tanh saturation
+        let coeff = arg.tanh() / (sqrt_c * t_norm);
         let scaled: Vec<f64> = tangent.iter().map(|t| t * coeff).collect();
 
         let mut new_coords = self.mobius_add(&scaled);
 
-        // Clamp to ball (safety)
+        // Sanitize: replace NaN/Inf with zero, then clamp to ball
+        for c in &mut new_coords {
+            if !c.is_finite() { *c = 0.0; }
+        }
         let norm = euclidean_norm(&new_coords);
         if norm >= 1.0 / sqrt_c {
             let max_norm = (1.0 / sqrt_c) - 1e-5;
@@ -335,7 +344,8 @@ impl HyperbolicPoint {
         let diff = neg_self.mobius_add(&target.coords);
         let diff_norm = euclidean_norm(&diff).max(1e-10);
 
-        let coeff = (2.0 / (lambda * sqrt_c)) * (sqrt_c * diff_norm).atanh() / diff_norm;
+        let atanh_arg = (sqrt_c * diff_norm).min(0.999); // clamp to avoid atanh(1) = infinity
+        let coeff = (2.0 / (lambda * sqrt_c)) * atanh_arg.atanh() / diff_norm;
         diff.iter().map(|d| d * coeff).collect()
     }
 

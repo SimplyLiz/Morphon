@@ -91,11 +91,24 @@ fn create_system() -> System {
     System::new(config)
 }
 
+fn parse_profile() -> &'static str {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--extended") { "extended" }
+    else if args.iter().any(|a| a == "--standard") { "standard" }
+    else { "quick" }
+}
+
 fn main() {
-    println!("=== MORPHON Anomaly Detection Benchmark ===\n");
+    let profile = parse_profile();
+    let (series_len, learning_phase) = match profile {
+        "extended" => (5000, 500),
+        "standard" => (2000, 500),
+        _          => (800, 300),  // quick (default)
+    };
+
+    println!("=== MORPHON Anomaly Detection Benchmark [{}] ===\n", profile);
 
     let mut rng = rand::rng();
-    let series_len = 2000;
     let anomaly_rate = 0.05;
 
     let (series, ground_truth) = generate_series(series_len, anomaly_rate, &mut rng);
@@ -129,7 +142,6 @@ fn main() {
     let mut pe_history: Vec<f64> = Vec::new();
     let mut detections: Vec<(usize, f64, bool)> = Vec::new(); // (index, PE, is_true_anomaly)
 
-    let learning_phase = 500;
     println!("\n--- Learning phase ({} steps) ---", learning_phase);
 
     for t in WINDOW_SIZE..series_len {
@@ -288,6 +300,7 @@ fn main() {
     let version = env!("CARGO_PKG_VERSION");
     let results = json!({
         "benchmark": "anomaly",
+        "profile": profile,
         "version": version,
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),

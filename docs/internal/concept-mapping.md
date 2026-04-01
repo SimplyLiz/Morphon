@@ -154,14 +154,20 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Stable I/O port mapping | Product 2.2 | `system.rs`: sorted input_ports/output_ports with fan-out routing |
 | I/O pathway guarantees | Developmental | `developmental.rs`: Phase 4 creates Sensory→Assoc→Motor + shortcuts |
 | Inhibitory inter-cluster Morphons | 3.7B | `morphogenesis.rs`: Cluster.inhibitory_morphons + auto-generation |
+| Learning diagnostics | Observability | `diagnostics.rs`: weight/eligibility stats, firing by type, capture events |
+| Spike-timing eligibility | 3.5 | `system.rs`: eligibility updated at spike delivery time (STDP-like precision) |
+| Contrastive reward API | Credit assignment | `system.rs`: `reward_contrastive()`, `inject_reward_at()`, `inject_inhibition_at()` |
+| Anomaly detection benchmark | 6.2 | `examples/anomaly.rs`: sensor anomaly detection demo |
+| MNIST full 784px | 6.2 | `examples/mnist.rs`: full resolution, no downsampling, auto-scaled seed |
+| WASM runtime | Product 2.3 | `src/wasm.rs` + `web/index.html`. 350KB binary, Poincare disk viz. |
 
 ## What's Not Yet Implemented
 
 | Feature | Concept Section | Priority | Notes |
 |---------|----------------|----------|-------|
-| MNIST benchmark | 6.2 | Done | `examples/mnist.rs`: 7x7 downsampled, 10-class, 5 epochs. ~11% test acc (baseline 10%). |
-| CartPole convergence | 6.2 | High | Engine runs, best=48, avg~12. Three-factor learning needs more research-level tuning of dynamics. |
-| WASM runtime | Product 2.3 | Done | `src/wasm.rs` + `web/index.html` demo. 350KB binary, Poincare disk viz. |
+| Eligibility propagation (multi-hop credit) | Credit assignment | High | Contrastive signal only reaches direct motor synapses (~5 each). Need backward propagation of eligibility boost through Assoc layer. |
+| CartPole convergence | 6.2 | High | best=65, avg~16. Global reward + tag-and-capture. Needs eligibility propagation or temporal difference. |
+| MNIST convergence | 6.2 | High | Contrastive breaks mode collapse (3 classes recognized vs 1). Test acc ~9%. Needs deeper credit. |
 | GPU acceleration | Product 2.3 | Low | Phase 3 |
 | Curriculum learning / physics simulator integration | 4.2 | Medium | Requires external environment interface |
-| Population-based evolutionary meta-learning | 4.3 | Low | Evolutionary Self-Play across MI instances |
+| Population-based evolutionary meta-learning | 4.3 | Medium | CMA-ES/PBT over learning params. Would accelerate convergence research. |

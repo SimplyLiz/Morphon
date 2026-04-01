@@ -99,6 +99,21 @@ mod bindings {
             self.inner.inject_arousal(strength);
         }
 
+        /// Targeted reward at a specific output port.
+        pub fn inject_reward_at(&mut self, output_index: usize, strength: f64) {
+            self.inner.inject_reward_at(output_index, strength);
+        }
+
+        /// Targeted inhibition at a specific output port.
+        pub fn inject_inhibition_at(&mut self, output_index: usize, strength: f64) {
+            self.inner.inject_inhibition_at(output_index, strength);
+        }
+
+        /// Contrastive reward: reward correct output, inhibit incorrect ones.
+        pub fn reward_contrastive(&mut self, correct_index: usize, reward_strength: f64, inhibit_strength: f64) {
+            self.inner.reward_contrastive(correct_index, reward_strength, inhibit_strength);
+        }
+
         /// Get system statistics as a JSON string.
         pub fn inspect(&self) -> String {
             let stats = self.inner.inspect();

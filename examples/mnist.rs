@@ -92,23 +92,43 @@ fn train_one(system: &mut System, pixels: &[f64], label: usize, steps: usize) ->
     let correct = pred == label;
 
     // Contrastive reward: boost the correct class, inhibit the predicted (wrong) class.
-    // This breaks mode collapse by giving output-specific credit.
     system.reward_contrastive(
-        label,              // correct output port gets rewarded
-        if correct { 0.8 } else { 0.5 },  // reward strength
-        0.3,                // inhibit incorrect outputs
+        label,
+        if correct { 0.8 } else { 0.6 },
+        0.4,
     );
 
     if !correct {
-        // Additional arousal on wrong predictions to boost plasticity
         system.inject_arousal(0.4);
+    }
+
+    // Run 2 more steps with the same input to let the contrastive signal
+    // propagate through the weight update path (medium tick).
+    // This gives the eligibility boost time to affect interior synapses.
+    for _ in 0..2 {
+        system.feed_input(pixels);
+        system.step();
     }
 
     correct
 }
 
+fn parse_profile() -> &'static str {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--extended") { "extended" }
+    else if args.iter().any(|a| a == "--standard") { "standard" }
+    else { "quick" }
+}
+
 fn main() {
-    println!("=== MORPHON MNIST Benchmark (Full 784px) ===\n");
+    let profile = parse_profile();
+    let (num_epochs, samples_per_epoch, test_eval_size) = match profile {
+        "extended" => (5, 5000, 1000),
+        "standard" => (3, 2000, 500),
+        _          => (1, 500, 200),  // quick (default)
+    };
+
+    println!("=== MORPHON MNIST Benchmark (Full 784px) [{}] ===\n", profile);
     println!("Loading MNIST from ./data/ ...");
 
     let mnist = MnistBuilder::new()
@@ -142,8 +162,6 @@ fn main() {
 
     let mut rng = rand::rng();
     let steps_per_sample = 3;
-    let num_epochs = 3;
-    let samples_per_epoch = 2000;
 
     for epoch in 0..num_epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
@@ -168,12 +186,12 @@ fn main() {
 
         // Test
         let mut test_correct = 0;
-        for i in 0..test_images.len().min(500) {
+        for i in 0..test_images.len().min(test_eval_size) {
             if classify(&mut system, &test_images[i], steps_per_sample) == test_labels[i] {
                 test_correct += 1;
             }
         }
-        let test_n = test_images.len().min(500);
+        let test_n = test_images.len().min(test_eval_size);
         let s = system.inspect();
         println!("Epoch {} | train={:.1}% | test={:.1}% | m={} s={} gen={}\n",
             epoch + 1,
@@ -186,7 +204,7 @@ fn main() {
     println!("Per-class test accuracy:");
     let mut cc = vec![0usize; 10];
     let mut ct = vec![0usize; 10];
-    for i in 0..test_images.len().min(500) {
+    for i in 0..test_images.len().min(test_eval_size) {
         let p = classify(&mut system, &test_images[i], steps_per_sample);
         ct[test_labels[i]] += 1;
         if p == test_labels[i] { cc[test_labels[i]] += 1; }
@@ -204,11 +222,12 @@ fn main() {
     let version = env!("CARGO_PKG_VERSION");
     let s = system.inspect();
     let diag = system.diagnostics();
-    let test_n = test_images.len().min(500);
+    let test_n = test_images.len().min(test_eval_size);
     let test_correct: usize = cc.iter().sum();
     let test_acc = test_correct as f64 / test_n as f64 * 100.0;
     let results = json!({
         "benchmark": "mnist",
+        "profile": profile,
         "version": version,
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),

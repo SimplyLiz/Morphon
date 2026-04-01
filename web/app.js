@@ -36,12 +36,20 @@ let prevFired = new Set();
 
 // Connected node IDs for context dimming
 let connectedToSelected = new Set();
+// Cell type filter: null = none, string = highlight that type
+let filterCellType = null;
 // Per-node dim factor: 0 = full color, 1 = dimmed. Lerped smoothly.
-const nodeDim = new Float32Array(MAX_NODES); // current
-const nodeDimTarget = new Float32Array(MAX_NODES); // target
+const nodeDim = new Float32Array(MAX_NODES);
+const nodeDimTarget = new Float32Array(MAX_NODES);
 
 const firingHistory = [];
+const morphonHistory = [];
 const MAX_HISTORY = 120;
+
+// Cached stats to avoid double inspect() calls
+let cachedStats = null;
+// Saved state for save/load
+let savedState = null;
 
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
@@ -51,8 +59,7 @@ let nodeData = [];
 let nodeMap = new Map();
 let edgeData = [];
 
-// Glow particles for fired nodes
-let glowMesh;
+// (glow is now done via emissive brightness + bloom, no separate mesh)
 
 // Spike particles
 const MAX_SPIKES = 3000;
@@ -163,9 +170,9 @@ function initScene() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.8,   // strength
-    0.4,   // radius
-    0.82   // threshold — only bright/emissive objects bloom
+    0.6,   // strength — subtle
+    0.35,  // radius — tight halos
+    0.75   // threshold — fired nodes at 3.5x brightness exceed this
   );
   composer.addPass(bloomPass);
   // Vignette — draws eye to center
@@ -174,7 +181,7 @@ function initScene() {
   composer.addPass(new OutputPass());
 
   // === 3-POINT LIGHTING ===
-  scene.add(new THREE.AmbientLight(0x111122, 0.4));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
   const keyLight = new THREE.DirectionalLight(0xffeedd, 0.7);
   keyLight.position.set(50, 80, 50);
   scene.add(keyLight);
@@ -234,27 +241,15 @@ function initScene() {
   // === NODE MESH — PBR with emissive for glow + 3D shading ===
   const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
   const nodeMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    emissive: 0xffffff,
-    emissiveIntensity: 0.4,
-    metalness: 0.25,
-    roughness: 0.4,
+    color: 0xffffff,           // tinted by instance color — this IS the visible color
+    emissive: 0x000000,       // no emissive — avoids white wash
+    metalness: 0.15,
+    roughness: 0.5,
   });
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
   nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   scene.add(nodesMesh);
-
-  // === GLOW HALOS ===
-  const glowGeo = new THREE.IcosahedronGeometry(1, 2);
-  const glowMat = new THREE.MeshBasicMaterial({
-    transparent: true, opacity: 0.15,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  glowMesh = new THREE.InstancedMesh(glowGeo, glowMat, MAX_NODES);
-  glowMesh.count = 0;
-  glowMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  scene.add(glowMesh);
 
   // === EDGE LINES ===
   // Allocate 4 vertices per edge (2 segments for slight curve via midpoint offset)
@@ -388,7 +383,6 @@ function updateScene() {
 
   const nodeCount = Math.min(nodes.length, MAX_NODES);
   nodesMesh.count = nodeCount;
-  let glowCount = 0;
 
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
 
@@ -409,43 +403,30 @@ function updateScene() {
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
 
-    // === SMOOTH CONTEXT DIMMING ===
-    const shouldDim = hasSelection && !connectedToSelected.has(n.id);
-    nodeDimTarget[i] = shouldDim ? 1.0 : 0.0;
-    // Lerp current toward target (smooth ease)
-    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.08;
-    const dim = nodeDim[i];
-
-    // Base color with dim applied
-    tempColor.copy(color).lerp(dimColor.set(0x080810), dim * 0.85);
-
-    if (n.fired && dim < 0.5) {
-      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.4 * (1 - dim));
-      nodesMesh.setColorAt(i, tempColor);
-
-      if (glowCount < MAX_NODES) {
-        dummy.scale.setScalar(size * 3.0);
-        dummy.updateMatrix();
-        glowMesh.setMatrixAt(glowCount, dummy.matrix);
-        glowMesh.setColorAt(glowCount, color);
-        glowCount++;
-      }
-    } else {
-      nodesMesh.setColorAt(i, tempColor);
+    // === SMOOTH CONTEXT DIMMING (selection OR cell type filter) ===
+    let shouldDim = false;
+    if (hasSelection) {
+      shouldDim = !connectedToSelected.has(n.id);
+    } else if (filterCellType) {
+      shouldDim = n.cell_type !== filterCellType;
     }
+    nodeDimTarget[i] = shouldDim ? 1.0 : 0.0;
+    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.02;
+    const dim = nodeDim[i];
+    const bright = 1.0 - dim * 0.85;
 
-    // Selected node — bright highlight
     if (n.id === selectedNodeId) {
-      tempColor.copy(color).lerp(new THREE.Color(0xffffff), 0.5);
+      // Selected: bright bloom
+      tempColor.copy(color).multiplyScalar(4.0);
       nodesMesh.setColorAt(i, tempColor);
-      if (glowCount < MAX_NODES) {
-        dummy.scale.setScalar(size * 2.5);
-        dummy.updateMatrix();
-        glowMesh.setMatrixAt(glowCount, dummy.matrix);
-        tempColor.set(0x508cff);
-        glowMesh.setColorAt(glowCount, tempColor);
-        glowCount++;
-      }
+    } else if (n.fired && dim < 0.5) {
+      // Fired: HDR color * emissiveIntensity(0.3) = ~1.0+ luminance, above 0.85 threshold
+      tempColor.copy(color).multiplyScalar(3.5 * (1.0 - dim));
+      nodesMesh.setColorAt(i, tempColor);
+    } else {
+      // Normal: vivid cell-type color, dimmed smoothly if needed
+      tempColor.copy(color).multiplyScalar(bright);
+      nodesMesh.setColorAt(i, tempColor);
     }
 
     nodePositions[i * 3] = px;
@@ -455,10 +436,6 @@ function updateScene() {
 
   nodesMesh.instanceMatrix.needsUpdate = true;
   if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
-
-  glowMesh.count = glowCount;
-  glowMesh.instanceMatrix.needsUpdate = true;
-  if (glowMesh.instanceColor) glowMesh.instanceColor.needsUpdate = true;
 
   // === CURVED EDGES ===
   // Each edge becomes 2 line segments via a midpoint offset (subtle bezier approximation)
@@ -572,7 +549,9 @@ function updateScene() {
 // ============================================================
 function updatePanels() {
   if (!system) return;
-  const stats = JSON.parse(system.inspect());
+  // Cache stats — used by both updatePanels and detectEvents
+  cachedStats = JSON.parse(system.inspect());
+  const stats = cachedStats;
   const mod = JSON.parse(system.modulation_json());
 
   document.getElementById('h-step').textContent = stats.step_count;
@@ -599,11 +578,45 @@ function updatePanels() {
   setModBar('mod-arousal', 'mod-arousal-v', mod.arousal);
   setModBar('mod-homeo', 'mod-homeo-v', mod.homeostasis);
 
+  // Sparklines
   firingHistory.push(stats.firing_rate);
   if (firingHistory.length > MAX_HISTORY) firingHistory.shift();
   drawSparkline('spark-firing', firingHistory, '#508cff');
 
+  morphonHistory.push(stats.total_morphons);
+  if (morphonHistory.length > MAX_HISTORY) morphonHistory.shift();
+  drawSparkline('spark-morphons', morphonHistory, '#34d399');
+
+  // Motor output bar chart
+  updateMotorOutput();
+
   if (selectedNodeId !== null) updateDetailPanel();
+}
+
+function updateMotorOutput() {
+  if (!system) return;
+  const output = system.read_output();
+  const container = document.getElementById('motor-output');
+  const count = output.length;
+
+  // Build/update bars (reuse DOM if count matches)
+  if (container.children.length !== count) {
+    container.innerHTML = '';
+    for (let i = 0; i < count; i++) {
+      const bar = document.createElement('div');
+      bar.className = 'motor-bar';
+      bar.innerHTML = `<span style="color:var(--text-dim);font-size:9px;width:14px">${i}</span><div class="bar-track"><div class="bar-fill" id="motor-${i}"></div></div><span class="bar-val" id="motor-v-${i}">0</span>`;
+      container.appendChild(bar);
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const val = output[i];
+    const pct = Math.min(Math.max(val, 0), 1) * 100;
+    const fill = document.getElementById('motor-' + i);
+    const label = document.getElementById('motor-v-' + i);
+    if (fill) fill.style.width = pct + '%';
+    if (label) label.textContent = val.toFixed(2);
+  }
 }
 
 function setModBar(barId, valId, value) {
@@ -682,8 +695,8 @@ let lastMorphonCount = 0;
 let lastSynapseCount = 0;
 
 function detectEvents() {
-  if (!system) return;
-  const stats = JSON.parse(system.inspect());
+  if (!system || !cachedStats) return;
+  const stats = cachedStats;
   const step = stats.step_count;
   const mc = stats.total_morphons, sc = stats.total_synapses;
 
@@ -747,17 +760,26 @@ function setupControls() {
     stepsPerFrame = parseInt(e.target.value);
   });
 
-  document.getElementById('btn-reset').addEventListener('click', () => {
+  // Also clear cell type filter on reset
+  function resetSystem() {
+    filterCellType = null;
+    clearCellTypeActive();
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
+    nodeDim.fill(0); nodeDimTarget.fill(0);
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
+    spikes.length = 0;
     document.getElementById('events').innerHTML = '';
     addEvent(0, `System reset [${program}]`, 'event-diff');
     for (let i = 0; i < 20; i++) { makeInput('noise'); system.step(); }
-  });
+    updateScene(); updatePanels();
+  }
+
+  document.getElementById('btn-reset').addEventListener('click', resetSystem);
+  document.getElementById('program-select').addEventListener('change', resetSystem);
 
   document.getElementById('btn-reward').addEventListener('click', () => {
     if (system) { system.inject_reward(0.8); addEvent('', 'Reward injected (0.8)', 'event-birth'); }
@@ -777,6 +799,115 @@ function setupControls() {
   document.getElementById('btn-clear-log').addEventListener('click', () => {
     document.getElementById('events').innerHTML = '';
   });
+
+  // Speed slider — show value
+  const speedSlider = document.getElementById('speed-slider');
+  const speedVal = document.getElementById('speed-val');
+  speedSlider.addEventListener('input', () => {
+    speedVal.textContent = speedSlider.value + 'x';
+  });
+
+  // Save/Load
+  document.getElementById('btn-save').addEventListener('click', () => {
+    if (!system) return;
+    try {
+      savedState = system.save_json();
+      addEvent('', 'State saved', 'event-diff');
+    } catch (e) { addEvent('', 'Save failed: ' + e.message, 'event-death'); }
+  });
+  document.getElementById('btn-load').addEventListener('click', () => {
+    if (!savedState) { addEvent('', 'No saved state', 'event-death'); return; }
+    try {
+      system = WasmSystem.loadJson(savedState);
+      selectedNodeId = null; hoveredNodeId = null;
+      connectedToSelected.clear(); filterCellType = null;
+      nodeDim.fill(0); nodeDimTarget.fill(0);
+      clearCellTypeActive();
+      addEvent('', 'State loaded', 'event-diff');
+      updateScene(); updatePanels();
+    } catch (e) { addEvent('', 'Load failed: ' + e.message, 'event-death'); }
+  });
+
+  // Fullscreen
+  document.getElementById('btn-fullscreen').addEventListener('click', toggleFullscreen);
+
+  // Help overlay
+  const helpOverlay = document.getElementById('help-overlay');
+  document.getElementById('btn-help').addEventListener('click', () => {
+    helpOverlay.classList.toggle('visible');
+  });
+  helpOverlay.addEventListener('click', (e) => {
+    if (e.target === helpOverlay) helpOverlay.classList.remove('visible');
+  });
+
+  // Cell type filtering — click to highlight, click again to clear
+  document.querySelectorAll('.cell-type-row[data-type]').forEach(row => {
+    row.addEventListener('click', () => {
+      const type = row.dataset.type;
+      if (filterCellType === type) {
+        // Toggle off
+        filterCellType = null;
+        clearCellTypeActive();
+      } else {
+        filterCellType = type;
+        selectedNodeId = null;
+        connectedToSelected.clear();
+        clearCellTypeActive();
+        row.classList.add('active');
+      }
+    });
+  });
+
+  // Keyboard shortcuts
+  window.addEventListener('keydown', (e) => {
+    // Don't capture when typing in inputs
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+    switch (e.key) {
+      case ' ':
+        e.preventDefault();
+        pauseBtn.click();
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        document.getElementById('btn-step').click();
+        break;
+      case 'r':
+      case 'R':
+        if (!e.metaKey && !e.ctrlKey) resetSystem();
+        break;
+      case 'f':
+      case 'F':
+        if (!e.metaKey && !e.ctrlKey) toggleFullscreen();
+        break;
+      case '?':
+        helpOverlay.classList.toggle('visible');
+        break;
+      case 'Escape':
+        if (helpOverlay.classList.contains('visible')) {
+          helpOverlay.classList.remove('visible');
+        } else {
+          selectedNodeId = null;
+          connectedToSelected.clear();
+          filterCellType = null;
+          clearCellTypeActive();
+          updateDetailPanel();
+        }
+        break;
+    }
+  });
+}
+
+function clearCellTypeActive() {
+  document.querySelectorAll('.cell-type-row').forEach(r => r.classList.remove('active'));
+}
+
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  } else {
+    document.exitFullscreen();
+  }
 }
 
 // ============================================================

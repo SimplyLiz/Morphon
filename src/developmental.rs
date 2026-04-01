@@ -176,9 +176,11 @@ pub fn develop(
     // (simulating morphogen gradients)
     differentiate_by_position(&mut morphons, config);
 
-    // === Phase 4: Ensure I/O Pathways ===
-    // Create strong feedforward connections: Sensory → Associative → Motor
-    // Without this, random connectivity may not create viable signal paths.
+    // === Phase 4: Dense I/O Pathways ===
+    // LNDP research shows 70-80% connectivity density is needed for RL tasks.
+    // We create dense feedforward connections: Sensory → Associative → Motor.
+    // Each motor morphon must "see" a large fraction of the input through its
+    // associative fan-in. Each associative must receive from many sensory.
     {
         let sensory: Vec<MorphonId> = morphons.values()
             .filter(|m| m.cell_type == CellType::Sensory).map(|m| m.id).collect();
@@ -187,36 +189,44 @@ pub fn develop(
         let motor: Vec<MorphonId> = morphons.values()
             .filter(|m| m.cell_type == CellType::Motor).map(|m| m.id).collect();
 
-        // Each sensory connects to a few associative morphons
+        // Fan-out from sensory → associative: each sensory connects to many associative.
+        // Target: each associative receives from ~30% of sensory (wide receptive field).
+        let sens_per_assoc = (sensory.len() as f64 * 0.3).ceil() as usize;
+        let conns_per_sens = if !associative.is_empty() {
+            (sens_per_assoc * associative.len() / sensory.len().max(1)).max(1).min(associative.len())
+        } else { 0 };
+
+        // Xavier-like scaling: weight magnitude = 1/sqrt(fan_in)
+        let sens_to_assoc_scale = 1.0 / (conns_per_sens as f64).max(1.0).sqrt();
         for (i, &s) in sensory.iter().enumerate() {
-            let targets = &associative;
-            for j in 0..3.min(targets.len()) {
-                let t = targets[(i * 3 + j) % targets.len()];
+            for j in 0..conns_per_sens.min(associative.len()) {
+                let t = associative[(i.wrapping_mul(7) + j) % associative.len()];
                 if !topology.has_connection(s, t) {
-                    let w = rng.random_range(0.3..0.8);
+                    let w = rng.random_range(-sens_to_assoc_scale..sens_to_assoc_scale);
                     topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
                 }
             }
         }
-        // Each associative connects to a few motor morphons
-        for (i, &a) in associative.iter().enumerate() {
-            let targets = &motor;
-            for j in 0..3.min(targets.len()) {
-                let t = targets[(i * 3 + j) % targets.len()];
-                if !topology.has_connection(a, t) {
-                    let w = rng.random_range(0.3..0.8);
-                    topology.add_synapse(a, t, Synapse::new(w).with_delay(0.1));
+
+        // Fan-in from associative → motor: EVERY motor connects to ALL associative.
+        // Xavier scaling: 1/sqrt(associative.len())
+        let assoc_to_motor_scale = 1.0 / (associative.len() as f64).max(1.0).sqrt();
+        for &a in &associative {
+            for &m in &motor {
+                if !topology.has_connection(a, m) {
+                    let w = rng.random_range(-assoc_to_motor_scale..assoc_to_motor_scale);
+                    topology.add_synapse(a, m, Synapse::new(w).with_delay(0.1));
                 }
             }
         }
-        // A few direct sensory → motor connections (shortcut)
+
+        // Direct sensory → motor shortcuts (sparse, Xavier-scaled).
+        let direct_scale = 1.0 / (sensory.len() as f64).max(1.0).sqrt();
         for (i, &s) in sensory.iter().enumerate() {
-            if i < motor.len() {
-                let t = motor[i % motor.len()];
-                if !topology.has_connection(s, t) {
-                    let w = rng.random_range(0.2..0.5);
-                    topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
-                }
+            let t = motor[i % motor.len().max(1)];
+            if !topology.has_connection(s, t) {
+                let w = rng.random_range(-direct_scale..direct_scale);
+                topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
             }
         }
     }
