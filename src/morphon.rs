@@ -215,13 +215,15 @@ impl Morphon {
         }
 
         // Update potential with leaky integration + spontaneous noise
-        // Noise ensures baseline Hebbian coincidences even without external input
-        let leak_rate = 0.1;
+        // Motor morphons have FULL leak (reset to 0 each step) so they reflect
+        // only the current input, not accumulated history. Without this, noise
+        // accumulates over hundreds of steps and drifts motors to ±clamp.
+        let leak_rate = if self.cell_type == CellType::Motor { 1.0 } else { 0.1 };
         // Pseudo-random noise centered at zero.
         // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
         // Other types get standard noise (0.1) for baseline activity.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise_scale = if self.cell_type == CellType::Motor { 0.02 } else { 0.1 };
+        let noise_scale = if self.cell_type == CellType::Motor { 0.0 } else { 0.1 };
         let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;

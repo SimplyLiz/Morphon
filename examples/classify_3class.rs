@@ -85,7 +85,7 @@ fn main() {
 
             // MI path: propagate input, then train using raw input values
             let _out = system.process_steps(&input, 5);
-            system.teach_supervised_with_input(&input, label, 0.02);
+            system.teach_supervised_with_input(&input, label, 0.05);
             let outputs = system.read_output();
             if outputs.len() >= N_CLASSES {
                 let pred = outputs.iter().take(N_CLASSES).enumerate()
