@@ -63,10 +63,11 @@ fn main() {
     };
 
     let mut system = System::new(config);
+    system.enable_analog_readout(); // Purkinje-style analog output bypass
     let mut rng = rand::rng();
 
     let s = system.inspect();
-    println!("{} morphons, {} synapses, {} in, {} out",
+    println!("{} morphons, {} synapses, {} in, {} out (analog readout ON)",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
     println!("Types: {:?}\n", s.differentiation_map);
 
@@ -83,9 +84,9 @@ fn main() {
             let label = (rng.next_u64() % N_CLASSES as u64) as usize;
             let input = make_sample(label, &mut rng);
 
-            // MI path: propagate input, then train using raw input values
+            // MI propagation + analog readout training (Purkinje-style)
             let _out = system.process_steps(&input, 5);
-            system.teach_supervised_with_input(&input, label, 0.05);
+            system.train_readout(label, 0.05);
             let outputs = system.read_output();
             if outputs.len() >= N_CLASSES {
                 let pred = outputs.iter().take(N_CLASSES).enumerate()

@@ -124,6 +124,15 @@ pub struct System {
     /// (Lillicrap et al. 2016, GLSNN: global feedback + local STDP)
     pub(crate) feedback_weights: HashMap<MorphonId, Vec<(MorphonId, f64)>>,
 
+    /// Analog readout weights: [output_index][assoc_morphon_id] → weight.
+    /// These bypass the spike propagation pipeline entirely.
+    /// V_motor_j = Σ_i readout_weights[j][i] × sigmoid(assoc_i.potential)
+    /// Updated by the delta rule with exact gradients.
+    /// Biologically: Purkinje cell dendritic integration (analog, not spike-based).
+    pub(crate) readout_weights: Vec<HashMap<MorphonId, f64>>,
+    /// Whether to use analog readout (true) or spike-based motor potential (false).
+    pub(crate) use_analog_readout: bool,
+
     /// Next available Morphon ID.
     pub(crate) next_morphon_id: MorphonId,
     /// Next available Cluster ID.
@@ -224,6 +233,8 @@ impl System {
             prev_critic_value: 0.0,
             last_td_error: 0.0,
             feedback_weights,
+            readout_weights: Vec::new(), // initialized below after struct creation
+            use_analog_readout: false,   // off by default, enabled per-task
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
@@ -652,16 +663,126 @@ impl System {
         }
     }
 
-    /// Read output from motor Morphons via stable port mapping.
+    /// Read output — uses analog readout if enabled, else motor potential.
     ///
-    /// Returns one value per output port. If there are more motor Morphons
-    /// than needed, groups are averaged.
+    /// Analog readout: V_j = Σ_i w_ji × sigmoid(assoc_i.potential)
+    /// This bypasses the spike propagation pipeline, giving exact gradients.
+    /// Spike-based: returns raw motor morphon potential (original behavior).
     pub fn read_output(&self) -> Vec<f64> {
-        self.output_ports
-            .iter()
-            .filter_map(|id| self.morphons.get(id))
-            .map(|m| m.potential)
-            .collect()
+        if self.use_analog_readout && !self.readout_weights.is_empty() {
+            self.read_output_analog()
+        } else {
+            self.output_ports
+                .iter()
+                .filter_map(|id| self.morphons.get(id))
+                .map(|m| m.potential)
+                .collect()
+        }
+    }
+
+    /// Analog readout: weighted sum of associative layer potentials.
+    /// V_j = Σ_i readout_weights[j][i] × sigmoid(P_i)
+    fn read_output_analog(&self) -> Vec<f64> {
+        self.readout_weights.iter().map(|weights| {
+            weights.iter().map(|(&assoc_id, &w)| {
+                let act = self.morphons.get(&assoc_id)
+                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+                    .unwrap_or(0.0);
+                w * act
+            }).sum()
+        }).collect()
+    }
+
+    /// Enable analog readout and initialize readout weights.
+    ///
+    /// Creates a weight matrix from all Associative+Stem morphons to each
+    /// output port. Weights initialized to small random values (Xavier-scaled).
+    /// Call this before training on classification tasks.
+    pub fn enable_analog_readout(&mut self) {
+        let assoc_ids: Vec<MorphonId> = self.morphons.values()
+            .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            .map(|m| m.id)
+            .collect();
+
+        let n_assoc = assoc_ids.len().max(1) as f64;
+        let scale = 1.0 / n_assoc.sqrt();
+        let mut rng = rand::rng();
+        use rand::Rng;
+
+        self.readout_weights = (0..self.output_ports.len()).map(|_| {
+            assoc_ids.iter().map(|&id| {
+                (id, rng.random_range(-scale..scale))
+            }).collect()
+        }).collect();
+
+        // Also include sensory morphons as direct input to readout
+        let sensory_ids: Vec<MorphonId> = self.morphons.values()
+            .filter(|m| m.cell_type == CellType::Sensory)
+            .map(|m| m.id)
+            .collect();
+        let n_total = (assoc_ids.len() + sensory_ids.len()).max(1) as f64;
+        let sens_scale = 1.0 / n_total.sqrt();
+        for weights in &mut self.readout_weights {
+            for &id in &sensory_ids {
+                weights.insert(id, rng.random_range(-sens_scale..sens_scale));
+            }
+        }
+
+        self.use_analog_readout = true;
+    }
+
+    /// Train the analog readout weights using the delta rule.
+    ///
+    /// Δw_ji = learning_rate × sigmoid(P_i) × (target_j - output_j)
+    ///
+    /// Also backprojects the output error to hidden morphons via feedback_signal,
+    /// creating a "dendritic injection" that the three-factor rule can use.
+    /// This is the "Hyphal Lead" — the output layer pulls the hidden layer forward.
+    pub fn train_readout(&mut self, correct_index: usize, learning_rate: f64) {
+        if !self.use_analog_readout || correct_index >= self.output_ports.len() { return; }
+
+        let n_out = self.readout_weights.len();
+        let targets: Vec<f64> = (0..n_out).map(|i| if i == correct_index { 1.0 } else { 0.0 }).collect();
+        let outputs = self.read_output_analog();
+        if outputs.len() != n_out { return; }
+
+        // Compute output errors
+        let errors: Vec<f64> = (0..n_out).map(|j| targets[j] - 1.0 / (1.0 + (-outputs[j]).exp())).collect();
+
+        // Collect pre-synaptic activities (sigmoid of morphon potentials)
+        let activities: HashMap<MorphonId, f64> = self.readout_weights[0].keys()
+            .filter_map(|&id| {
+                self.morphons.get(&id).map(|m| (id, 1.0 / (1.0 + (-m.potential).exp())))
+            })
+            .collect();
+
+        // Delta rule on readout weights + L2 weight decay
+        for j in 0..n_out {
+            if errors[j].abs() < 0.0001 { continue; }
+            for (&id, w) in self.readout_weights[j].iter_mut() {
+                let act = activities.get(&id).copied().unwrap_or(0.0);
+                let weight_decay = 0.001 * *w;
+                *w += learning_rate * act * errors[j] - weight_decay;
+                *w = w.clamp(-5.0, 5.0);
+            }
+        }
+
+        // Backproject error to hidden layer as feedback_signal (dendritic injection).
+        // Each hidden morphon gets a signal proportional to how much it contributed
+        // to the output error, weighted by the (fixed) feedback weights.
+        // This doesn't use the readout weights (which would be backprop) — it uses
+        // the separate fixed random feedback_weights (Direct Feedback Alignment).
+        for (&assoc_id, dfa_weights) in &self.feedback_weights {
+            let mut fb = 0.0;
+            for &(motor_id, fb_w) in dfa_weights {
+                if let Some(j) = self.output_ports.iter().position(|&id| id == motor_id) {
+                    fb += fb_w * errors[j];
+                }
+            }
+            if let Some(m) = self.morphons.get_mut(&assoc_id) {
+                m.feedback_signal = fb; // stored for the three-factor rule to use
+            }
+        }
     }
 
     /// Number of input ports (sensory Morphons available for external input).
