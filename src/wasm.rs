@@ -84,6 +84,14 @@ mod bindings {
             self.inner.read_output()
         }
 
+        /// Get IDs of morphons that fired this step (cheap — no serialization).
+        pub fn fired_ids(&self) -> Vec<u32> {
+            self.inner.morphons.values()
+                .filter(|m| m.fired)
+                .map(|m| m.id as u32)
+                .collect()
+        }
+
         /// Inject a reward signal (dopamine analog, 0.0-1.0).
         pub fn inject_reward(&mut self, strength: f64) {
             self.inner.inject_reward(strength);

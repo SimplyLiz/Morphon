@@ -1,6 +1,13 @@
 //! CartPole Benchmark — MI system learns to balance a pole through self-organization.
 //!
+//! Uses a linear TD-error critic (Frémaux et al. 2013) to provide a state-dependent
+//! learning signal. The TD error δ = R + γV(s') - V(s) modulates the three-factor
+//! learning rule, giving the system directional credit assignment that pure reward
+//! broadcast cannot achieve.
+//!
 //! Run: cargo run --example cartpole --release
+//! Run: cargo run --example cartpole --release -- --standard
+//! Run: cargo run --example cartpole --release -- --extended
 
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::homeostasis::HomeostasisParams;
@@ -23,6 +30,9 @@ const DT: f64 = 0.02;
 const X_THRESHOLD: f64 = 2.4;
 const THETA_THRESHOLD: f64 = 12.0 * std::f64::consts::PI / 180.0;
 
+// Internal steps per action — research shows 8-10 optimal for 2-hop spike propagation
+const INTERNAL_STEPS: usize = 8;
+
 struct CartPole {
     x: f64, x_dot: f64, theta: f64, theta_dot: f64,
 }
@@ -35,10 +45,12 @@ impl CartPole {
         self.theta_dot = rng.random_range(-0.05..0.05);
     }
 
-    /// 4 observations with bias to maintain network activity.
+    /// Observations with strong amplification for spiking network input.
+    /// Norse uses 50x amplification; we use 5x with bias of 2.0 to ensure
+    /// sensory morphons always receive enough input to fire.
     fn observe(&self) -> [f64; 4] {
-        let amp = 3.0;
-        let bias = 1.0;
+        let amp = 5.0;
+        let bias = 2.0;
         [
             bias + self.x / X_THRESHOLD * amp,
             bias + self.x_dot.clamp(-3.0, 3.0) / 3.0 * amp,
@@ -63,45 +75,101 @@ impl CartPole {
     }
 }
 
+/// Linear TD-error critic (Frémaux et al. 2013).
+///
+/// V(s) = w · features(s) + b
+/// δ = R + γ·V(s') - V(s)
+///
+/// The TD error δ is the modulation signal for the three-factor rule.
+/// Positive δ = better than expected → strengthen active pathways.
+/// Negative δ = worse than expected → weaken active pathways.
+struct Critic {
+    weights: [f64; 8],  // 4 raw features + 4 squared features (nonlinear)
+    bias: f64,
+    lr: f64,
+    gamma: f64,
+}
+
+impl Critic {
+    fn new() -> Self {
+        Self {
+            weights: [0.0; 8],
+            bias: 0.0,
+            lr: 0.005,
+            gamma: 0.99,
+        }
+    }
+
+    fn features(obs: &[f64; 4]) -> [f64; 8] {
+        [
+            obs[0], obs[1], obs[2], obs[3],
+            obs[0] * obs[0], obs[1] * obs[1], obs[2] * obs[2], obs[3] * obs[3],
+        ]
+    }
+
+    fn predict(&self, obs: &[f64; 4]) -> f64 {
+        let f = Self::features(obs);
+        f.iter().zip(self.weights.iter()).map(|(fi, wi)| fi * wi).sum::<f64>() + self.bias
+    }
+
+    /// Compute TD error and update critic weights.
+    /// Returns δ = R + γV(s') - V(s)
+    fn update(&mut self, obs: &[f64; 4], reward: f64, next_obs: &[f64; 4], done: bool) -> f64 {
+        let v = self.predict(obs);
+        let v_next = if done { 0.0 } else { self.predict(next_obs) };
+        let td_error = reward + self.gamma * v_next - v;
+
+        // Update weights: w += lr * δ * features(s)
+        let f = Self::features(obs);
+        for i in 0..8 {
+            self.weights[i] += self.lr * td_error * f[i];
+            self.weights[i] = self.weights[i].clamp(-10.0, 10.0);
+        }
+        self.bias += self.lr * td_error;
+        self.bias = self.bias.clamp(-10.0, 10.0);
+
+        td_error
+    }
+}
+
 fn create_system() -> System {
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
-            seed_size: 30,
+            seed_size: 60,          // larger network (~100 morphons after proliferation)
             dimensions: 4,
             initial_connectivity: 0.25,
             proliferation_rounds: 2,
-            // Exactly 4 inputs and 2 outputs for CartPole
             target_input_size: Some(4),
             target_output_size: Some(2),
             ..DevelopmentalConfig::cerebellar()
         },
         scheduler: SchedulerConfig {
-            medium_period: 1,
-            slow_period: 5,
-            glacial_period: 50,
+            medium_period: 1,       // learning every step
+            slow_period: 10,
+            glacial_period: 100,    // slower structural changes
             homeostasis_period: 10,
             memory_period: 25,
         },
         learning: LearningParams {
-            tau_eligibility: 8.0,
-            tau_trace: 10.0,
+            tau_eligibility: 15.0,  // longer traces for multi-step credit
+            tau_trace: 12.0,        // wider STDP window
             a_plus: 1.0,
-            a_minus: -1.0,
+            a_minus: -0.8,          // slightly weaker LTD (LTP-biased)
             tau_tag: 500.0,
             tag_threshold: 0.3,
             capture_threshold: 0.3,
             capture_rate: 0.2,
-            weight_max: 3.0,
+            weight_max: 5.0,        // wider weight range
             weight_min: 0.01,
-            alpha_reward: 2.0,
+            alpha_reward: 3.0,      // strong reward response
             alpha_novelty: 0.5,
-            alpha_arousal: 1.5,
+            alpha_arousal: 1.0,
             alpha_homeostasis: 0.1,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,
             max_morphons: 300,
-            division_threshold: 0.8,
+            division_threshold: 1.0,
             fusion_min_size: 2,
             apoptosis_min_age: 500,
             ..Default::default()
@@ -126,42 +194,72 @@ fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> f64 {
     if outputs.len() < 2 {
         return if rng.random_bool(0.5) { 1.0 } else { -1.0 };
     }
-    // output[0] = left, output[1] = right
     if outputs[1] > outputs[0] { 1.0 } else { -1.0 }
 }
 
-fn run_episode(system: &mut System, env: &mut CartPole, max_steps: usize, epsilon: f64, rng: &mut impl Rng) -> usize {
+fn run_episode(
+    system: &mut System,
+    env: &mut CartPole,
+    critic: &mut Critic,
+    max_steps: usize,
+    epsilon: f64,
+    rng: &mut impl Rng,
+) -> usize {
     env.reset(rng);
     let mut steps = 0;
+    let mut prev_obs = env.observe();
 
     for _ in 0..max_steps {
         let obs = env.observe();
-        // 3 internal steps per action to let signals propagate through the network
-        let outputs = system.process_steps(&obs, 5);
+        let outputs = system.process_steps(&obs, INTERNAL_STEPS);
         let action = select_action(&outputs, epsilon, rng);
 
         let alive = env.step(action);
         steps += 1;
 
-        if alive {
-            let angle_q = 1.0 - (env.theta / THETA_THRESHOLD).abs();
-            let pos_q = 1.0 - (env.x / X_THRESHOLD).abs();
-            let reward = 0.2 + 0.3 * angle_q + 0.1 * pos_q;
-
-            // Contrastive reward: reinforce the action we took, inhibit the other.
-            // action=1.0 means output[1]>output[0], so reward output index 1.
-            // action=-1.0 means output[0]>=output[1], so reward output index 0.
-            let chosen = if action > 0.0 { 1 } else { 0 };
-            system.reward_contrastive(chosen, reward, reward * 0.3);
+        // Reward: +1 per alive step (standard CartPole-v1 reward)
+        // Plus a shaping bonus for pole angle quality
+        let raw_reward = if alive { 1.0 } else { 0.0 };
+        let angle_bonus = if alive {
+            0.5 * (1.0 - (env.theta / THETA_THRESHOLD).abs())
         } else {
-            system.inject_arousal(0.9);
-            system.inject_novelty(0.3);
+            0.0
+        };
+        let reward = raw_reward + angle_bonus;
+
+        // TD error from the linear critic — the key learning signal
+        let next_obs = env.observe();
+        let td_error = critic.update(&prev_obs, reward, &next_obs, !alive);
+
+        // Modulate the MI system with the TD error
+        let chosen = if action > 0.0 { 1 } else { 0 };
+
+        if td_error > 0.0 {
+            // Better than expected: reward the chosen action pathway
+            system.reward_contrastive(chosen, td_error.min(1.0), td_error.min(1.0) * 0.3);
+        } else {
+            // Worse than expected: penalize the chosen action
+            // Reward the OTHER action (counterfactual: should have done the opposite)
+            let other = 1 - chosen;
+            let penalty = td_error.abs().min(1.0);
+            system.reward_contrastive(other, penalty * 0.5, penalty * 0.2);
+            system.inject_arousal(penalty * 0.3);
+        }
+
+        // Also inject scaled TD error as global reward for deeper pathways
+        let scaled_td = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
+        system.inject_reward(scaled_td);
+
+        prev_obs = obs;
+
+        if !alive {
+            // Terminal: strong negative TD error should have been computed
+            system.inject_arousal(0.8);
+            system.inject_novelty(0.4);
             break;
         }
     }
 
-    let survival = steps as f64 / max_steps as f64;
-    system.inject_reward(survival);
     steps
 }
 
@@ -177,13 +275,14 @@ fn main() {
     let (num_episodes, max_steps) = match profile {
         "extended" => (3000, 500),
         "standard" => (1000, 500),
-        _          => (200, 300),  // quick (default)
+        _          => (200, 300),
     };
 
     println!("=== MORPHON CartPole Benchmark [{}] ===\n", profile);
 
     let mut system = create_system();
     let mut env = CartPole { x: 0.0, x_dot: 0.0, theta: 0.01, theta_dot: 0.0 };
+    let mut critic = Critic::new();
     let mut rng = rand::rng();
 
     let stats = system.inspect();
@@ -192,13 +291,13 @@ fn main() {
     println!("Types: {:?}\n", stats.differentiation_map);
 
     // Warm up
-    for _ in 0..20 { system.process_steps(&[1.0, 1.0, 1.0, 1.0], 5); }
+    for _ in 0..20 { system.process_steps(&[2.0, 2.0, 2.0, 2.0], INTERNAL_STEPS); }
     let mut best = 0usize;
     let mut recent: Vec<usize> = Vec::new();
 
     for ep in 0..num_episodes {
-        let epsilon = 0.5 * (1.0 - ep as f64 / num_episodes as f64).max(0.1);
-        let steps = run_episode(&mut system, &mut env, max_steps, epsilon, &mut rng);
+        let epsilon = (0.5 * (1.0 - ep as f64 / num_episodes as f64)).max(0.05);
+        let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, &mut rng);
         recent.push(steps);
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
@@ -206,8 +305,10 @@ fn main() {
 
         if (ep + 1) % 100 == 0 || steps >= 200 {
             let s = system.inspect();
-            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | m {} s {} fr {:.3} pe {:.3}",
-                ep + 1, steps, avg, best, s.total_morphons, s.total_synapses, s.firing_rate, s.avg_prediction_error);
+            let diag = system.diagnostics();
+            println!("Ep {:>4} | steps {:>3} | avg(100) {:>6.1} | best {:>3} | m {} s {} fr {:.3} pe {:.3} | {}",
+                ep + 1, steps, avg, best, s.total_morphons, s.total_synapses, s.firing_rate, s.avg_prediction_error,
+                diag.summary());
         }
 
         if recent.len() >= 100 && avg >= 195.0 {
@@ -222,6 +323,7 @@ fn main() {
     println!("Morphons: {} | Synapses: {} | Clusters: {} | Gen: {} | FR: {:.3}",
         s.total_morphons, s.total_synapses, s.fused_clusters, s.max_generation, s.firing_rate);
     println!("Types: {:?}", s.differentiation_map);
+    println!("Learning: {}", diag.summary());
 
     // Save benchmark results
     let avg_100 = recent.iter().sum::<usize>() as f64 / recent.len().max(1) as f64;
@@ -262,8 +364,8 @@ fn main() {
         .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
     let run_path = format!("{}/cartpole_{}.json", dir, ts);
     let latest_path = format!("{}/cartpole_latest.json", dir);
-    let json = serde_json::to_string_pretty(&results).unwrap();
-    fs::write(&run_path, &json).unwrap();
-    fs::write(&latest_path, &json).unwrap();
+    let json_str = serde_json::to_string_pretty(&results).unwrap();
+    fs::write(&run_path, &json_str).unwrap();
+    fs::write(&latest_path, &json_str).unwrap();
     println!("\nResults saved to {}", run_path);
 }

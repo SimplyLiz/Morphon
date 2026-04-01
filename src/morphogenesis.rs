@@ -599,47 +599,13 @@ pub fn migration(
         .collect();
 
     for morphon in morphons.values_mut() {
-        let dim = morphon.position.coords.len();
-
-        // --- Radial anchoring (always applied, no cooldown) ---
-        // Each cell type has a target radius; push morphons back when they drift.
-        let target_radius = match morphon.cell_type {
-            CellType::Sensory => 0.6,
-            CellType::Motor => 0.6,
-            CellType::Associative => 0.35,
-            CellType::Modulatory => 0.5,
-            _ => 0.3, // Stem, Fused
-        };
-        let current_radius = morphon.position.specificity();
-        let radial_error = target_radius - current_radius;
-        // Only correct if meaningfully off-target (> 10% of target)
-        if radial_error.abs() > target_radius * 0.1 {
-            let radial_strength = 0.15 * radial_error;
-            let mut radial_tangent = vec![0.0; dim];
-            if current_radius > 1e-6 {
-                for (i, t) in radial_tangent.iter_mut().enumerate() {
-                    *t = morphon.position.coords[i] / current_radius * radial_strength;
-                }
-            } else {
-                // At exact origin — use morphon id to pick a unique outward direction
-                let phi = (morphon.id as f64) * 2.399963;
-                let cos_theta = 1.0 - 2.0 * (((morphon.id as f64) * 0.618034) % 1.0);
-                let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
-                if dim >= 1 { radial_tangent[0] = phi.cos() * sin_theta * radial_strength; }
-                if dim >= 2 { radial_tangent[1] = phi.sin() * sin_theta * radial_strength; }
-                if dim >= 3 { radial_tangent[2] = cos_theta * radial_strength; }
-            }
-            morphon.position = morphon.position.exp_map(&radial_tangent);
-            migrated += 1;
-        }
-
-        // --- Neighbor-chasing migration (gated by desire, cooldown, etc.) ---
         if morphon.desire < 0.3 {
             continue;
         }
         if morphon.fused_with.is_some() && morphon.autonomy < 0.5 {
             continue;
         }
+        // Migration damping: respect cooldown
         if !crate::homeostasis::can_migrate(morphon) {
             continue;
         }
@@ -649,12 +615,14 @@ pub fn migration(
             continue;
         }
 
-        let mut tangent = vec![0.0; dim];
+        // Compute tangent vector in hyperbolic space via log_map
+        let mut tangent = vec![0.0; morphon.position.coords.len()];
         let mut count = 0;
 
         for (nid, _) in &neighbors {
             if let Some((pos, pe)) = positions.get(nid) {
                 if *pe < morphon.prediction_error {
+                    // Log map: tangent vector from morphon's position to neighbor
                     let log_v = morphon.position.log_map(pos);
                     for (i, t) in tangent.iter_mut().enumerate() {
                         if i < log_v.len() {
@@ -668,22 +636,29 @@ pub fn migration(
 
         if count > 0 {
             let scale = params.migration_rate * morphon.desire * system_migration_mod;
-            // Project tangent onto tangential component only (remove radial part)
-            // so neighbor-chasing moves laterally, not inward
+            for t in &mut tangent {
+                *t = *t / count as f64 * scale;
+            }
+
+            // Strip inward radial component — only allow lateral or outward migration.
+            // This prevents the global collapse toward origin that happens when
+            // interior morphons have lower prediction error.
             let current_radius = morphon.position.specificity();
             if current_radius > 1e-6 {
                 let radial_dot: f64 = tangent.iter().enumerate()
                     .map(|(i, t)| t * morphon.position.coords[i] / current_radius)
                     .sum();
-                for (i, t) in tangent.iter_mut().enumerate() {
-                    *t -= radial_dot * morphon.position.coords[i] / current_radius;
+                if radial_dot < 0.0 {
+                    // Negative = pointing inward — remove only the inward part
+                    for (i, t) in tangent.iter_mut().enumerate() {
+                        *t -= radial_dot * morphon.position.coords[i] / current_radius;
+                    }
                 }
             }
-            for t in &mut tangent {
-                *t = *t / count as f64 * scale;
-            }
+
+            // Exponential map: project tangent onto hyperbolic manifold
             morphon.position = morphon.position.exp_map(&tangent);
-            morphon.migration_cooldown = 20.0;
+            morphon.migration_cooldown = 20.0; // set cooldown
             migrated += 1;
         }
     }
@@ -776,4 +751,595 @@ pub fn step_glacial(
     }
 
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morphon::Morphon;
+    use crate::types::HyperbolicPoint;
+
+    fn make_morphon(id: MorphonId, cell_type: CellType) -> Morphon {
+        let mut m = Morphon::new(id, HyperbolicPoint::random(3, &mut rand::rng()));
+        m.cell_type = cell_type;
+        m.receptors = crate::types::default_receptors(cell_type);
+        m
+    }
+
+
+    // === Synaptogenesis ===
+
+    #[test]
+    fn synaptogenesis_creates_connections_between_active_nearby_morphons() {
+        let mut rng = rand::rng();
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+        let pos2 = HyperbolicPoint { coords: vec![0.15, 0.0, 0.0], curvature: 1.0 };
+
+        let mut m1 = Morphon::new(1, pos);
+        m1.cell_type = CellType::Associative;
+        for _ in 0..100 { m1.activity_history.push(0.5); }
+
+        let mut m2 = Morphon::new(2, pos2);
+        m2.cell_type = CellType::Associative;
+        for _ in 0..100 { m2.activity_history.push(0.5); }
+
+        let mut morphons = HashMap::new();
+        morphons.insert(1, m1);
+        morphons.insert(2, m2);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+
+        let params = MorphogenesisParams::default();
+
+        // Run many times since it's probabilistic
+        let mut total_created = 0;
+        for _ in 0..100 {
+            total_created += synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+        }
+        // With very close morphons and high activity, should eventually create connections
+        assert!(total_created > 0, "synaptogenesis should create some connections over 100 attempts");
+    }
+
+    #[test]
+    fn synaptogenesis_respects_cell_type_hierarchy() {
+        let mut rng = rand::rng();
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        // Motor → anything should not create (Motor is output-only)
+        let mut motor = Morphon::new(1, pos.clone());
+        motor.cell_type = CellType::Motor;
+        for _ in 0..100 { motor.activity_history.push(0.5); }
+
+        let mut assoc = Morphon::new(2, pos.clone());
+        assoc.cell_type = CellType::Associative;
+        for _ in 0..100 { assoc.activity_history.push(0.5); }
+
+        let mut morphons = HashMap::new();
+        morphons.insert(1, motor);
+        morphons.insert(2, assoc);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+
+        let params = MorphogenesisParams::default();
+        for _ in 0..100 {
+            synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+        }
+        // Motor as source should be blocked
+        assert!(!topo.has_connection(1, 2), "Motor should not have outgoing connections to non-Motor");
+    }
+
+    #[test]
+    fn synaptogenesis_skips_inactive_morphons() {
+        let mut rng = rand::rng();
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        let m1 = Morphon::new(1, pos.clone()); // default activity = 0
+        let m2 = Morphon::new(2, pos.clone());
+
+        let mut morphons = HashMap::new();
+        morphons.insert(1, m1);
+        morphons.insert(2, m2);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+
+        let params = MorphogenesisParams::default();
+        let created = synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+        assert_eq!(created, 0, "inactive morphons should not form new connections");
+    }
+
+    // === Pruning ===
+
+    #[test]
+    fn pruning_removes_weak_old_unused_synapses() {
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+
+        let mut weak_syn = Synapse::new(0.0001); // below weight_min
+        weak_syn.age = 200;
+        weak_syn.usage_count = 0;
+        topo.add_synapse(1, 2, weak_syn);
+
+        let params = LearningParams::default();
+        let pruned = pruning(&mut topo, &params);
+        assert_eq!(pruned, 1);
+        assert_eq!(topo.synapse_count(), 0);
+    }
+
+    #[test]
+    fn pruning_keeps_strong_synapses() {
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+
+        let mut strong_syn = Synapse::new(1.0);
+        strong_syn.age = 200;
+        strong_syn.usage_count = 0;
+        topo.add_synapse(1, 2, strong_syn);
+
+        let params = LearningParams::default();
+        let pruned = pruning(&mut topo, &params);
+        assert_eq!(pruned, 0);
+        assert_eq!(topo.synapse_count(), 1);
+    }
+
+    // === Division ===
+
+    #[test]
+    fn division_creates_child_morphon() {
+        let mut rng = rand::rng();
+        let mut morphons = HashMap::new();
+        let mut parent = make_morphon(1, CellType::Associative);
+        parent.division_pressure = 2.0; // above threshold (1.0)
+        parent.energy = 0.8;
+        morphons.insert(1, parent);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let mut next_id = 100;
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+
+        assert_eq!(born, 1);
+        assert_eq!(morphons.len(), 2);
+        assert!(morphons.contains_key(&100));
+        assert_eq!(next_id, 101);
+
+        // Child should be Stem
+        assert_eq!(morphons[&100].cell_type, CellType::Stem);
+        // Parent energy should be halved
+        assert!(morphons[&1].energy < 0.8);
+        // Parent division pressure should be reset
+        assert_eq!(morphons[&1].division_pressure, 0.0);
+    }
+
+    #[test]
+    fn division_respects_max_morphons() {
+        let mut rng = rand::rng();
+        let mut morphons = HashMap::new();
+        for i in 0..10 {
+            let mut m = make_morphon(i, CellType::Associative);
+            m.division_pressure = 2.0;
+            m.energy = 0.8;
+            morphons.insert(i, m);
+        }
+
+        let mut topo = Topology::new();
+        for i in 0..10 { topo.add_morphon(i); }
+
+        let params = MorphogenesisParams { max_morphons: 12, ..Default::default() };
+        let mut next_id = 100;
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+
+        assert!(born <= 2, "should not exceed max_morphons");
+        assert!(morphons.len() <= 12);
+    }
+
+    #[test]
+    fn division_skips_low_energy_morphons() {
+        let mut rng = rand::rng();
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Associative);
+        m.division_pressure = 2.0;
+        m.energy = 0.1; // below division_min_energy (0.3)
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let mut next_id = 100;
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng);
+
+        assert_eq!(born, 0);
+    }
+
+    // === Differentiation ===
+
+    #[test]
+    fn differentiation_converts_mature_active_stem_cells() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Stem);
+        m.age = 300; // above 200
+        // High consistent activity → Associative
+        for _ in 0..100 { m.activity_history.push(0.5); }
+        morphons.insert(1, m);
+
+        let topo = Topology::new();
+        let count = differentiation(&mut morphons, &topo);
+
+        assert_eq!(count, 1);
+        assert_eq!(morphons[&1].cell_type, CellType::Associative);
+    }
+
+    #[test]
+    fn differentiation_skips_young_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Stem);
+        m.age = 50; // below 200
+        for _ in 0..100 { m.activity_history.push(0.5); }
+        morphons.insert(1, m);
+
+        let topo = Topology::new();
+        let count = differentiation(&mut morphons, &topo);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn differentiation_skips_already_differentiated() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Associative); // not Stem
+        m.age = 300;
+        for _ in 0..100 { m.activity_history.push(0.5); }
+        morphons.insert(1, m);
+
+        let topo = Topology::new();
+        let count = differentiation(&mut morphons, &topo);
+        assert_eq!(count, 0);
+    }
+
+    // === Dedifferentiation ===
+
+    #[test]
+    fn dedifferentiation_under_extreme_stress() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Associative);
+        m.desire = 0.95; // very high PE
+        m.differentiation_level = 0.3; // below 0.5
+        morphons.insert(1, m);
+
+        let count = dedifferentiation(&mut morphons, 0.9); // high arousal
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn dedifferentiation_does_not_affect_stem() {
+        let mut morphons = HashMap::new();
+        let m = make_morphon(1, CellType::Stem);
+        morphons.insert(1, m);
+
+        let count = dedifferentiation(&mut morphons, 0.9);
+        assert_eq!(count, 0);
+    }
+
+    // === Apoptosis ===
+
+    #[test]
+    fn apoptosis_removes_old_inactive_low_energy_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 2000; // above min_age
+        m.energy = 0.01; // below threshold
+        // Activity near zero (default)
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params);
+
+        assert_eq!(died, 1);
+        assert!(morphons.is_empty());
+        assert_eq!(topo.morphon_count(), 0);
+    }
+
+    #[test]
+    fn apoptosis_keeps_young_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 100; // below min_age
+        m.energy = 0.01;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params);
+        assert_eq!(died, 0);
+    }
+
+    #[test]
+    fn apoptosis_keeps_fused_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 2000;
+        m.energy = 0.01;
+        m.fused_with = Some(42);
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params);
+        assert_eq!(died, 0, "fused morphons should be protected from apoptosis");
+    }
+
+    #[test]
+    fn apoptosis_keeps_well_connected_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 2000;
+        m.energy = 0.01;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo.add_morphon(4);
+        topo.add_synapse(2, 1, Synapse::new(0.5));
+        topo.add_synapse(3, 1, Synapse::new(0.3));
+        topo.add_synapse(1, 4, Synapse::new(0.2));
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params);
+        assert_eq!(died, 0, "well-connected morphons (degree >= 3) should survive");
+    }
+
+    // === Fusion ===
+
+    #[test]
+    fn fusion_groups_correlated_active_morphons() {
+        let mut morphons = HashMap::new();
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        // Create 3 morphons that all fire together (fired = true, same state)
+        for i in 0..3 {
+            let mut m = Morphon::new(i, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = true;
+            m.prediction_error = 0.01; // low PE → passes PE gate
+            m.desire = 0.05;           // mean_pe < mean_desire won't block
+            for _ in 0..100 { m.activity_history.push(0.5); }
+            morphons.insert(i, m);
+        }
+
+        let mut topo = Topology::new();
+        for i in 0..3 { topo.add_morphon(i); }
+        topo.add_synapse(0, 1, Synapse::new(0.5));
+        topo.add_synapse(0, 2, Synapse::new(0.3));
+
+        let mut clusters = HashMap::new();
+        let mut next_cluster_id = 0;
+        let mut next_morphon_id = 100;
+        let params = MorphogenesisParams { fusion_min_size: 3, ..Default::default() };
+
+        let fused = fusion(
+            &mut morphons, &mut clusters, &mut next_cluster_id,
+            &mut next_morphon_id, &mut topo, &params,
+        );
+
+        assert_eq!(fused, 1, "should form one cluster");
+        assert_eq!(clusters.len(), 1);
+        let cluster = clusters.values().next().unwrap();
+        assert!(cluster.members.len() >= 3);
+    }
+
+    // === Defusion ===
+
+    #[test]
+    fn defusion_breaks_clusters_with_diverging_errors() {
+        let mut morphons = HashMap::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        let mut m1 = Morphon::new(1, pos.clone());
+        m1.fused_with = Some(0);
+        m1.autonomy = 0.5;
+        m1.prediction_error = 0.1;
+        morphons.insert(1, m1);
+
+        let mut m2 = Morphon::new(2, pos.clone());
+        m2.fused_with = Some(0);
+        m2.autonomy = 0.5;
+        m2.prediction_error = 1.5; // variance = ((0.1-0.8)^2 + (1.5-0.8)^2)/2 = 0.49... need more
+        morphons.insert(2, m2);
+
+        // Add a third member with extreme divergence to push variance > 0.5
+        let mut m3 = Morphon::new(3, pos.clone());
+        m3.fused_with = Some(0);
+        m3.autonomy = 0.5;
+        m3.prediction_error = 2.0;
+        morphons.insert(3, m3);
+
+        let mut clusters = HashMap::new();
+        clusters.insert(0, Cluster {
+            id: 0,
+            members: vec![1, 2, 3],
+            shared_threshold: 0.3,
+            inhibitory_morphons: vec![],
+        });
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+
+        let defused = defusion(&mut morphons, &mut clusters, &mut topo);
+        assert_eq!(defused, 1);
+        assert!(clusters.is_empty());
+        assert!(morphons[&1].fused_with.is_none());
+        assert_eq!(morphons[&1].autonomy, 1.0);
+    }
+
+    #[test]
+    fn defusion_cleans_up_inhibitory_morphons() {
+        let mut morphons = HashMap::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        let mut m1 = Morphon::new(1, pos.clone());
+        m1.fused_with = Some(0);
+        m1.prediction_error = 0.0;
+        morphons.insert(1, m1);
+
+        let mut m2 = Morphon::new(2, pos.clone());
+        m2.fused_with = Some(0);
+        m2.prediction_error = 2.0; // extreme divergence
+        morphons.insert(2, m2);
+
+        let mut m3 = Morphon::new(3, pos.clone());
+        m3.fused_with = Some(0);
+        m3.prediction_error = 3.0;
+        morphons.insert(3, m3);
+
+        // Inhibitory morphon
+        let inh = Morphon::new(99, pos.clone());
+        morphons.insert(99, inh);
+
+        let mut clusters = HashMap::new();
+        clusters.insert(0, Cluster {
+            id: 0,
+            members: vec![1, 2, 3],
+            shared_threshold: 0.3,
+            inhibitory_morphons: vec![99],
+        });
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo.add_morphon(99);
+
+        let defused = defusion(&mut morphons, &mut clusters, &mut topo);
+        assert_eq!(defused, 1);
+        assert!(!morphons.contains_key(&99), "inhibitory morphon should be removed");
+    }
+
+    // === Migration ===
+
+    #[test]
+    fn migration_moves_high_desire_morphons() {
+        let mut morphons = HashMap::new();
+        let pos1 = HyperbolicPoint { coords: vec![0.3, 0.0, 0.0], curvature: 1.0 };
+        let pos2 = HyperbolicPoint { coords: vec![0.5, 0.0, 0.0], curvature: 1.0 };
+
+        let mut m1 = Morphon::new(1, pos1.clone());
+        m1.desire = 0.8;
+        m1.prediction_error = 0.5;
+        morphons.insert(1, m1);
+
+        let mut m2 = Morphon::new(2, pos2);
+        m2.prediction_error = 0.1; // lower PE → attractive target
+        morphons.insert(2, m2);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+
+        let params = MorphogenesisParams::default();
+        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+
+        assert_eq!(migrated, 1);
+        let new_pos = &morphons[&1].position;
+        assert_ne!(
+            new_pos.coords, pos1.coords,
+            "morphon should have moved"
+        );
+        assert!(morphons[&1].migration_cooldown > 0.0, "cooldown should be set");
+    }
+
+    #[test]
+    fn migration_skips_low_desire_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.desire = 0.1; // below 0.3 threshold
+        morphons.insert(1, m);
+
+        let topo = Topology::new();
+        let params = MorphogenesisParams::default();
+        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+        assert_eq!(migrated, 0);
+    }
+
+    #[test]
+    fn migration_skips_fused_low_autonomy() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.desire = 0.8;
+        m.fused_with = Some(0);
+        m.autonomy = 0.3; // below 0.5
+        morphons.insert(1, m);
+
+        let topo = Topology::new();
+        let params = MorphogenesisParams::default();
+        let migrated = migration(&mut morphons, &topo, &params, 0.0);
+        assert_eq!(migrated, 0);
+    }
+
+    // === step_slow / step_glacial ===
+
+    #[test]
+    fn step_slow_returns_report() {
+        let mut rng = rand::rng();
+        let mut morphons = HashMap::new();
+        morphons.insert(1, make_morphon(1, CellType::Associative));
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+
+        let params = MorphogenesisParams::default();
+        let lp = LearningParams::default();
+        let lifecycle = LifecycleConfig::default();
+
+        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng);
+        // Just verify it runs and returns a valid report
+        // Report is valid (fields are populated)
+        let _ = report.synapses_created;
+        let _ = report.synapses_pruned;
+    }
+
+    #[test]
+    fn step_glacial_respects_lifecycle_config() {
+        let mut rng = rand::rng();
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, CellType::Associative);
+        m.division_pressure = 2.0;
+        m.energy = 0.8;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        let mut clusters = HashMap::new();
+        let mut next_mid = 100;
+        let mut next_cid = 0;
+        let params = MorphogenesisParams::default();
+
+        // Division disabled
+        let lifecycle = LifecycleConfig { division: false, ..Default::default() };
+        let report = step_glacial(
+            &mut morphons, &mut topo, &mut clusters,
+            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng,
+        );
+        assert_eq!(report.morphons_born, 0);
+    }
 }

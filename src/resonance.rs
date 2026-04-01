@@ -112,3 +112,161 @@ impl ResonanceEngine {
         self.pending_spikes.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morphon::{Morphon, Synapse};
+    use crate::topology::Topology;
+    use crate::types::HyperbolicPoint;
+    use std::collections::HashMap;
+
+    fn make_morphon(id: MorphonId, fired: bool) -> Morphon {
+        let mut m = Morphon::new(id, HyperbolicPoint::origin(3));
+        m.fired = fired;
+        m
+    }
+
+    #[test]
+    fn propagate_generates_spikes_from_firing_morphons() {
+        let mut morphons = HashMap::new();
+        morphons.insert(1, make_morphon(1, true));
+        morphons.insert(2, make_morphon(2, false));
+        morphons.insert(3, make_morphon(3, false));
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo.add_synapse(1, 2, Synapse::new(0.5).with_delay(2.0));
+        topo.add_synapse(1, 3, Synapse::new(0.3).with_delay(1.0));
+
+        let mut engine = ResonanceEngine::new();
+        engine.propagate(&morphons, &topo);
+
+        assert_eq!(engine.pending_count(), 2);
+    }
+
+    #[test]
+    fn non_firing_morphons_generate_no_spikes() {
+        let mut morphons = HashMap::new();
+        morphons.insert(1, make_morphon(1, false));
+        morphons.insert(2, make_morphon(2, false));
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+
+        let mut engine = ResonanceEngine::new();
+        engine.propagate(&morphons, &topo);
+
+        assert_eq!(engine.pending_count(), 0);
+    }
+
+    #[test]
+    fn deliver_respects_delay() {
+        let mut morphons = HashMap::new();
+        morphons.insert(2, make_morphon(2, false));
+
+        let mut engine = ResonanceEngine::new();
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 1,
+            target: 2,
+            strength: 0.5,
+            delay: 3.0,
+        });
+
+        // Step 1: delay 3 -> 2, not delivered
+        let delivered = engine.deliver(&mut morphons, 1.0);
+        assert_eq!(delivered.len(), 0);
+        assert_eq!(engine.pending_count(), 1);
+
+        // Step 2: delay 2 -> 1
+        let delivered = engine.deliver(&mut morphons, 1.0);
+        assert_eq!(delivered.len(), 0);
+
+        // Step 3: delay 1 -> 0, delivered
+        let delivered = engine.deliver(&mut morphons, 1.0);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(engine.pending_count(), 0);
+    }
+
+    #[test]
+    fn delivered_spike_adds_to_input_accumulator() {
+        let mut morphons = HashMap::new();
+        morphons.insert(2, make_morphon(2, false));
+
+        let mut engine = ResonanceEngine::new();
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 1,
+            target: 2,
+            strength: 0.7,
+            delay: 0.5, // will be delivered in one step with dt=1.0
+        });
+
+        let _delivered = engine.deliver(&mut morphons, 1.0);
+        assert!(
+            (morphons[&2].input_accumulator - 0.7).abs() < 1e-10,
+            "spike strength should be added to target input_accumulator"
+        );
+    }
+
+    #[test]
+    fn multiple_spikes_accumulate() {
+        let mut morphons = HashMap::new();
+        morphons.insert(2, make_morphon(2, false));
+
+        let mut engine = ResonanceEngine::new();
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 1,
+            target: 2,
+            strength: 0.3,
+            delay: 0.0,
+        });
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 3,
+            target: 2,
+            strength: 0.4,
+            delay: 0.0,
+        });
+
+        let delivered = engine.deliver(&mut morphons, 1.0);
+        assert_eq!(delivered.len(), 2);
+        assert!(
+            (morphons[&2].input_accumulator - 0.7).abs() < 1e-10,
+            "multiple spikes should accumulate"
+        );
+    }
+
+    #[test]
+    fn clear_removes_all_pending() {
+        let mut engine = ResonanceEngine::new();
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 1,
+            target: 2,
+            strength: 0.5,
+            delay: 5.0,
+        });
+        assert_eq!(engine.pending_count(), 1);
+        engine.clear();
+        assert_eq!(engine.pending_count(), 0);
+    }
+
+    #[test]
+    fn spike_to_nonexistent_target_does_not_panic() {
+        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+        // target 99 doesn't exist
+
+        let mut engine = ResonanceEngine::new();
+        engine.pending_spikes.push_back(SpikeEvent {
+            source: 1,
+            target: 99,
+            strength: 0.5,
+            delay: 0.0,
+        });
+
+        let delivered = engine.deliver(&mut morphons, 1.0);
+        assert_eq!(delivered.len(), 1); // spike is consumed even if target missing
+    }
+}

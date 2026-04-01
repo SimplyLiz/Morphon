@@ -27,6 +27,7 @@ getrandom = { version = "0.3", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
+cmaes = "0.2"
 mnist = "0.6"
 
 [[bench]]

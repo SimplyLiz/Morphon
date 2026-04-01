@@ -284,3 +284,260 @@ pub fn rollback_synapses(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morphon::{Morphon, Synapse};
+    use crate::topology::Topology;
+    use crate::types::HyperbolicPoint;
+
+    fn make_morphon(id: MorphonId, activity_mean: f64) -> Morphon {
+        let mut m = Morphon::new(id, HyperbolicPoint::origin(3));
+        // Fill activity history to produce desired mean
+        for _ in 0..100 {
+            m.activity_history.push(activity_mean);
+        }
+        m
+    }
+
+    // === Synaptic Scaling ===
+
+    #[test]
+    fn synaptic_scaling_scales_weights_toward_setpoint() {
+        let mut morphons = HashMap::new();
+        // Morphon with activity well above setpoint (0.1)
+        let mut m = make_morphon(1, 0.5);
+        m.homeostatic_setpoint = 0.1;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(0);
+        topo.add_morphon(1);
+        topo.add_synapse(0, 1, Synapse::new(1.0));
+
+        synaptic_scaling(&morphons, &mut topo);
+
+        let (_, syn) = topo.synapse_between(0, 1).unwrap();
+        // Activity (0.5) > setpoint (0.1), so scaling_factor = 0.1/0.5 = 0.2
+        // Clamped to [0.5, 2.0] → 0.5
+        assert!(
+            syn.weight < 1.0,
+            "weight should decrease when activity exceeds setpoint: {}",
+            syn.weight
+        );
+    }
+
+    #[test]
+    fn synaptic_scaling_increases_weights_when_underactive() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, 0.05);
+        m.homeostatic_setpoint = 0.1;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(0);
+        topo.add_morphon(1);
+        topo.add_synapse(0, 1, Synapse::new(0.5));
+
+        synaptic_scaling(&morphons, &mut topo);
+
+        let (_, syn) = topo.synapse_between(0, 1).unwrap();
+        assert!(
+            syn.weight > 0.5,
+            "weight should increase when activity below setpoint: {}",
+            syn.weight
+        );
+    }
+
+    #[test]
+    fn synaptic_scaling_no_change_at_setpoint() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, 0.1);
+        m.homeostatic_setpoint = 0.1;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(0);
+        topo.add_morphon(1);
+        topo.add_synapse(0, 1, Synapse::new(0.5));
+
+        synaptic_scaling(&morphons, &mut topo);
+
+        let (_, syn) = topo.synapse_between(0, 1).unwrap();
+        assert!(
+            (syn.weight - 0.5).abs() < 0.01,
+            "weight should not change when at setpoint: {}",
+            syn.weight
+        );
+    }
+
+    #[test]
+    fn synaptic_scaling_preserves_relative_ratios() {
+        let mut morphons = HashMap::new();
+        let mut m = make_morphon(1, 0.5);
+        m.homeostatic_setpoint = 0.1;
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(0);
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_synapse(0, 1, Synapse::new(1.0));
+        topo.add_synapse(2, 1, Synapse::new(0.5));
+
+        synaptic_scaling(&morphons, &mut topo);
+
+        let (_, s1) = topo.synapse_between(0, 1).unwrap();
+        let (_, s2) = topo.synapse_between(2, 1).unwrap();
+        let ratio = s1.weight / s2.weight;
+        assert!(
+            (ratio - 2.0).abs() < 0.01,
+            "relative weight ratio should be preserved: got {ratio}"
+        );
+    }
+
+    // === Migration Damping ===
+
+    #[test]
+    fn can_migrate_when_cooldown_zero() {
+        let m = Morphon::new(1, HyperbolicPoint::origin(3));
+        assert!(can_migrate(&m));
+    }
+
+    #[test]
+    fn cannot_migrate_during_cooldown() {
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.migration_cooldown = 10.0;
+        assert!(!can_migrate(&m));
+    }
+
+    #[test]
+    fn apply_migration_cooldown_sets_timer() {
+        let params = HomeostasisParams::default();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        apply_migration_cooldown(&mut m, &params);
+        assert_eq!(m.migration_cooldown, params.migration_cooldown_duration);
+    }
+
+    // === Migration Rate Modifier ===
+
+    #[test]
+    fn high_homeostasis_reduces_migration() {
+        let low_h = migration_rate_modifier(0.1, 0.5);
+        let high_h = migration_rate_modifier(0.9, 0.5);
+        assert!(
+            high_h < low_h,
+            "high homeostasis should reduce migration rate: {high_h} vs {low_h}"
+        );
+    }
+
+    #[test]
+    fn high_error_increases_migration() {
+        let low_e = migration_rate_modifier(0.5, 0.1);
+        let high_e = migration_rate_modifier(0.5, 0.9);
+        assert!(
+            high_e > low_e,
+            "high prediction error should increase migration rate: {high_e} vs {low_e}"
+        );
+    }
+
+    #[test]
+    fn migration_rate_modifier_clamped() {
+        let rate = migration_rate_modifier(100.0, 100.0);
+        assert!(rate >= 0.0 && rate <= 1.0);
+        let rate = migration_rate_modifier(-1.0, -1.0);
+        assert!(rate >= 0.0 && rate <= 1.0);
+    }
+
+    // === Checkpoint/Rollback ===
+
+    #[test]
+    fn create_checkpoint_captures_state() {
+        let mut morphons = HashMap::new();
+        let mut m1 = Morphon::new(1, HyperbolicPoint::origin(3));
+        m1.prediction_error = 0.3;
+        m1.potential = 0.5;
+        let mut m2 = Morphon::new(2, HyperbolicPoint::origin(3));
+        m2.prediction_error = 0.1;
+        m2.potential = 0.2;
+        morphons.insert(1, m1);
+        morphons.insert(2, m2);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_synapse(1, 2, Synapse::new(0.7));
+
+        let cp = create_checkpoint(&[1, 2], &morphons, &topo);
+        assert_eq!(cp.morphon_states.len(), 2);
+        assert!((cp.avg_prediction_error - 0.2).abs() < 1e-10);
+        assert_eq!(cp.synapse_states.len(), 1);
+        assert!((cp.synapse_states[0].2 - 0.7).abs() < 1e-10);
+    }
+
+    #[test]
+    fn should_rollback_detects_pe_increase() {
+        let params = HomeostasisParams::default();
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.prediction_error = 0.1;
+        morphons.insert(1, m);
+
+        let cp = LocalCheckpoint {
+            morphon_states: vec![(1, 0.1, 0.0)],
+            avg_prediction_error: 0.1,
+            synapse_states: vec![],
+        };
+
+        // No increase → no rollback
+        assert!(!should_rollback(&cp, &[1], &morphons, &params));
+
+        // Increase PE beyond threshold
+        morphons.get_mut(&1).unwrap().prediction_error = 0.5;
+        assert!(
+            should_rollback(&cp, &[1], &morphons, &params),
+            "should rollback when PE increases by > threshold ({})",
+            params.rollback_pe_threshold
+        );
+    }
+
+    #[test]
+    fn rollback_restores_synapse_weights() {
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_synapse(1, 2, Synapse::new(0.7));
+
+        let cp = LocalCheckpoint {
+            morphon_states: vec![],
+            avg_prediction_error: 0.0,
+            synapse_states: vec![(1, 2, 0.7)],
+        };
+
+        // Modify weight
+        let (ei, _) = topo.synapse_between(1, 2).unwrap();
+        topo.synapse_mut(ei).unwrap().weight = 0.2;
+
+        // Rollback
+        rollback_synapses(&cp, &mut topo);
+
+        let (_, syn) = topo.synapse_between(1, 2).unwrap();
+        assert!(
+            (syn.weight - 0.7).abs() < 1e-10,
+            "weight should be restored to checkpoint value"
+        );
+    }
+
+    #[test]
+    fn should_rollback_false_for_empty_morphons() {
+        let params = HomeostasisParams::default();
+        let morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+        let cp = LocalCheckpoint {
+            morphon_states: vec![],
+            avg_prediction_error: 0.5,
+            synapse_states: vec![],
+        };
+        assert!(!should_rollback(&cp, &[99], &morphons, &params));
+    }
+}

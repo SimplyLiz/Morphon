@@ -219,3 +219,166 @@ impl Topology {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morphon::Synapse;
+
+    fn setup_topology() -> Topology {
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo
+    }
+
+    #[test]
+    fn add_and_count_morphons() {
+        let topo = setup_topology();
+        assert_eq!(topo.morphon_count(), 3);
+        assert_eq!(topo.all_morphon_ids().len(), 3);
+    }
+
+    #[test]
+    fn add_synapse_creates_connection() {
+        let mut topo = setup_topology();
+        let ei = topo.add_synapse(1, 2, Synapse::new(0.5));
+        assert!(ei.is_some());
+        assert!(topo.has_connection(1, 2));
+        assert!(!topo.has_connection(2, 1), "directed graph — reverse should not exist");
+        assert_eq!(topo.synapse_count(), 1);
+    }
+
+    #[test]
+    fn add_synapse_returns_none_for_missing_node() {
+        let mut topo = setup_topology();
+        let ei = topo.add_synapse(1, 99, Synapse::new(0.5));
+        assert!(ei.is_none());
+    }
+
+    #[test]
+    fn remove_morphon_removes_connections() {
+        let mut topo = setup_topology();
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+        topo.add_synapse(2, 3, Synapse::new(0.3));
+        topo.add_synapse(3, 1, Synapse::new(0.1));
+
+        assert!(topo.remove_morphon(2));
+        assert_eq!(topo.morphon_count(), 2);
+        assert_eq!(topo.synapse_count(), 1); // only 3->1 remains
+        assert!(!topo.has_connection(1, 2));
+        assert!(!topo.has_connection(2, 3));
+        assert!(topo.has_connection(3, 1));
+    }
+
+    #[test]
+    fn remove_nonexistent_morphon_returns_false() {
+        let mut topo = setup_topology();
+        assert!(!topo.remove_morphon(99));
+    }
+
+    #[test]
+    fn incoming_outgoing_queries() {
+        let mut topo = setup_topology();
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+        topo.add_synapse(3, 2, Synapse::new(0.3));
+
+        let incoming = topo.incoming(2);
+        assert_eq!(incoming.len(), 2);
+
+        let outgoing = topo.outgoing(1);
+        assert_eq!(outgoing.len(), 1);
+        assert_eq!(outgoing[0].0, 2);
+    }
+
+    #[test]
+    fn synapse_between_returns_correct_edge() {
+        let mut topo = setup_topology();
+        topo.add_synapse(1, 2, Synapse::new(0.7));
+
+        let result = topo.synapse_between(1, 2);
+        assert!(result.is_some());
+        let (_, syn) = result.unwrap();
+        assert!((syn.weight - 0.7).abs() < 1e-10);
+
+        assert!(topo.synapse_between(2, 1).is_none());
+    }
+
+    #[test]
+    fn degree_counts_both_directions() {
+        let mut topo = setup_topology();
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+        topo.add_synapse(3, 2, Synapse::new(0.3));
+        topo.add_synapse(2, 3, Synapse::new(0.1));
+
+        assert_eq!(topo.degree(2), 3); // 2 incoming + 1 outgoing
+        assert_eq!(topo.degree(99), 0); // nonexistent
+    }
+
+    #[test]
+    fn synapse_mut_modifies_weight() {
+        let mut topo = setup_topology();
+        let ei = topo.add_synapse(1, 2, Synapse::new(0.5)).unwrap();
+        if let Some(syn) = topo.synapse_mut(ei) {
+            syn.weight = 0.9;
+        }
+        let (_, syn) = topo.synapse_between(1, 2).unwrap();
+        assert!((syn.weight - 0.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn remove_synapse_works() {
+        let mut topo = setup_topology();
+        let ei = topo.add_synapse(1, 2, Synapse::new(0.5)).unwrap();
+        assert_eq!(topo.synapse_count(), 1);
+        topo.remove_synapse(ei);
+        assert_eq!(topo.synapse_count(), 0);
+        assert!(!topo.has_connection(1, 2));
+    }
+
+    #[test]
+    fn duplicate_connections_copies_subset() {
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo.add_morphon(4); // child
+
+        // Parent (2) has connections
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+        topo.add_synapse(3, 2, Synapse::new(0.3));
+        topo.add_synapse(2, 3, Synapse::new(0.7));
+
+        let mut rng = rand::rng();
+        // Run many times to check it doesn't panic and produces reasonable results
+        let mut total_child_degree = 0;
+        for _ in 0..20 {
+            let mut topo_copy = Topology::new();
+            topo_copy.add_morphon(1);
+            topo_copy.add_morphon(2);
+            topo_copy.add_morphon(3);
+            topo_copy.add_morphon(4);
+            topo_copy.add_synapse(1, 2, Synapse::new(0.5));
+            topo_copy.add_synapse(3, 2, Synapse::new(0.3));
+            topo_copy.add_synapse(2, 3, Synapse::new(0.7));
+
+            topo_copy.duplicate_connections(2, 4, &mut rng);
+            total_child_degree += topo_copy.degree(4);
+        }
+        // With 3 parent connections and 50% copy probability, average child degree ~1.5 per run
+        // Over 20 runs, should be > 0
+        assert!(total_child_degree > 0, "duplicate_connections should create some connections");
+    }
+
+    #[test]
+    fn all_edges_returns_all() {
+        let mut topo = setup_topology();
+        topo.add_synapse(1, 2, Synapse::new(0.5));
+        topo.add_synapse(2, 3, Synapse::new(0.3));
+        topo.add_synapse(3, 1, Synapse::new(0.1));
+
+        let edges = topo.all_edges();
+        assert_eq!(edges.len(), 3);
+    }
+}

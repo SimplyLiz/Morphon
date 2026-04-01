@@ -33,6 +33,7 @@ let stepsPerFrame = 10;
 let selectedNodeId = null;
 let hoveredNodeId = null;
 let prevFired = new Set();
+let frameFired = new Set(); // accumulates all fired IDs across multi-step frames
 
 // Connected node IDs for context dimming
 let connectedToSelected = new Set();
@@ -41,6 +42,8 @@ let filterCellType = null;
 // Per-node dim factor: 0 = full color, 1 = dimmed. Lerped smoothly.
 const nodeDim = new Float32Array(MAX_NODES);
 const nodeDimTarget = new Float32Array(MAX_NODES);
+// Per-node glow: 1.0 on fire, decays toward 0. Persists across frames.
+const nodeGlow = new Float32Array(MAX_NODES);
 
 const firingHistory = [];
 const morphonHistory = [];
@@ -249,6 +252,7 @@ function initScene() {
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
   nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  nodesMesh.frustumCulled = false; // instances spread across ball — don't cull by base geometry bounds
   scene.add(nodesMesh);
 
   // === EDGE LINES ===
@@ -384,40 +388,22 @@ function updateScene() {
   const nodeCount = Math.min(nodes.length, MAX_NODES);
   nodesMesh.count = nodeCount;
 
-  // --- Position setup with NaN guard and deterministic jitter for coincident nodes ---
-  const dispPos = new Float32Array(nodeCount * 3);
-  const sizes = new Float32Array(nodeCount);
-  for (let i = 0; i < nodeCount; i++) {
-    const n = nodes[i];
-    let x = n.x * BALL_RADIUS, y = n.y * BALL_RADIUS, z = n.z * BALL_RADIUS;
-    if (!isFinite(x)) x = 0;
-    if (!isFinite(y)) y = 0;
-    if (!isFinite(z)) z = 0;
-    // Deterministic per-node jitter (seeded by morphon id) to separate coincident nodes
-    // Golden-angle spherical spread ensures unique directions even for sequential ids
-    const id = n.id;
-    const phi = id * 2.399963; // golden angle
-    const cosTheta = 1.0 - 2.0 * ((id * 0.618034) % 1.0);
-    const sinTheta = Math.sqrt(1.0 - cosTheta * cosTheta);
-    const jitter = 0.35; // world-unit offset — enough to separate but not distort layout
-    x += Math.cos(phi) * sinTheta * jitter;
-    y += Math.sin(phi) * sinTheta * jitter;
-    z += cosTheta * jitter;
-    dispPos[i*3] = x; dispPos[i*3+1] = y; dispPos[i*3+2] = z;
-    sizes[i] = NODE_BASE_SIZE + (isFinite(n.energy) ? n.energy : 0) * 0.2;
-  }
-
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
 
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
     nodeMap.set(n.id, i);
 
-    const px = dispPos[i*3];
-    const py = dispPos[i*3+1];
-    const pz = dispPos[i*3+2];
+    let px = n.x * BALL_RADIUS;
+    let py = n.y * BALL_RADIUS;
+    let pz = n.z * BALL_RADIUS;
+    if (!isFinite(px)) px = 0;
+    if (!isFinite(py)) py = 0;
+    if (!isFinite(pz)) pz = 0;
 
-    const size = sizes[i];
+    // Clamp energy to [0, 2] for sizing — negative energy should not invert the mesh
+    const energy = Math.max(0, Math.min(2, isFinite(n.energy) ? n.energy : 0));
+    const size = NODE_BASE_SIZE + energy * 0.2;
 
     dummy.position.set(px, py, pz);
     dummy.scale.setScalar(size);
@@ -425,6 +411,10 @@ function updateScene() {
     nodesMesh.setMatrixAt(i, dummy.matrix);
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
+
+    // === GLOW: set to 1 on fire, decay smoothly ===
+    if (frameFired.has(n.id)) nodeGlow[i] = 1.0;
+    else nodeGlow[i] *= 0.85; // decay ~6 frames to dim
 
     // === SMOOTH CONTEXT DIMMING (selection OR cell type filter) ===
     let shouldDim = false;
@@ -437,17 +427,19 @@ function updateScene() {
     nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.02;
     const dim = nodeDim[i];
     const bright = 1.0 - dim * 0.85;
+    const glow = nodeGlow[i];
 
     if (n.id === selectedNodeId) {
       // Selected: bright bloom
       tempColor.copy(color).multiplyScalar(4.0);
       nodesMesh.setColorAt(i, tempColor);
-    } else if (n.fired && dim < 0.5) {
-      // Fired: HDR color * emissiveIntensity(0.3) = ~1.0+ luminance, above 0.85 threshold
-      tempColor.copy(color).multiplyScalar(3.5 * (1.0 - dim));
+    } else if (glow > 0.05 && dim < 0.5) {
+      // Recently fired: HDR brightness proportional to glow, fading smoothly
+      const intensity = 1.0 + glow * 2.5; // 1.0 (just dimming) to 3.5 (just fired)
+      tempColor.copy(color).multiplyScalar(intensity * (1.0 - dim));
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Normal: vivid cell-type color, dimmed smoothly if needed
+      // Resting: dim cell-type color
       tempColor.copy(color).multiplyScalar(bright);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -459,6 +451,7 @@ function updateScene() {
 
   nodesMesh.instanceMatrix.needsUpdate = true;
   if (nodesMesh.instanceColor) nodesMesh.instanceColor.needsUpdate = true;
+  nodesMesh.computeBoundingSphere();
 
   // === CURVED EDGES ===
   // Each edge becomes 2 line segments via a midpoint offset (subtle bezier approximation)
@@ -537,8 +530,8 @@ function updateScene() {
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
   // === SPIKE SPAWNING ===
-  const newFired = new Set();
-  for (const n of nodes) { if (n.fired) newFired.add(n.id); }
+  // frameFired is accumulated across all sub-steps in the animation loop
+  const newFired = frameFired;
 
   for (const id of newFired) {
     if (prevFired.has(id)) continue;
@@ -984,9 +977,12 @@ function animate() {
   const elapsed = clock.getElapsedTime();
 
   if (running && system) {
+    frameFired.clear();
     for (let i = 0; i < stepsPerFrame; i++) {
       if (frameCount % 3 === 0) makeInput('noise');
       system.step();
+      // Collect fired IDs after each sub-step so we don't miss transient firings
+      for (const id of system.fired_ids()) frameFired.add(id);
     }
     updateScene();
     if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }

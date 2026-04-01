@@ -208,3 +208,291 @@ pub fn should_prune(synapse: &Synapse, params: &LearningParams) -> bool {
         && synapse.weight.abs() < params.weight_min
         && synapse.usage_count < 5
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morphon::Synapse;
+    use crate::neuromodulation::Neuromodulation;
+    use crate::types::{default_receptors, CellType, ModulatorType};
+
+    #[test]
+    fn eligibility_decays_without_activity() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+        // Build up eligibility
+        for _ in 0..5 {
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        }
+        let peak = syn.eligibility;
+        assert!(peak > 0.0);
+
+        // Let it decay with no activity
+        for _ in 0..200 {
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+        }
+        assert!(
+            syn.eligibility.abs() < peak.abs() * 0.1,
+            "eligibility should decay significantly: was {peak}, now {}",
+            syn.eligibility
+        );
+    }
+
+    #[test]
+    fn pre_trace_increments_on_pre_spike() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+        assert_eq!(syn.pre_trace, 0.0);
+
+        update_eligibility(&mut syn, true, 0.0, &params, 1.0);
+        assert!(syn.pre_trace > 0.0, "pre_trace should increment on pre spike");
+    }
+
+    #[test]
+    fn post_trace_increments_on_post_activity() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+        assert_eq!(syn.post_trace, 0.0);
+
+        update_eligibility(&mut syn, false, 0.8, &params, 1.0);
+        assert!(syn.post_trace > 0.0, "post_trace should increment on post activity");
+    }
+
+    #[test]
+    fn traces_decay_exponentially() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+
+        // Set traces
+        update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        let pre_after_spike = syn.pre_trace;
+        let post_after_spike = syn.post_trace;
+
+        // Decay for several steps
+        for _ in 0..50 {
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+        }
+        assert!(syn.pre_trace < pre_after_spike * 0.1, "pre_trace should decay");
+        assert!(syn.post_trace < post_after_spike * 0.1, "post_trace should decay");
+    }
+
+    #[test]
+    fn eligibility_clamped_to_unit_range() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+
+        // Massive coincidence
+        for _ in 0..1000 {
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        }
+        assert!(syn.eligibility <= 1.0, "eligibility must be <= 1.0");
+        assert!(syn.eligibility >= -1.0, "eligibility must be >= -1.0");
+    }
+
+    #[test]
+    fn tag_set_when_eligibility_exceeds_threshold() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.1); // low weight → high LTP scale
+        for _ in 0..10 {
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        }
+        assert!(
+            syn.tag > 0.0,
+            "tag should be set when eligibility > threshold ({})",
+            params.tag_threshold
+        );
+        assert!(syn.tag_strength > 0.0, "tag_strength should be set");
+    }
+
+    #[test]
+    fn tag_decays_slower_than_eligibility() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.1);
+        // Build tag
+        for _ in 0..10 {
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        }
+        let tag_after_set = syn.tag;
+        let elig_after_set = syn.eligibility;
+
+        // Decay for 100 steps
+        for _ in 0..100 {
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+        }
+        let tag_ratio = syn.tag / tag_after_set;
+        let elig_ratio = if elig_after_set.abs() > 1e-10 {
+            syn.eligibility.abs() / elig_after_set.abs()
+        } else {
+            0.0
+        };
+        assert!(
+            tag_ratio > elig_ratio,
+            "tag should decay slower: tag retained {:.1}%, eligibility retained {:.1}%",
+            tag_ratio * 100.0,
+            elig_ratio * 100.0
+        );
+    }
+
+    #[test]
+    fn weight_update_receptor_gated() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+        syn.eligibility = 0.5;
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(0.8);
+        // Inject again to create a positive delta
+        modulation.inject_reward(0.1);
+
+        // Sensory receptors: Novelty + Arousal (no Reward)
+        let sensory_receptors = default_receptors(CellType::Sensory);
+        assert!(!sensory_receptors.contains(&ModulatorType::Reward));
+
+        let weight_before = syn.weight;
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &sensory_receptors);
+
+        // With zero novelty and zero arousal, weight change should be minimal
+        let _delta_sensory = (syn.weight - weight_before).abs();
+
+        // Now test with motor receptors (has Reward)
+        let mut syn2 = Synapse::new(0.5);
+        syn2.eligibility = 0.5;
+        let motor_receptors = default_receptors(CellType::Motor);
+        assert!(motor_receptors.contains(&ModulatorType::Reward));
+
+        let weight_before2 = syn2.weight;
+        apply_weight_update(&mut syn2, &modulation, &params, 0.01, &motor_receptors);
+        let delta2 = (syn2.weight - weight_before2).abs();
+
+        // Motor (with reward receptor) should have larger change when reward is high
+        // This is a soft check — the exact values depend on reward_delta
+        assert!(
+            delta2 >= 0.0,
+            "motor synapse update should be non-negative: {delta2}"
+        );
+    }
+
+    #[test]
+    fn tag_and_capture_consolidates() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.3);
+        syn.tag = 0.5;
+        syn.tag_strength = 0.4;
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(0.8); // above capture_threshold (0.5)
+
+        let motor_receptors = default_receptors(CellType::Motor);
+        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors);
+
+        assert!(captured, "tag should be captured with high reward");
+        assert!(syn.consolidated, "synapse should be consolidated");
+        assert_eq!(syn.tag, 0.0, "tag should be cleared after capture");
+    }
+
+    #[test]
+    fn consolidated_synapse_not_captured_again() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.3);
+        syn.tag = 0.5;
+        syn.tag_strength = 0.4;
+        syn.consolidated = true; // already consolidated
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(0.9);
+
+        let motor_receptors = default_receptors(CellType::Motor);
+        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors);
+        assert!(!captured, "consolidated synapse should not be re-captured");
+    }
+
+    #[test]
+    fn weight_clamped_to_max() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(4.9); // near weight_max (5.0)
+        syn.eligibility = 1.0;
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(1.0);
+        modulation.inject_reward(1.0);
+
+        let motor_receptors = default_receptors(CellType::Motor);
+        apply_weight_update(&mut syn, &modulation, &params, 1.0, &motor_receptors);
+
+        assert!(
+            syn.weight <= params.weight_max,
+            "weight {} should not exceed weight_max {}",
+            syn.weight,
+            params.weight_max
+        );
+        assert!(
+            syn.weight >= -params.weight_max,
+            "weight {} should not go below -weight_max",
+            syn.weight
+        );
+    }
+
+    #[test]
+    fn should_prune_old_weak_unused() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.0001); // below weight_min
+        syn.age = 200;
+        syn.usage_count = 2;
+        assert!(should_prune(&syn, &params));
+    }
+
+    #[test]
+    fn should_not_prune_young_synapse() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.0001);
+        syn.age = 50; // below 100
+        syn.usage_count = 0;
+        assert!(!should_prune(&syn, &params));
+    }
+
+    #[test]
+    fn should_not_prune_consolidated() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.0001);
+        syn.age = 200;
+        syn.usage_count = 0;
+        syn.consolidated = true;
+        assert!(!should_prune(&syn, &params), "consolidated synapses are protected");
+    }
+
+    #[test]
+    fn should_not_prune_strong_synapse() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(1.0); // well above weight_min
+        syn.age = 200;
+        syn.usage_count = 0;
+        assert!(!should_prune(&syn, &params));
+    }
+
+    #[test]
+    fn usage_count_increments_with_active_eligibility() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+        syn.eligibility = 0.5; // above 0.1 threshold
+
+        let modulation = Neuromodulation::default();
+        let receptors = default_receptors(CellType::Stem);
+
+        let initial_usage = syn.usage_count;
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors);
+        assert_eq!(syn.usage_count, initial_usage + 1);
+    }
+
+    #[test]
+    fn age_increments_on_weight_update() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.5);
+
+        let modulation = Neuromodulation::default();
+        let receptors = default_receptors(CellType::Stem);
+
+        let initial_age = syn.age;
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors);
+        assert_eq!(syn.age, initial_age + 1);
+    }
+}

@@ -284,3 +284,195 @@ impl TripleMemory {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === WorkingMemory tests ===
+
+    #[test]
+    fn working_memory_store_and_retrieve() {
+        let mut wm = WorkingMemory::new(5);
+        assert!(wm.is_empty());
+
+        wm.store(vec![1, 2, 3], 0.8);
+        assert_eq!(wm.len(), 1);
+        assert_eq!(wm.active_patterns()[0].pattern, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn working_memory_refreshes_similar_pattern() {
+        let mut wm = WorkingMemory::new(5);
+        wm.store(vec![1, 2, 3], 0.5);
+        wm.store(vec![1, 2, 4], 0.3); // >50% overlap with [1,2,3]
+
+        assert_eq!(wm.len(), 1, "similar pattern should refresh, not create new entry");
+        assert!(
+            wm.active_patterns()[0].activation > 0.5,
+            "activation should increase on refresh"
+        );
+    }
+
+    #[test]
+    fn working_memory_stores_dissimilar_patterns_separately() {
+        let mut wm = WorkingMemory::new(5);
+        wm.store(vec![1, 2, 3], 0.5);
+        wm.store(vec![10, 20, 30], 0.5); // no overlap
+
+        assert_eq!(wm.len(), 2);
+    }
+
+    #[test]
+    fn working_memory_evicts_weakest_at_capacity() {
+        let mut wm = WorkingMemory::new(3);
+        wm.store(vec![1], 0.3);
+        wm.store(vec![2], 0.9);
+        wm.store(vec![3], 0.7);
+        assert_eq!(wm.len(), 3);
+
+        // This should evict the weakest (pattern [1] with activation 0.3)
+        wm.store(vec![4], 0.5);
+        assert_eq!(wm.len(), 3);
+
+        let patterns: Vec<Vec<u64>> = wm
+            .active_patterns()
+            .iter()
+            .map(|p| p.pattern.clone())
+            .collect();
+        assert!(!patterns.contains(&vec![1]), "weakest pattern should be evicted");
+    }
+
+    #[test]
+    fn working_memory_decay_removes_weak_items() {
+        let mut wm = WorkingMemory::new(5);
+        wm.store(vec![1], 0.02); // very low activation
+
+        // Decay until removed
+        for _ in 0..100 {
+            wm.step(1.0);
+        }
+        assert!(wm.is_empty(), "very weak items should decay away");
+    }
+
+    #[test]
+    fn working_memory_activation_capped_at_one() {
+        let mut wm = WorkingMemory::new(5);
+        wm.store(vec![1, 2], 0.8);
+        wm.store(vec![1, 2], 0.8); // refresh same pattern
+
+        assert!(
+            wm.active_patterns()[0].activation <= 1.0,
+            "activation should be capped at 1.0"
+        );
+    }
+
+    // === EpisodicMemory tests ===
+
+    #[test]
+    fn episodic_encode_and_len() {
+        let mut em = EpisodicMemory::new(10);
+        assert!(em.is_empty());
+
+        em.encode(vec![(1, 0.5), (2, 0.8)], 0.9, 0.7, 100);
+        assert_eq!(em.len(), 1);
+    }
+
+    #[test]
+    fn episodic_evicts_least_consolidated_at_capacity() {
+        let mut em = EpisodicMemory::new(3);
+        em.encode(vec![(1, 0.5)], 0.5, 0.5, 100);
+        em.encode(vec![(2, 0.5)], 0.5, 0.5, 200);
+        em.encode(vec![(3, 0.5)], 0.5, 0.5, 300);
+        assert_eq!(em.len(), 3);
+
+        em.encode(vec![(4, 0.5)], 0.9, 0.9, 400);
+        assert_eq!(em.len(), 3, "should stay at capacity");
+    }
+
+    #[test]
+    fn episodic_replay_prioritizes_high_reward_high_novelty() {
+        let mut em = EpisodicMemory::new(10);
+        em.encode(vec![(1, 0.5)], 0.1, 0.1, 100); // low priority
+        em.encode(vec![(2, 0.5)], 0.9, 0.9, 200); // high priority
+        em.encode(vec![(3, 0.5)], 0.5, 0.5, 300); // medium priority
+
+        let replayed = em.replay(2);
+        assert_eq!(replayed.len(), 2);
+        // Highest priority episode should be first
+        assert!(
+            replayed[0].reward + replayed[0].novelty >= replayed[1].reward + replayed[1].novelty,
+            "replay should prioritize high reward+novelty"
+        );
+    }
+
+    #[test]
+    fn episodic_replay_consolidates() {
+        let mut em = EpisodicMemory::new(10);
+        em.encode(vec![(1, 0.5)], 0.8, 0.8, 100);
+
+        let replayed = em.replay(1);
+        assert_eq!(replayed[0].replay_count, 1);
+        assert!(replayed[0].consolidation > 0.0);
+
+        // Replay again
+        let replayed = em.replay(1);
+        assert_eq!(replayed[0].replay_count, 2);
+    }
+
+    // === ProceduralMemory tests ===
+
+    #[test]
+    fn procedural_record_and_history() {
+        let mut pm = ProceduralMemory::new(5);
+        pm.record(100, 50, 120, 3);
+        pm.record(200, 55, 130, 4);
+
+        assert_eq!(pm.topology_history.len(), 2);
+        assert_eq!(pm.topology_history[0].morphon_count, 50);
+        assert_eq!(pm.topology_history[1].cluster_count, 4);
+    }
+
+    #[test]
+    fn procedural_evicts_oldest_at_capacity() {
+        let mut pm = ProceduralMemory::new(3);
+        pm.record(100, 10, 20, 1);
+        pm.record(200, 20, 40, 2);
+        pm.record(300, 30, 60, 3);
+        pm.record(400, 40, 80, 4);
+
+        assert_eq!(pm.topology_history.len(), 3);
+        assert_eq!(
+            pm.topology_history[0].timestamp, 200,
+            "oldest entry should be evicted"
+        );
+    }
+
+    #[test]
+    fn procedural_avg_connectivity_computed() {
+        let mut pm = ProceduralMemory::new(10);
+        pm.record(100, 10, 30, 1);
+
+        assert!(
+            (pm.topology_history[0].avg_connectivity - 3.0).abs() < 1e-10,
+            "avg_connectivity should be synapses/morphons"
+        );
+    }
+
+    #[test]
+    fn procedural_zero_morphons_no_panic() {
+        let mut pm = ProceduralMemory::new(10);
+        pm.record(100, 0, 0, 0);
+        assert!((pm.topology_history[0].avg_connectivity - 0.0).abs() < 1e-10);
+    }
+
+    // === TripleMemory tests ===
+
+    #[test]
+    fn triple_memory_creates_all_subsystems() {
+        let tm = TripleMemory::new(7, 100);
+        assert!(tm.working.is_empty());
+        assert!(tm.episodic.is_empty());
+        assert!(tm.procedural.topology_history.is_empty());
+    }
+}
