@@ -188,7 +188,7 @@ fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> f64 {
 
 fn run_episode(
     system: &mut System, env: &mut CartPole, critic: &mut Critic,
-    max_steps: usize, epsilon: f64, rng: &mut impl Rng,
+    max_steps: usize, epsilon: f64, episode: usize, rng: &mut impl Rng,
 ) -> usize {
     env.reset(rng);
     let mut steps = 0;
@@ -209,13 +209,16 @@ fn run_episode(
         let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
-        // Train analog readout: TD error > 0 → reinforce chosen action,
-        // TD error < 0 → reinforce the OTHER action.
+        // Train analog readout with learning rate schedule:
+        // Warm-start with 3× lr for first 500 episodes → stronger DFA error → faster hidden adaptation
+        // Then decay to base lr for stability.
+        let lr_scale = if episode < 500 { 3.0 } else { 1.0 };
+        let base_lr = 0.1;
         if td_error > 0.0 {
-            system.train_readout(chosen, td_error.min(1.0) * 0.2);
+            system.train_readout(chosen, td_error.min(1.0) * base_lr * lr_scale);
         } else {
             let other = 1 - chosen;
-            system.train_readout(other, td_error.abs().min(1.0) * 0.1);
+            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5 * lr_scale);
         }
 
         // Also inject neuromodulation for the three-factor hidden layer
@@ -265,7 +268,7 @@ fn main() {
 
     for ep in 0..num_episodes {
         let epsilon = (0.5 * (1.0 - ep as f64 / num_episodes as f64)).max(0.05);
-        let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, &mut rng);
+        let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, ep, &mut rng);
         recent.push(steps);
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
