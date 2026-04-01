@@ -157,6 +157,7 @@ impl Morphon {
             autonomy: 1.0,
             migration_cooldown: 0.0,
             homeostatic_setpoint: 0.1,
+            feedback_signal: 0.0,
         }
     }
 
@@ -197,6 +198,7 @@ impl Morphon {
             autonomy: 1.0,
             migration_cooldown: 0.0,
             homeostatic_setpoint: 0.1,
+            feedback_signal: 0.0,
         }
     }
 

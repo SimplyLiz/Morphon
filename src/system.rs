@@ -118,6 +118,11 @@ pub struct System {
     pub(crate) prev_critic_value: f64,
     /// Last computed TD error — used by critic morphons' TD-LTP learning rule.
     pub(crate) last_td_error: f64,
+    /// DFA feedback weights: for each associative morphon, a Vec of (motor_id, weight).
+    /// Fixed random weights initialized during development. NEVER updated.
+    /// Projects output error to hidden layer for credit assignment.
+    /// (Lillicrap et al. 2016, GLSNN: global feedback + local STDP)
+    pub(crate) feedback_weights: HashMap<MorphonId, Vec<(MorphonId, f64)>>,
 
     /// Next available Morphon ID.
     pub(crate) next_morphon_id: MorphonId,
@@ -170,8 +175,7 @@ impl System {
         let n_critics = (assoc_ids.len() as f64 * 0.15).ceil() as usize;
         let critic_ids: Vec<MorphonId> = assoc_ids.into_iter().take(n_critics).collect();
 
-        // Set critic morphons' receptors to {Reward, Homeostasis} only —
-        // they learn from reward prediction error, not novelty/arousal.
+        // Set critic morphons' receptors to {Reward, Homeostasis} only.
         for &cid in &critic_ids {
             if let Some(m) = morphons.get_mut(&cid) {
                 let mut receptors = std::collections::HashSet::new();
@@ -179,6 +183,28 @@ impl System {
                 receptors.insert(ModulatorType::Homeostasis);
                 m.receptors = receptors;
             }
+        }
+
+        // Initialize DFA feedback weights: Motor → Associative (fixed random).
+        // Each Associative morphon gets a random projection weight from each Motor.
+        // These weights are NEVER updated — the forward weights align to them.
+        let all_assoc_ids: Vec<MorphonId> = morphons.values()
+            .filter(|m| m.cell_type == CellType::Associative)
+            .map(|m| m.id)
+            .collect();
+        let mut feedback_weights: HashMap<MorphonId, Vec<(MorphonId, f64)>> = HashMap::new();
+        for (i, &aid) in all_assoc_ids.iter().enumerate() {
+            let motor_weights: Vec<(MorphonId, f64)> = motor_ids.iter()
+                .enumerate()
+                .map(|(j, &mid)| {
+                    // Deterministic pseudo-random weight from morphon IDs
+                    let hash = (aid.wrapping_mul(7919) ^ mid.wrapping_mul(104729))
+                        .wrapping_add(i as u64 * 31 + j as u64 * 97);
+                    let w = (hash % 10000) as f64 / 5000.0 - 1.0; // [-1, 1]
+                    (mid, w)
+                })
+                .collect();
+            feedback_weights.insert(aid, motor_weights);
         }
 
         let mut system = System {
@@ -197,6 +223,7 @@ impl System {
             critic_ports: critic_ids,
             prev_critic_value: 0.0,
             last_td_error: 0.0,
+            feedback_weights,
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
@@ -302,6 +329,39 @@ impl System {
         }
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
 
+        // === DIRECT FEEDBACK ALIGNMENT ===
+        // Project output error through fixed random weights to Associative morphons.
+        // This (a) drives Associative firing (breaks the 0% deadlock) and
+        // (b) provides neuron-specific credit assignment (replaces global reward).
+        // (Lillicrap et al. 2016, GLSNN: global feedback + local STDP)
+        {
+            let td_err = self.last_td_error;
+            // Compute error vector: TD error × each motor morphon's centered potential
+            let error_vec: Vec<(MorphonId, f64)> = self.output_ports.iter()
+                .filter_map(|&mid| self.morphons.get(&mid).map(|m| {
+                    let sig = 1.0 / (1.0 + (-m.potential).exp());
+                    (mid, td_err * (sig - 0.5) * 2.0)
+                }))
+                .collect();
+
+            // Project error to each Associative morphon through fixed random weights
+            let feedback_strength = 0.5;
+            for (&assoc_id, weights) in &self.feedback_weights {
+                let feedback: f64 = weights.iter()
+                    .filter_map(|(mid, bw)| {
+                        error_vec.iter().find(|(id, _)| id == mid).map(|(_, e)| bw * e)
+                    })
+                    .sum();
+
+                if let Some(m) = self.morphons.get_mut(&assoc_id) {
+                    // Inject as input current — drives firing (breaks deadlock)
+                    m.input_accumulator += feedback_strength * feedback;
+                    // Store as neuron-specific modulation for weight updates
+                    m.feedback_signal = feedback;
+                }
+            }
+        }
+
         // === MEDIUM PATH ===
         // Two learning regimes (Frémaux et al. 2013):
         // - Critic morphons: TD-LTP — Δw = lr × δ × pre_trace (direct value learning)
@@ -337,18 +397,23 @@ impl System {
                         }
                     }
                 } else {
-                    // === ACTOR: Three-factor STDP ===
-                    let (post_activity, post_receptors) = self.morphons.get(&id)
-                        .map(|m| {
-                            let activity = if m.cell_type == CellType::Motor {
-                                let sig = 1.0 / (1.0 + (-m.potential).exp());
-                                (sig - 0.5) * 2.0
-                            } else {
-                                if m.fired { 1.0 } else { 0.0 }
-                            };
-                            (activity, m.receptors.clone())
-                        })
-                        .unwrap_or_default();
+                    // === ACTOR: Three-factor learning ===
+                    // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
+                    // Associative morphons: DFA feedback signal (neuron-specific credit)
+                    let (post_activity, post_receptors, feedback_sig, is_assoc) =
+                        self.morphons.get(&id)
+                            .map(|m| {
+                                let activity = if m.cell_type == CellType::Motor {
+                                    let sig = 1.0 / (1.0 + (-m.potential).exp());
+                                    (sig - 0.5) * 2.0
+                                } else {
+                                    if m.fired { 1.0 } else { 0.0 }
+                                };
+                                let is_a = m.cell_type == CellType::Associative
+                                    || m.cell_type == CellType::Stem;
+                                (activity, m.receptors.clone(), m.feedback_signal, is_a)
+                            })
+                            .unwrap_or_default();
                     let incoming = self.topology.incoming_synapses_mut(id);
 
                     for (pre_id, edge_idx) in incoming {
@@ -363,16 +428,29 @@ impl System {
                                 dt,
                             );
 
-                            let plasticity = self.modulation.plasticity_rate();
-                            let captured = learning::apply_weight_update(
-                                synapse,
-                                &self.modulation,
-                                &self.config.learning,
-                                plasticity,
-                                &post_receptors,
-                            );
-                            if captured {
-                                captures_this_step += 1;
+                            if is_assoc && feedback_sig.abs() > 0.001 {
+                                // DFA: Δw = eligibility × feedback_signal × plasticity
+                                // Neuron-specific modulation replaces global reward broadcast.
+                                let plasticity = self.modulation.plasticity_rate();
+                                let delta_w = synapse.eligibility * feedback_sig * plasticity;
+                                synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
+                                synapse.age += 1;
+                                if synapse.eligibility.abs() > 0.1 {
+                                    synapse.usage_count += 1;
+                                }
+                            } else {
+                                // Standard three-factor for Motor, Sensory, Modulatory
+                                let plasticity = self.modulation.plasticity_rate();
+                                let captured = learning::apply_weight_update(
+                                    synapse,
+                                    &self.modulation,
+                                    &self.config.learning,
+                                    plasticity,
+                                    &post_receptors,
+                                );
+                                if captured {
+                                    captures_this_step += 1;
+                                }
                             }
                         }
                     }
