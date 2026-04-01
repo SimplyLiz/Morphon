@@ -61,7 +61,7 @@ impl Default for MorphogenesisParams {
         Self {
             synaptogenesis_threshold: 0.6,
             pruning_min_age: 100,
-            division_threshold: 1.0,
+            division_threshold: 0.5,  // lowered from 1.0 — active k-WTA winners reproduce faster
             division_min_energy: 0.3,
             fusion_correlation_threshold: 0.75,
             fusion_min_size: 3,
@@ -851,9 +851,8 @@ pub fn apoptosis(
                 //     A well-connected neuron that never fires is wasting resources.
                 //     Without this, dense networks (MNIST 784→370) never apoptose.
                 && (topology.degree(m.id) < 3
-                    || m.activity_history.mean() < 0.005) // silent for ~200 steps
-                && (m.energy < params.apoptosis_energy_threshold
-                    || m.activity_history.mean() < 0.01)
+                    || m.activity_history.mean() < 0.001) // truly dead — not just k-WTA suppressed
+                && m.energy < params.apoptosis_energy_threshold
 
                 // V3 Governor: protect minimum cell type fractions
                 && match m.cell_type {
@@ -870,6 +869,16 @@ pub fn apoptosis(
         })
         .map(|m| m.id)
         .collect();
+
+    // Rate limit: kill at most 5% of population per glacial step.
+    // Without this, mass apoptosis can bleed the system faster than
+    // division can replace, collapsing the network.
+    let max_deaths = (morphons.len() as f64 * 0.05).ceil() as usize;
+    let to_remove = if to_remove.len() > max_deaths {
+        to_remove[..max_deaths].to_vec()
+    } else {
+        to_remove
+    };
 
     let count = to_remove.len();
     for id in to_remove {

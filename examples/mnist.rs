@@ -81,10 +81,10 @@ fn create_system() -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 1,
-            slow_period: 20,
+            medium_period: 5,   // STDP every 5 steps — gives Poisson patterns time to emerge
+            slow_period: 100,   // structural changes infrequent
             glacial_period: 500,
-            homeostasis_period: 10,
+            homeostasis_period: 30, // normalization every 30 steps (once per image)
             memory_period: 50,
         },
         learning: LearningParams {

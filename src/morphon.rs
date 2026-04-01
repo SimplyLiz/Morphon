@@ -84,7 +84,7 @@ impl Default for MetabolicConfig {
             base_cost: 0.001,
             synapse_cost: 0.0001,  // reduced 5× — was starving hidden layer
             utility_reward: 0.02,
-            basal_regen: 0.003,    // increased 3× — morphons need energy to explore
+            basal_regen: 0.005,    // generous trickle — silent morphons survive for anchor/sail
             firing_cost: 0.002,    // reduced 2× — firing should be cheap
         }
     }
@@ -311,14 +311,15 @@ impl Morphon {
         self.threshold = self.threshold.clamp(0.05, max_threshold);
 
         // Division pressure accumulates from two sources:
-        // 1. Chronic overload (activity > 50%) — original mechanism
+        // 1. Active morphons (activity > 10%) — lowered from 50% to work with k-WTA
+        //    where winners fire ~5-10% of the time. Without this, k-WTA winners
+        //    never accumulate enough pressure to divide, and apoptosis of dead
+        //    neurons can't be balanced by births.
         // 2. High DFA feedback error — "error-driven proliferation"
-        //    Morphons in high-error regions divide, creating fresh capacity
-        //    where the system is failing. "Disturbance-induced Growth."
-        if actual_rate > 0.5 {
+        if actual_rate > 0.10 {
             self.division_pressure += 0.01;
         } else {
-            self.division_pressure = (self.division_pressure - 0.005).max(0.0);
+            self.division_pressure = (self.division_pressure - 0.002).max(0.0);
         }
         // DFA-driven pressure: strong feedback signal means this morphon is in
         // a region where the output is wrong. More capacity needed here.

@@ -212,6 +212,7 @@ mod bindings {
                         "age": m.age,
                         "autonomy": m.autonomy,
                         "division_pressure": m.division_pressure,
+                        "firing_rate": m.activity_history.mean(),
                         "fused": m.fused_with.is_some(),
                     })
                 })

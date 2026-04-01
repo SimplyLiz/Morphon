@@ -100,6 +100,8 @@ const _closestPos = new THREE.Vector3();
 const WHITE = new THREE.Color(0xffffff);
 // Track mouse drag to distinguish click from orbit drag
 let mouseDownPos = { x: 0, y: 0 };
+// Raw client coords for tooltip positioning (avoids 3D→2D projection drift)
+let mouseClientX = 0, mouseClientY = 0;
 // Track last user input time to avoid noise overwrite
 let lastUserInputTime = 0;
 
@@ -365,6 +367,8 @@ function onMouseMove(e) {
   const rect = renderer.domElement.getBoundingClientRect();
   mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  mouseClientX = e.clientX;
+  mouseClientY = e.clientY;
 }
 
 function onMouseClick(e) {
@@ -401,12 +405,13 @@ function updateRaycast() {
     _pos.setFromMatrixPosition(_mat4);
     const d = raycaster.ray.distanceToPoint(_pos);
     const scale = _mat4.elements[0];
-    if (d < scale * 2.5) {
+    // Guarantee a minimum hit radius so tiny nodes stay clickable
+    const hitRadius = Math.max(scale * 3.0, 0.35);
+    if (d < hitRadius) {
       const camDist = camera.position.distanceTo(_pos);
       if (camDist < closestDist) {
         closestDist = camDist;
         closest = i;
-        _closestPos.copy(_pos); // save position of the actual closest node
       }
     }
   }
@@ -419,18 +424,50 @@ function updateRaycast() {
     const node = nodeData[nodeMap.get(hoveredNodeId)]; // O(1) lookup via nodeMap
     if (node) {
       tooltip.style.display = 'block';
-      const screenPos = _closestPos.clone().project(camera);
-      const rect = renderer.domElement.getBoundingClientRect();
-      const sx = (screenPos.x * 0.5 + 0.5) * rect.width + rect.left;
-      const sy = (-screenPos.y * 0.5 + 0.5) * rect.height + rect.top;
-      tooltip.style.left = (sx + 16) + 'px';
-      tooltip.style.top = (sy - 10) + 'px';
+      // Position at cursor — avoids 3D→2D projection drift
+      tooltip.style.left = (mouseClientX + 16) + 'px';
+      tooltip.style.top = (mouseClientY - 10) + 'px';
+      const ct = node.cell_type.toLowerCase();
+      const dotColor = `var(--${ct}, #888)`;
+      const energyPct = Math.min(node.energy / 2, 1) * 100;
+      const potPct = Math.min(Math.abs(node.potential) / Math.max(node.threshold, 0.5), 1) * 100;
+      const specPct = (node.specificity || 0) * 100;
+      const rate = node.firing_rate || 0;
+      const ratePct = Math.min(rate / 0.3, 1) * 100; // 30% firing rate = full bar
+      const rateColor = rate > 0.15 ? '#fbbf24' : rate > 0.05 ? 'var(--accent)' : 'rgba(255,255,255,0.3)';
+      const fusedTag = node.fused
+        ? ' <span class="tip-tag" style="background:rgba(244,114,182,0.2);color:#f472b6">FUSED</span>'
+        : '';
       tooltip.innerHTML = `
-        <div class="tip-id">#${node.id}</div>
-        <div class="tip-type">${node.cell_type} &middot; Gen ${node.generation}</div>
-        <div class="tip-row"><span class="label">Energy</span><span class="value">${node.energy.toFixed(2)}</span></div>
-        <div class="tip-row"><span class="label">Potential</span><span class="value">${node.potential.toFixed(3)}</span></div>
-        <div class="tip-row"><span class="label">Fired</span><span class="value">${node.fired ? 'YES' : '-'}</span></div>
+        <div class="tip-header">
+          <span class="tip-dot" style="background:${dotColor}${node.fired ? ';box-shadow:0 0 6px ' + dotColor : ''}"></span>
+          <span class="tip-id">#${node.id}${fusedTag}</span>
+          <span class="tip-type">${node.cell_type}</span>
+        </div>
+        <hr class="tip-sep">
+        <div class="tip-row">
+          <span class="label">Energy</span>
+          <span class="tip-bar"><span class="fill" style="width:${energyPct}%;background:${dotColor}"></span></span>
+          <span class="value">${node.energy.toFixed(2)}</span>
+        </div>
+        <div class="tip-row">
+          <span class="label">Potential</span>
+          <span class="tip-bar"><span class="fill" style="width:${potPct}%;background:${node.potential >= 0 ? 'var(--accent)' : '#ff4466'}"></span></span>
+          <span class="value">${node.potential.toFixed(2)}</span>
+        </div>
+        <div class="tip-row">
+          <span class="label">Fire rate</span>
+          <span class="tip-bar"><span class="fill" style="width:${ratePct}%;background:${rateColor}"></span></span>
+          <span class="value">${(rate * 100).toFixed(0)}%</span>
+        </div>
+        <div class="tip-row">
+          <span class="label">Depth</span>
+          <span class="tip-bar"><span class="fill" style="width:${specPct}%;background:rgba(255,255,255,0.3)"></span></span>
+          <span class="value">${(node.specificity || 0).toFixed(2)}</span>
+        </div>
+        <div class="tip-row" style="margin-top:1px">
+          <span class="label" style="color:var(--text-dim);font-size:9px">Gen ${node.generation} &middot; Age ${node.age}</span>
+        </div>
       `;
     }
   } else {
@@ -514,9 +551,14 @@ function updateScene() {
       tempColor.copy(color).multiplyScalar(2.0);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Diffuse layer: natural cell color with subtle brightening on fire
-      const intensity = bright * (0.55 + glow * 0.4);
+      // Diffuse layer: base brightness high enough so linear→sRGB+ACES stays visible
+      const intensity = bright * (0.82 + glow * 0.18);
       tempColor.copy(color).multiplyScalar(intensity);
+      // Flash toward white on fire — visible pop distinct from the bloom glow
+      if (glow > 0.5) {
+        const flash = (glow - 0.5) * 2.0; // 0→1 over glow [0.5, 1.0]
+        tempColor.lerp(WHITE, flash * 0.45);
+      }
       nodesMesh.setColorAt(i, tempColor);
     }
 
@@ -1498,7 +1540,6 @@ function animate() {
     if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }
   }
 
-  if (frameCount % 2 === 0) updateRaycast();
   updateSpikes();
 
   // Subtle ball rotation
@@ -1513,7 +1554,10 @@ function animate() {
     bloomPass.strength = 0.34 + activity * 0.22;
   }
 
+  // Update camera BEFORE raycast so matrices match the rendered frame
   controls.update();
+  camera.updateMatrixWorld();
+  updateRaycast();
   composer.render();
 }
 

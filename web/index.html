@@ -587,32 +587,86 @@
   #tooltip {
     position: fixed;
     pointer-events: none;
-    background: var(--panel);
-    border: 1px solid var(--panel-border-hover);
-    border-radius: 8px;
-    padding: 8px 12px;
+    background: rgba(8, 12, 24, 0.88);
+    border: 1px solid rgba(80, 140, 255, 0.12);
+    border-radius: 6px;
+    padding: 6px 10px 7px;
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    font-size: 11px;
+    font-size: 10px;
     z-index: 100;
     display: none;
-    max-width: 200px;
+    min-width: 145px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  }
+  #tooltip .tip-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  #tooltip .tip-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
   #tooltip .tip-id {
     font-family: 'JetBrains Mono', monospace;
     font-weight: 500;
+    font-size: 11px;
     color: var(--text-bright);
   }
-  #tooltip .tip-type { color: var(--text-dim); font-size: 10px; }
+  #tooltip .tip-type {
+    color: var(--text-dim);
+    font-size: 9px;
+    margin-left: auto;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  #tooltip .tip-sep {
+    border: none;
+    border-top: 1px solid rgba(80, 140, 255, 0.08);
+    margin: 4px 0;
+  }
   #tooltip .tip-row {
     display: flex;
-    justify-content: space-between;
-    gap: 12px;
+    align-items: center;
+    gap: 6px;
     font-size: 10px;
-    margin-top: 2px;
+    margin-top: 3px;
   }
-  #tooltip .tip-row .label { color: var(--text-dim); }
-  #tooltip .tip-row .value { font-family: 'JetBrains Mono', monospace; color: var(--text-bright); }
+  #tooltip .tip-row .label {
+    color: var(--text-dim);
+    min-width: 52px;
+  }
+  #tooltip .tip-bar {
+    flex: 1;
+    height: 3px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden;
+  }
+  #tooltip .tip-bar .fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.1s;
+  }
+  #tooltip .tip-row .value {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text-bright);
+    min-width: 32px;
+    text-align: right;
+  }
+  #tooltip .tip-tag {
+    display: inline-block;
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
 
   /* === LOADING === */
   #loading {
