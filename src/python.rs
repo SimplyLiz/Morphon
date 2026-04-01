@@ -160,6 +160,16 @@ mod bindings {
             self.inner.teach_hidden(correct_index, strength);
         }
 
+        /// Enable analog readout (Purkinje-style output bypass).
+        fn enable_analog_readout(&mut self) {
+            self.inner.enable_analog_readout();
+        }
+
+        /// Train analog readout weights using delta rule.
+        fn train_readout(&mut self, correct_index: usize, learning_rate: f64) {
+            self.inner.train_readout(correct_index, learning_rate);
+        }
+
         /// Get system inspection statistics.
         fn inspect(&self) -> PySystemStats {
             let stats = self.inner.inspect();
