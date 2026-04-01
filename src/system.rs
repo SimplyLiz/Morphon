@@ -3,6 +3,7 @@
 //! Uses the Dual-Clock Architecture (Section 3.8) to separate fast inference
 //! from slow morphogenesis, with homeostatic protection mechanisms throughout.
 
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use crate::developmental::{self, DevelopmentalConfig};
 use crate::diagnostics::Diagnostics;
@@ -331,6 +332,23 @@ impl System {
         }
         system.diag.total_captures = 0;
 
+        // === ANCHOR & SAIL: Assign heterogeneous plasticity rates ===
+        // Log-normal distribution: ~20% anchors (rate < 0.3), ~60% normal, ~20% sails (rate > 1.5)
+        // Anchors provide stable features for the readout; sails explore the state space.
+        // Only Associative and Stem morphons get heterogeneous rates — Sensory/Motor stay at 1.0.
+        // (Perez-Nieves et al. 2021, Zenke et al. 2015)
+        for m in system.morphons.values_mut() {
+            if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
+                // Log-normal(mu=-0.3, sigma=0.7) → median ~0.74, ~20% below 0.3, ~20% above 1.5
+                let u1: f64 = rng.random_range(0.001..1.0_f64);
+                let u2: f64 = rng.random_range(0.0..std::f64::consts::TAU);
+                let normal = (-2.0 * u1.ln()).sqrt() * u2.cos(); // Box-Muller
+                let log_normal = (-0.3 + 0.7 * normal).exp();
+                m.plasticity_rate = log_normal.clamp(0.1, 2.5);
+            }
+            // Sensory, Motor, Modulatory keep plasticity_rate = 1.0
+        }
+
         system
     }
 
@@ -510,7 +528,7 @@ impl System {
                     // === ACTOR: Three-factor learning ===
                     // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
                     // Associative morphons: DFA feedback signal (neuron-specific credit)
-                    let (post_activity, post_receptors, feedback_sig, is_assoc) =
+                    let (post_activity, post_receptors, feedback_sig, is_assoc, plast_rate) =
                         self.morphons.get(&id)
                             .map(|m| {
                                 let activity = if m.cell_type == CellType::Motor {
@@ -521,9 +539,9 @@ impl System {
                                 };
                                 let is_a = m.cell_type == CellType::Associative
                                     || m.cell_type == CellType::Stem;
-                                (activity, m.receptors.clone(), m.feedback_signal, is_a)
+                                (activity, m.receptors.clone(), m.feedback_signal, is_a, m.plasticity_rate)
                             })
-                            .unwrap_or_default();
+                            .unwrap_or((0.0, Default::default(), 0.0, false, 1.0));
                     let incoming = self.topology.incoming_synapses_mut(id);
 
                     for (pre_id, edge_idx) in incoming {
@@ -546,7 +564,7 @@ impl System {
                                 // pre_trace persists ~10 steps after firing — "is this synapse
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
-                                let dfa_lr = 0.02;
+                                let dfa_lr = 0.02 * plast_rate; // scaled by Anchor/Sail rate
                                 let weight_decay = 0.001 * synapse.weight;
                                 let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
@@ -578,7 +596,8 @@ impl System {
                                 }
                             } else {
                                 // Standard three-factor for Motor, Sensory, Modulatory
-                                let plasticity = self.modulation.plasticity_rate();
+                                // Scaled by per-morphon plasticity_rate (Anchor/Sail)
+                                let plasticity = self.modulation.plasticity_rate() * plast_rate;
                                 let captured = learning::apply_weight_update(
                                     synapse,
                                     &self.modulation,
@@ -1046,6 +1065,40 @@ impl System {
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
                         }
+                    }
+                }
+            }
+        }
+
+        // === H2: READOUT-COUPLED ANCHORING ===
+        // "Success breeds stability" — morphons with high readout weight magnitude
+        // get their plasticity_rate reduced (become anchors). Morphons the readout
+        // doesn't use stay plastic (sails). EMA update at glacial timescale (~0.005).
+        // (Pilzak et al. 2026: iTDS — top-down consolidation gating at 100x learning rate)
+        let n_out = self.readout_weights.len();
+        if n_out > 0 {
+            // Compute max readout weight magnitude per hidden morphon
+            let mut importance: HashMap<MorphonId, f64> = HashMap::new();
+            for j in 0..n_out {
+                for (&id, &w) in &self.readout_weights[j] {
+                    let entry = importance.entry(id).or_insert(0.0_f64);
+                    *entry = entry.max(w.abs());
+                }
+            }
+
+            // Find the max importance for normalization
+            let max_imp = importance.values().cloned().fold(0.01_f64, f64::max);
+
+            // Update plasticity_rate: high importance → lower plasticity (anchor)
+            let anchoring_rate = 0.005; // slow EMA — takes ~200 readout updates to converge
+            for (&id, &imp) in &importance {
+                if let Some(m) = self.morphons.get_mut(&id) {
+                    if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
+                        let normalized_imp = imp / max_imp; // [0, 1]
+                        // Target plasticity: 0.2 for max importance, basal for zero importance
+                        let target = 0.2 + (1.0 - normalized_imp) * 0.8;
+                        m.plasticity_rate += anchoring_rate * (target - m.plasticity_rate);
+                        m.plasticity_rate = m.plasticity_rate.clamp(0.1, 2.5);
                     }
                 }
             }

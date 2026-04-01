@@ -56,6 +56,8 @@ impl Synapse {
     }
 }
 
+fn default_plasticity_rate() -> f64 { 1.0 }
+
 /// V3 Metabolic Budget — energy earned through utility, not flat regeneration.
 ///
 /// Morphons pay a base cost plus per-synapse maintenance each step.
@@ -163,6 +165,7 @@ pub struct Morphon {
     /// "Anchor" morphons (low plasticity) provide stable features for the readout.
     /// "Sail" morphons (high plasticity) explore the state space.
     /// Initialized from log-normal distribution; modulated by readout importance (H2).
+    #[serde(default = "default_plasticity_rate")]
     pub plasticity_rate: f64,
 }
 
