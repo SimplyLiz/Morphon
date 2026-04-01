@@ -2582,36 +2582,6 @@ function drawLineageTree() {
 }
 
 // ============================================================
-// V3: DARK/LIGHT THEME TOGGLE
-// ============================================================
-let currentTheme = localStorage.getItem('morphon-theme') || 'dark';
-
-function applyTheme(theme) {
-  currentTheme = theme;
-  document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('morphon-theme', theme);
-
-  // Update Three.js scene
-  if (scene) {
-    if (theme === 'light') {
-      scene.fog = new THREE.FogExp2(0xe8ecf2, 0.004);
-      scene.background = new THREE.Color(0xe8ecf2);
-    } else {
-      scene.fog = new THREE.FogExp2(0x050510, 0.006);
-      scene.background = new THREE.Color(0x050510);
-    }
-  }
-
-  // Update theme button icon
-  const btn = document.getElementById('btn-theme');
-  if (btn) btn.textContent = theme === 'light' ? '\u263E' : '\u2600';
-}
-
-function toggleTheme() {
-  applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
-}
-
-// ============================================================
 // INIT
 // ============================================================
 async function main() {
@@ -2633,12 +2603,6 @@ async function main() {
   setTimeout(() => loading.remove(), 600);
 
   addEvent(0, 'System initialized [cortical, 60 seed, 3D]', 'event-diff');
-
-  // V3: Apply saved theme
-  applyTheme(currentTheme);
-
-  // V3: Theme toggle button
-  document.getElementById('btn-theme')?.addEventListener('click', toggleTheme);
 
   // V3: Screenshot button
   document.getElementById('btn-screenshot')?.addEventListener('click', exportScreenshot);

@@ -819,22 +819,6 @@
   /* Speed value label */
   .speed-val { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); min-width: 24px; }
 
-  /* === V3: LIGHT THEME === */
-  [data-theme="light"] {
-    --bg: #f0f2f5;
-    --panel: rgba(255, 255, 255, 0.88);
-    --panel-border: rgba(0, 30, 80, 0.08);
-    --panel-border-hover: rgba(0, 30, 80, 0.18);
-    --text: #1a2332;
-    --text-dim: #6b7a8d;
-    --text-bright: #0a1020;
-    --accent: #3366cc;
-  }
-  [data-theme="light"] #tooltip { background: rgba(255,255,255,0.95); color: #1a2332; border-color: rgba(0,30,80,0.15); }
-  [data-theme="light"] .tip-sep { border-color: rgba(0,0,0,0.1); }
-  [data-theme="light"] .log-entry { border-bottom-color: rgba(0,0,0,0.04); }
-  [data-theme="light"] canvas { filter: none; }
-
   /* === RESPONSIVE === */
   @media (max-width: 900px) {
     #left-panel, #right-panel { display: none !important; }
@@ -889,7 +873,6 @@
     <button id="btn-reset">RESET</button>
     <button id="btn-save" title="Save state">SAVE</button>
     <button id="btn-load" title="Load state">LOAD</button>
-    <button id="btn-theme" title="Toggle dark/light theme">&#x2600;</button>
     <button id="btn-screenshot" title="Export screenshot (P)">&#x1F4F7;</button>
     <button id="btn-fullscreen" title="Fullscreen">&#x26F6;</button>
     <button id="btn-help" title="Help">?</button>
