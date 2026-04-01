@@ -48,6 +48,10 @@ pub struct SystemConfig {
     /// V3: Constitutional constraints — hard governance invariants.
     #[serde(default)]
     pub governance: crate::governance::ConstitutionalConstraints,
+
+    /// Endoquilibrium: predictive neuroendocrine regulation.
+    #[serde(default)]
+    pub endoquilibrium: crate::endoquilibrium::EndoConfig,
 }
 
 impl SystemConfig {
@@ -82,6 +86,7 @@ impl Default for SystemConfig {
             field: FieldConfig::default(),
             target_morphology: None,
             governance: crate::governance::ConstitutionalConstraints::default(),
+            endoquilibrium: crate::endoquilibrium::EndoConfig::default(),
         }
     }
 }
@@ -195,6 +200,9 @@ pub struct System {
 
     /// V2: Bioelektrisches Feld — spatial field for indirect morphon communication.
     pub field: Option<MorphonField>,
+
+    /// Endoquilibrium: predictive neuroendocrine regulation engine.
+    pub endo: crate::endoquilibrium::Endoquilibrium,
 }
 
 impl System {
@@ -264,6 +272,7 @@ impl System {
             feedback_weights.insert(aid, motor_weights);
         }
 
+        let endo = crate::endoquilibrium::Endoquilibrium::new(config.endoquilibrium.clone());
         let mut system = System {
             morphons,
             topology,
@@ -295,6 +304,7 @@ impl System {
             consolidation_gate: 10.0, // consolidate once above random baseline
             peak_performance: 0.0,
             field: None, // initialized below
+            endo,
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -459,18 +469,19 @@ impl System {
         // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
         let frustration_config = &self.config.morphogenesis.frustration;
+        let threshold_bias = self.endo.channels.threshold_bias as f64;
         let degree_map: HashMap<MorphonId, usize> = self.morphons.keys()
             .map(|&id| (id, self.topology.degree(id)))
             .collect();
         #[cfg(feature = "parallel")]
         self.morphons.par_iter_mut().for_each(|(id, m)| {
             let sc = degree_map.get(id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic, frustration_config);
+            m.step(dt, sc, metabolic, frustration_config, threshold_bias);
         });
         #[cfg(not(feature = "parallel"))]
         self.morphons.values_mut().for_each(|m| {
             let sc = degree_map.get(&m.id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic, frustration_config);
+            m.step(dt, sc, metabolic, frustration_config, threshold_bias);
         });
 
         // V3: Cluster overhead — fused morphons pay extra maintenance cost.
@@ -542,6 +553,14 @@ impl System {
                     m.feedback_signal = feedback;
                 }
             }
+        }
+
+        // === ENDOQUILIBRIUM (before learning) ===
+        if self.endo.config.enabled && tick.medium {
+            let vitals = crate::endoquilibrium::sense_vitals(
+                &self.morphons, &self.topology, &self.diag, self.step_count,
+            );
+            self.endo.tick(vitals);
         }
 
         // === MEDIUM PATH ===
@@ -618,7 +637,7 @@ impl System {
                                 // pre_trace persists ~10 steps after firing — "is this synapse
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
-                                let dfa_lr = 0.02 * plast_rate; // scaled by Anchor/Sail rate
+                                let dfa_lr = 0.02 * plast_rate * self.endo.channels.plasticity_mult as f64; // scaled by Anchor/Sail + Endo
                                 let weight_decay = 0.001 * synapse.weight;
                                 let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
@@ -657,8 +676,15 @@ impl System {
                                 }
                             } else {
                                 // Standard three-factor for Motor, Sensory, Modulatory
-                                // Scaled by per-morphon plasticity_rate (Anchor/Sail)
-                                let plasticity = self.modulation.plasticity_rate() * plast_rate;
+                                // Scaled by per-morphon plasticity_rate (Anchor/Sail) × Endo plasticity_mult
+                                let plasticity = self.modulation.plasticity_rate() * plast_rate
+                                    * self.endo.channels.plasticity_mult as f64;
+                                let endo_gains = [
+                                    self.endo.channels.reward_gain as f64,
+                                    self.endo.channels.novelty_gain as f64,
+                                    self.endo.channels.arousal_gain as f64,
+                                    self.endo.channels.homeostasis_gain as f64,
+                                ];
                                 let weight_before = synapse.weight;
                                 let captured = learning::apply_weight_update(
                                     synapse,
@@ -666,6 +692,7 @@ impl System {
                                     &self.config.learning,
                                     plasticity,
                                     &post_receptors,
+                                    endo_gains,
                                 );
                                 // Performance gate: undo capture if below threshold
                                 if captured && self.recent_performance <= self.consolidation_gate {
@@ -1105,6 +1132,12 @@ impl System {
 
     /// Enable analog readout and initialize readout weights.
     ///
+    /// Set the performance threshold for enabling consolidation.
+    /// Below this level, the system stays fully plastic (no tag captures).
+    pub fn set_consolidation_gate(&mut self, gate: f64) {
+        self.consolidation_gate = gate;
+    }
+
     /// Creates a weight matrix from all Associative+Stem morphons to each
     /// output port. Weights initialized to small random values (Xavier-scaled).
     /// Call this before training on classification tasks.

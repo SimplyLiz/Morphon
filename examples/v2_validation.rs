@@ -246,17 +246,16 @@ fn run_trial(
 
 // ============================================================
 // Experiment 1: Frustration-Driven Exploration
-// No analog readout — spike-based output only. This creates
-// real local minima where the spiking network gets stuck.
+// Both configs use analog readout. The test is whether
+// frustration-ON finds better peak scores and converges faster.
 // ============================================================
 fn experiment_frustration() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║  Experiment 1: Frustration-Driven Stochastic Exploration    ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  Spike-only output (no analog readout). 1000 episodes.     ║");
-    println!("║  Division + migration ON. This is hard — the network       ║");
-    println!("║  regularly gets stuck in local minima.                      ║");
-    println!("║  Hypothesis: frustration noise helps escape plateaus.       ║");
+    println!("║  Both configs use analog readout. 1000 episodes.           ║");
+    println!("║  Division + migration ON.                                   ║");
+    println!("║  Hypothesis: frustration finds better peaks, faster curves. ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     let num_episodes = 1000;
@@ -274,7 +273,8 @@ fn experiment_frustration() {
         config.lifecycle.migration = true;
         config.lifecycle.division = true;
         config.morphogenesis.frustration.enabled = true;
-        let mut sys = System::new(config); // no enable_analog_readout()
+        let mut sys = System::new(config);
+        sys.enable_analog_readout();
         let (avg, best, avgs) = run_trial(&mut sys, num_episodes, max_steps, seed as u64);
         let diag = sys.diagnostics();
         println!("  [ON  seed={}] avg={:.1} best={:>3} frust={:.3} exploring={}",
@@ -288,6 +288,7 @@ fn experiment_frustration() {
         config.lifecycle.division = true;
         config.morphogenesis.frustration.enabled = false;
         let mut sys = System::new(config);
+        sys.enable_analog_readout();
         let (avg, best, avgs) = run_trial(&mut sys, num_episodes, max_steps, seed as u64);
         println!("  [OFF seed={}] avg={:.1} best={:>3}", seed, avg, best);
         results_off.push((avg, best));
@@ -401,8 +402,8 @@ fn experiment_self_healing() {
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║  Experiment 3: Target Morphology Self-Healing               ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  Train 500 ep with analog readout. Then KILL 50% of motor  ║");
-    println!("║  morphons + disable readout. This is catastrophic.          ║");
+    println!("║  Train 500 ep with analog readout. Then KILL ALL but 1       ║");
+    println!("║  motor morphon. Catastrophic output loss.                   ║");
     println!("║  Recovery: 500 more ep. Division + target morphology ON     ║");
     println!("║  vs no lifecycle. Measure performance recovery.             ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
@@ -440,12 +441,12 @@ fn experiment_self_healing() {
         let (avg_pre, best_pre, _) = run_trial(&mut sys, pre_episodes, max_steps, seed as u64);
         let stats_pre = sys.inspect();
 
-        // DAMAGE: kill 50% of motor morphons
+        // DAMAGE: kill ALL but 1 motor morphon — catastrophic output loss
         let motor_ids: Vec<u64> = sys.morphons.values()
             .filter(|m| m.cell_type == CellType::Motor)
             .map(|m| m.id)
             .collect();
-        let kill_count = (motor_ids.len() + 1) / 2; // at least half
+        let kill_count = motor_ids.len().saturating_sub(1); // keep exactly 1
         for &id in motor_ids.iter().take(kill_count) {
             sys.morphons.remove(&id);
             sys.topology.remove_morphon(id);
@@ -474,12 +475,12 @@ fn experiment_self_healing() {
         // Phase 1: same training
         let (avg_pre2, best_pre2, _) = run_trial(&mut sys, pre_episodes, max_steps, seed as u64);
 
-        // DAMAGE: same pattern
+        // DAMAGE: same pattern — kill ALL but 1 motor
         let motor_ids2: Vec<u64> = sys.morphons.values()
             .filter(|m| m.cell_type == CellType::Motor)
             .map(|m| m.id)
             .collect();
-        let kill_count2 = (motor_ids2.len() + 1) / 2;
+        let kill_count2 = motor_ids2.len().saturating_sub(1);
         for &id in motor_ids2.iter().take(kill_count2) {
             sys.morphons.remove(&id);
             sys.topology.remove_morphon(id);
