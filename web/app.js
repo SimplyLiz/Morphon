@@ -57,6 +57,8 @@ const nodeDimTarget = new Map();
 const nodeGlow = new Map();
 // Smooth epistemic color: lerp toward target to prevent photosensitive flashing
 const nodeEpistemicColor = new Map(); // id → THREE.Color (current blended color)
+// Smooth PE value: lerp toward target to prevent jittery color changes
+const nodePeSmooth = new Map(); // id → smoothed PE value
 
 // Death animation: nodes that just died fade out over DEATH_ANIM_FRAMES
 const DEATH_ANIM_FRAMES = 50;
@@ -574,9 +576,13 @@ function updateScene() {
 
     let color;
     if (colorMode === 'pe') {
-      // Heatmap: blue (low PE) → yellow → red (high PE)
-      const pe = Math.max(0, Math.min(1, n.prediction_error || 0));
-      peColor.setHSL(0.66 - pe * 0.66, 0.9, 0.35 + pe * 0.3);
+      // Heatmap: soft blue (low PE) → warm coral (high PE), smoothed
+      const rawPe = Math.max(0, Math.min(1, n.prediction_error || 0));
+      const prevPe = nodePeSmooth.get(n.id) ?? rawPe;
+      const pe = prevPe + (rawPe - prevPe) * 0.05; // ~40 frame smooth
+      nodePeSmooth.set(n.id, pe);
+      // Lerp between friendly blue and warm coral
+      peColor.setRGB(0.30 + pe * 0.65, 0.45 - pe * 0.15, 0.75 - pe * 0.40);
       color = peColor;
     } else if (colorMode === 'epistemic') {
       // V3: color by epistemic state — smooth transitions to avoid flashing
@@ -591,12 +597,15 @@ function updateScene() {
 
     // === GLOW: only active or near-threshold morphons ===
     const prevGlow = nodeGlow.get(n.id) || 0;
-    // Pre-glow: morphons approaching threshold get a subtle hint
     const nearThreshold = (n.potential > n.threshold * 0.6 && !n.fired) ? 0.15 : 0.0;
     const glowTarget = frameFired.has(n.id) ? 1.0 : nearThreshold;
+    // Gentler attack/decay in PE/epistemic modes to avoid aggressive flashing
+    const softMode = colorMode !== 'celltype';
+    const attackRate = softMode ? 0.12 : 0.35;
+    const decayRate = softMode ? 0.96 : 0.92;
     const glow = glowTarget > prevGlow
-      ? prevGlow + (glowTarget - prevGlow) * 0.35
-      : prevGlow * 0.92;
+      ? prevGlow + (glowTarget - prevGlow) * attackRate
+      : prevGlow * decayRate;
     nodeGlow.set(n.id, glow);
 
     // === SMOOTH CONTEXT DIMMING (selection OR cell type filter) ===
@@ -619,10 +628,15 @@ function updateScene() {
       // Diffuse layer: base brightness high enough so linear→sRGB+ACES stays visible
       const intensity = bright * (0.82 + glow * 0.18);
       tempColor.copy(color).multiplyScalar(intensity);
-      // Flash toward white on fire — visible pop distinct from the bloom glow
       if (glow > 0.5) {
-        const flash = (glow - 0.5) * 2.0; // 0→1 over glow [0.5, 1.0]
-        tempColor.lerp(WHITE, flash * 0.45);
+        if (softMode) {
+          // Gentle warm brightening — no white snap, just a subtle lift
+          tempColor.multiplyScalar(1.0 + glow * 0.3);
+        } else {
+          // Cell type mode: visible white pop on fire
+          const flash = (glow - 0.5) * 2.0;
+          tempColor.lerp(WHITE, flash * 0.45);
+        }
       }
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -681,15 +695,18 @@ function updateScene() {
 
     let glowColor;
     if (colorMode === 'pe') {
-      const pe = Math.max(0, Math.min(1, n.prediction_error || 0));
-      peColor.setHSL(0.66 - pe * 0.66, 0.9, 0.35 + pe * 0.3);
+      // Use the already-smoothed PE value
+      const pe = nodePeSmooth.get(n.id) ?? 0;
+      peColor.setRGB(0.30 + pe * 0.65, 0.45 - pe * 0.15, 0.75 - pe * 0.40);
       glowColor = peColor;
     } else if (colorMode === 'epistemic') {
       glowColor = nodeEpistemicColor.get(n.id) || EPISTEMIC_COLORS.none;
     } else {
       glowColor = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
     }
-    tempColor.copy(glowColor).multiplyScalar(glow * 1.5);
+    // Softer glow multiplier in heatmap modes
+    const glowMul = (colorMode !== 'celltype') ? glow * 0.8 : glow * 1.5;
+    tempColor.copy(glowColor).multiplyScalar(glowMul);
     glowMesh.setColorAt(glowCount, tempColor);
     glowCount++;
   }
@@ -1200,7 +1217,7 @@ function setupControls() {
     connectedToSelected.clear();
     nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
     lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0; spikeCooldowns.clear();
-    dyingNodes.length = 0; prevNodeIds.clear(); nodeEpistemicColor.clear();
+    dyingNodes.length = 0; prevNodeIds.clear(); nodeEpistemicColor.clear(); nodePeSmooth.clear();
     rasterScrollX = 0; rasterMorphonCount = 0;
     groupRateHistory = []; heatmapBinAccum = []; heatmapBinSteps = 0;
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
