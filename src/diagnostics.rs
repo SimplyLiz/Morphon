@@ -49,6 +49,14 @@ pub struct Diagnostics {
     /// Spikes still in transit.
     pub spikes_pending: usize,
 
+    // === Consolidation ===
+    /// Number of synapses that have been consolidated (captured).
+    pub consolidated_count: usize,
+    /// Fraction of all synapses that are consolidated.
+    pub consolidated_fraction: f64,
+    /// Average energy across all morphons.
+    pub avg_energy: f64,
+
     // === Structural events ===
     /// Whether checkpoint rollback was triggered this step.
     pub rollback_triggered: bool,
@@ -71,6 +79,7 @@ impl Diagnostics {
         let mut eligibility_max_abs = 0.0_f64;
         let mut eligibility_nonzero = 0_usize;
         let mut active_tags = 0_usize;
+        let mut consolidated_count = 0_usize;
 
         for ei in topology.graph.edge_indices() {
             if let Some(syn) = topology.graph.edge_weight(ei) {
@@ -88,6 +97,9 @@ impl Diagnostics {
                 if syn.tag > 0.1 {
                     active_tags += 1;
                 }
+                if syn.consolidated {
+                    consolidated_count += 1;
+                }
             }
         }
 
@@ -96,15 +108,18 @@ impl Diagnostics {
         let weight_variance = (weight_sq_sum / n) - (weight_mean * weight_mean);
         let weight_std = weight_variance.max(0.0).sqrt();
 
-        // Firing rates by cell type
+        // Firing rates by cell type + average energy
         let mut firing_by_type: HashMap<CellType, (usize, usize)> = HashMap::new();
+        let mut energy_sum = 0.0;
         for m in morphons.values() {
             let entry = firing_by_type.entry(m.cell_type).or_insert((0, 0));
             entry.1 += 1;
             if m.fired {
                 entry.0 += 1;
             }
+            energy_sum += m.energy;
         }
+        let avg_energy = energy_sum / morphons.len().max(1) as f64;
 
         Self {
             weight_mean,
@@ -115,6 +130,9 @@ impl Diagnostics {
             eligibility_max_abs,
             eligibility_nonzero_count: eligibility_nonzero,
             active_tags,
+            consolidated_count,
+            consolidated_fraction: consolidated_count as f64 / total_synapses.max(1) as f64,
+            avg_energy,
             firing_by_type,
             ..Default::default()
         }
@@ -123,15 +141,16 @@ impl Diagnostics {
     /// Format a concise one-line summary for logging.
     pub fn summary(&self) -> String {
         format!(
-            "w={:.4}\u{00b1}{:.4} e={:.4}({}) tags={} cap={} spk={}/{}",
+            "w={:.4}\u{00b1}{:.4} e={:.4}({}) tags={} con={}/{} E={:.2} spk={}",
             self.weight_mean,
             self.weight_std,
             self.eligibility_mean_abs,
             self.eligibility_nonzero_count,
             self.active_tags,
-            self.captures_this_step,
+            self.consolidated_count,
+            self.total_synapses,
+            self.avg_energy,
             self.spikes_delivered_this_step,
-            self.spikes_pending,
         )
     }
 
