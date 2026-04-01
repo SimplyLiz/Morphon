@@ -92,6 +92,20 @@ mod bindings {
                 .collect()
         }
 
+        /// Get pending spike data as a flat array for visualization.
+        /// Layout: [source_id, target_id, initial_delay, remaining_delay] × N
+        pub fn pending_spikes_flat(&self) -> Vec<f64> {
+            let pending = self.inner.resonance.pending_spikes();
+            let mut buf = Vec::with_capacity(pending.len() * 4);
+            for s in pending.iter() {
+                buf.push(s.source as f64);
+                buf.push(s.target as f64);
+                buf.push(s.initial_delay);
+                buf.push(s.delay);
+            }
+            buf
+        }
+
         /// Inject a reward signal (dopamine analog, 0.0-1.0).
         pub fn inject_reward(&mut self, strength: f64) {
             self.inner.inject_reward(strength);

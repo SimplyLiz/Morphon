@@ -2,9 +2,9 @@
   "benchmark": "mnist",
   "diagnostics": {
     "active_tags": 0,
-    "total_captures": 72273,
-    "weight_mean": -0.06802900498063068,
-    "weight_std": 0.21132375387994995
+    "total_captures": 76800,
+    "weight_mean": -0.05264464428307847,
+    "weight_std": 0.20578151234579925
   },
   "epochs": 3,
   "profile": "standard",
@@ -47,8 +47,8 @@
         "total": 46
       },
       {
-        "accuracy": 100.0,
-        "correct": 50,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 6,
         "total": 50
       },
@@ -65,24 +65,24 @@
         "total": 40
       },
       {
-        "accuracy": 0.0,
-        "correct": 0,
+        "accuracy": 100.0,
+        "correct": 54,
         "digit": 9,
         "total": 54
       }
     ],
-    "test_accuracy": 10.0
+    "test_accuracy": 10.8
   },
   "system": {
-    "clusters": 0,
-    "firing_rate": 0.1765,
+    "clusters": 10,
+    "firing_rate": 0.197,
     "generation": 2,
     "morphons": 2000,
-    "prediction_error": 0.13176325588641424,
-    "synapses": 107646
+    "prediction_error": 0.12207207584481593,
+    "synapses": 113106
   },
   "test_samples": 500,
-  "timestamp": 1775023616,
+  "timestamp": 1775022440,
   "train_samples": 2000,
   "version": "0.4.0"
 }

@@ -26,6 +26,8 @@ pub struct SpikeEvent {
     pub strength: f64,
     /// Remaining delay before delivery (in timesteps).
     pub delay: f64,
+    /// Original delay at creation — used by the visualizer to compute progress.
+    pub initial_delay: f64,
 }
 
 /// The resonance engine manages signal propagation through the network.
@@ -63,6 +65,7 @@ impl ResonanceEngine {
                     target: target_id,
                     strength: synapse.weight,
                     delay: synapse.delay,
+                    initial_delay: synapse.delay,
                 })
                 .collect()
         };
@@ -110,6 +113,11 @@ impl ResonanceEngine {
     /// Clear all pending spikes.
     pub fn clear(&mut self) {
         self.pending_spikes.clear();
+    }
+
+    /// Read-only access to pending spikes (for visualization).
+    pub fn pending_spikes(&self) -> &VecDeque<SpikeEvent> {
+        &self.pending_spikes
     }
 }
 
@@ -175,6 +183,7 @@ mod tests {
             target: 2,
             strength: 0.5,
             delay: 3.0,
+            initial_delay: 3.0,
         });
 
         // Step 1: delay 3 -> 2, not delivered
@@ -203,6 +212,7 @@ mod tests {
             target: 2,
             strength: 0.7,
             delay: 0.5, // will be delivered in one step with dt=1.0
+            initial_delay: 0.5,
         });
 
         let _delivered = engine.deliver(&mut morphons, 1.0);
@@ -223,12 +233,14 @@ mod tests {
             target: 2,
             strength: 0.3,
             delay: 0.0,
+            initial_delay: 0.0,
         });
         engine.pending_spikes.push_back(SpikeEvent {
             source: 3,
             target: 2,
             strength: 0.4,
             delay: 0.0,
+            initial_delay: 0.0,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);
@@ -247,6 +259,7 @@ mod tests {
             target: 2,
             strength: 0.5,
             delay: 5.0,
+            initial_delay: 5.0,
         });
         assert_eq!(engine.pending_count(), 1);
         engine.clear();
@@ -264,6 +277,7 @@ mod tests {
             target: 99,
             strength: 0.5,
             delay: 0.0,
+            initial_delay: 0.0,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);

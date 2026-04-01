@@ -79,13 +79,15 @@ fn create_system() -> System {
     System::new(config)
 }
 
-/// Classify an image. Returns predicted digit (0-9).
+/// Classify an image using the analog readout bypass.
+/// The MI system processes the input through its spiking hidden layer,
+/// then the analog readout reads a weighted sum of hidden potentials —
+/// bypassing the noisy spike-based motor pathway.
 fn classify(system: &mut System, pixels: &[f64], steps: usize) -> usize {
     let outputs = system.process_steps(pixels, steps);
     if outputs.len() < NUM_CLASSES {
         return 0;
     }
-    // Each of the 10 motor morphons represents a digit class
     outputs.iter()
         .take(NUM_CLASSES)
         .enumerate()
@@ -98,22 +100,16 @@ fn train_one(system: &mut System, pixels: &[f64], label: usize, steps: usize) ->
     let pred = classify(system, pixels, steps);
     let correct = pred == label;
 
-    // CMA-ES optimal recipe: teach_hidden is the PRIMARY mechanism.
-    // Direct teaching signal to hidden layer (strength ~2.0) provides
-    // credit assignment that reward broadcast cannot achieve.
-    system.teach_hidden(label, 1.9);
+    // Train the analog readout with delta rule.
+    // This also backprojects error to hidden layer via DFA feedback_signal.
+    system.train_readout(label, 0.05);
 
-    // Minimal contrastive reward (CMA-ES: reward=0.1, inhibit=0.0)
-    system.reward_contrastive(label, 0.1, 0.0);
-
-    // Novelty injection drives plasticity (CMA-ES: alpha_novelty=3.0)
+    // Novelty injection drives hidden layer plasticity
     system.inject_novelty(0.3);
 
-    // Let teaching signal propagate through weight updates
-    for _ in 0..2 {
-        system.feed_input(pixels);
-        system.step();
-    }
+    // Let the feedback signal propagate through one more step
+    system.feed_input(pixels);
+    system.step();
 
     correct
 }
@@ -156,13 +152,11 @@ fn main() {
         train_images.len(), test_images.len(), IMG_PIXELS, NUM_CLASSES);
 
     let mut system = create_system();
+    system.enable_analog_readout();  // Purkinje-style bypass: weighted sum of hidden potentials
     let s = system.inspect();
     println!("Initial: {} morphons, {} synapses, {} in, {} out",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
     println!("Types: {:?}\n", s.differentiation_map);
-
-    // No external warmup — System::new() handles developmental activity.
-    // Input bias removed: zero-bias encoding preserves dynamic range.
 
     let mut rng = rand::rng();
     let steps_per_sample = 5;  // 784→371→10 needs more propagation time

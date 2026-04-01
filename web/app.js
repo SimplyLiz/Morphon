@@ -33,7 +33,7 @@ let stepsPerFrame = 10;
 let selectedNodeId = null;
 let hoveredNodeId = null;
 let frameFired = new Set(); // accumulates all fired IDs across multi-step frames
-const spikeSpawnCooldown = new Map(); // id → frames remaining before next spike spawn
+let lastSpikeCount = 0; // for dynamic bloom calculation
 
 // Connected node IDs for context dimming
 let connectedToSelected = new Set();
@@ -67,7 +67,7 @@ let edgeData = [];
 // Spike particles
 const MAX_SPIKES = 3000;
 let spikesMesh;
-const spikes = [];
+// spikes are now read directly from engine — no JS-side array
 
 // Raycasting
 const raycaster = new THREE.Raycaster();
@@ -543,38 +543,7 @@ function updateScene() {
   edgesMesh.geometry.attributes.color.needsUpdate = true;
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
-  // === SPIKE SPAWNING ===
-  // frameFired is accumulated across all sub-steps in the animation loop.
-  // Per-node cooldown allows re-spawning every ~4 frames for sustained firing.
-  for (const id of frameFired) {
-    const cd = spikeSpawnCooldown.get(id) || 0;
-    if (cd > 0) { spikeSpawnCooldown.set(id, cd - 1); continue; }
-    if (spikes.length >= MAX_SPIKES * 0.7) break;
-    const fromIdx = nodeMap.get(id);
-    if (fromIdx === undefined) continue;
-    const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
-
-    let spawned = 0;
-    for (const e of edges) {
-      if (e.from !== id) continue;
-      if (spawned >= 6) break;
-      const toIdx = nodeMap.get(e.to);
-      if (toIdx === undefined) continue;
-
-      spikes.push({
-        fromIdx, toIdx,
-        progress: 0,
-        speed: 0.02 + Math.random() * 0.025,
-        color: color.clone(),
-      });
-      spawned++;
-    }
-    spikeSpawnCooldown.set(id, 4); // wait 4 frames before spawning again
-  }
-  // Decay cooldowns for morphons that stopped firing
-  for (const [id, cd] of spikeSpawnCooldown) {
-    if (!frameFired.has(id)) spikeSpawnCooldown.delete(id);
-  }
+  // Spikes are now read from the engine in updateSpikes() — no JS-side spawning.
 }
 
 // ============================================================
@@ -805,10 +774,9 @@ function setupControls() {
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
     nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
-    spikeSpawnCooldown.clear();
+    lastSpikeCount = 0;
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
-    spikes.length = 0;
     document.getElementById('events').innerHTML = '';
     addEvent(0, `System reset [${program}]`, 'event-diff');
     for (let i = 0; i < 20; i++) { makeInput('noise'); system.step(); }
@@ -953,14 +921,29 @@ function toggleFullscreen() {
 const spikeDummy = new THREE.Object3D();
 
 function updateSpikes() {
-  let alive = 0;
-  for (let i = spikes.length - 1; i >= 0; i--) {
-    const s = spikes[i];
-    s.progress += s.speed;
-    if (s.progress >= 1.0) { spikes.splice(i, 1); continue; }
+  if (!system) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
 
-    const fi = s.fromIdx * 3, ti = s.toIdx * 3;
-    const t = s.progress;
+  // Read real pending spikes from the engine — flat buffer, no JSON
+  const buf = system.pending_spikes_flat();
+  const count = buf.length / 4;
+  let alive = 0;
+
+  for (let i = 0; i < count && alive < MAX_SPIKES; i++) {
+    const sourceId = buf[i * 4];
+    const targetId = buf[i * 4 + 1];
+    const initialDelay = buf[i * 4 + 2];
+    const remainingDelay = buf[i * 4 + 3];
+
+    const fromIdx = nodeMap.get(sourceId);
+    const toIdx = nodeMap.get(targetId);
+    if (fromIdx === undefined || toIdx === undefined) continue;
+
+    // Progress: 0 at source, 1 at target
+    const t = initialDelay > 0
+      ? Math.max(0, Math.min(1, 1.0 - remainingDelay / initialDelay))
+      : 1.0;
+
+    const fi = fromIdx * 3, ti = toIdx * 3;
     const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
     const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
     const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
@@ -970,14 +953,15 @@ function updateSpikes() {
     spikeDummy.scale.setScalar(0.08 + sizeCurve * 0.12);
     spikeDummy.updateMatrix();
 
-    if (alive < MAX_SPIKES) {
-      spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      tempColor.copy(s.color).lerp(WHITE, sizeCurve * 0.5);
-      spikesMesh.setColorAt(alive, tempColor);
-      alive++;
-    }
+    spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
+    // Color from source cell type
+    const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
+    tempColor.copy(color).lerp(WHITE, sizeCurve * 0.5);
+    spikesMesh.setColorAt(alive, tempColor);
+    alive++;
   }
 
+  lastSpikeCount = alive;
   spikesMesh.count = alive;
   if (alive > 0) {
     spikesMesh.instanceMatrix.needsUpdate = true;
@@ -1019,7 +1003,7 @@ function animate() {
 
   // Dynamic bloom
   if (bloomPass) {
-    const activity = Math.min(spikes.length / 80, 1.0);
+    const activity = Math.min(lastSpikeCount / 80, 1.0);
     bloomPass.strength = 0.7 + activity * 0.5;
   }
 

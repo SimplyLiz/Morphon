@@ -1096,15 +1096,21 @@ mod tests {
         // Activity near zero (default)
         morphons.insert(1, m);
 
+        // Add enough healthy morphons to exceed min_morphons governor
         let mut topo = Topology::new();
         topo.add_morphon(1);
+        for id in 100..112 {
+            let healthy = Morphon::new(id, HyperbolicPoint::origin(3));
+            morphons.insert(id, healthy);
+            topo.add_morphon(id);
+        }
 
         let params = MorphogenesisParams::default();
         let died = apoptosis(&mut morphons, &mut topo, &params);
 
         assert_eq!(died, 1);
-        assert!(morphons.is_empty());
-        assert_eq!(topo.morphon_count(), 0);
+        assert!(!morphons.contains_key(&1), "apoptosed morphon should be removed");
+        assert_eq!(morphons.len(), 12, "healthy morphons should remain");
     }
 
     #[test]
