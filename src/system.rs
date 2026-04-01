@@ -157,6 +157,8 @@ pub struct System {
     /// Performance threshold for enabling consolidation.
     /// Below this, the system stays fully plastic. Above, it starts consolidating.
     pub(crate) consolidation_gate: f64,
+    /// Peak performance seen so far — used for deconsolidation trigger.
+    pub(crate) peak_performance: f64,
 }
 
 impl System {
@@ -252,7 +254,8 @@ impl System {
             total_born: 0,
             total_died: 0,
             recent_performance: 0.0,
-            consolidation_gate: 30.0, // don't consolidate until avg > 30 (3× random)
+            consolidation_gate: 15.0, // consolidate once above 15 (current avg)
+            peak_performance: 0.0,
         };
 
         // === Spontaneous developmental activity ===
@@ -975,12 +978,54 @@ impl System {
         self.output_ports.len()
     }
 
-    /// Report recent performance (e.g., avg episode steps).
-    /// Used to gate consolidation: no captures until performance exceeds threshold.
-    /// Call this after each episode or batch.
+    /// Report recent performance and trigger adaptive consolidation.
+    ///
+    /// Three regimes:
+    /// 1. Below gate (avg < 30): fully plastic, no consolidation.
+    /// 2. Above gate + improving: selective consolidation (top synapses only).
+    /// 3. Above gate + declining (>20% below peak): deconsolidate weakest 10%
+    ///    to restore plasticity. "Metabolic Melting" / "Disturbance-induced Growth".
     pub fn report_performance(&mut self, performance: f64) {
-        // EMA with alpha=0.05
         self.recent_performance += 0.05 * (performance - self.recent_performance);
+
+        if self.recent_performance > self.peak_performance {
+            self.peak_performance = self.recent_performance;
+        }
+
+        // Deconsolidation: if performance drops >20% from peak, melt weakest synapses
+        if self.peak_performance > self.consolidation_gate
+            && self.recent_performance < self.peak_performance * 0.8
+        {
+            self.deconsolidate_weakest(0.1); // melt 10% of consolidated synapses
+        }
+    }
+
+    /// Deconsolidate the weakest fraction of consolidated synapses.
+    /// "Metabolic Melting" — restores plasticity where the system is underperforming.
+    /// Deconsolidated synapses can be re-learned and re-captured.
+    fn deconsolidate_weakest(&mut self, fraction: f64) {
+        // Collect all consolidated synapses with their weights
+        let mut consolidated: Vec<(petgraph::graph::EdgeIndex, f64)> = self.topology.graph
+            .edge_indices()
+            .filter_map(|ei| {
+                self.topology.graph.edge_weight(ei)
+                    .filter(|s| s.consolidated)
+                    .map(|s| (ei, s.weight.abs()))
+            })
+            .collect();
+
+        if consolidated.is_empty() { return; }
+
+        // Sort by absolute weight (weakest first — these contributed least)
+        consolidated.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n_to_melt = ((consolidated.len() as f64 * fraction).ceil() as usize).max(1);
+        for &(ei, _) in &consolidated[..n_to_melt.min(consolidated.len())] {
+            if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                syn.consolidated = false;
+                syn.tag = 0.0; // reset tag for fresh accumulation
+            }
+        }
     }
 
     /// Check if consolidation is enabled (performance above gate).
