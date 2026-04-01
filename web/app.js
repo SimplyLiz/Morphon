@@ -958,15 +958,18 @@ function updateSpikes() {
   if (!system) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
 
   // Read real pending spikes from the engine — flat buffer, no JSON
+  // Layout: [source, target, initial_delay, remaining_delay, strength] × N
   const buf = system.pending_spikes_flat();
-  const count = buf.length / 4;
+  const STRIDE = 5;
+  const count = buf.length / STRIDE;
   let alive = 0;
 
   for (let i = 0; i < count && alive < MAX_SPIKES; i++) {
-    const sourceId = buf[i * 4];
-    const targetId = buf[i * 4 + 1];
-    const initialDelay = buf[i * 4 + 2];
-    const remainingDelay = buf[i * 4 + 3];
+    const sourceId = buf[i * STRIDE];
+    const targetId = buf[i * STRIDE + 1];
+    const initialDelay = buf[i * STRIDE + 2];
+    const remainingDelay = buf[i * STRIDE + 3];
+    const strength = buf[i * STRIDE + 4];
 
     const fromIdx = nodeMap.get(sourceId);
     const toIdx = nodeMap.get(targetId);
@@ -985,15 +988,18 @@ function updateSpikes() {
       t
     );
 
+    // Size: base + sine curve + strength scaling (stronger synapses = bigger spikes)
     const sizeCurve = Math.sin(t * Math.PI);
+    const strengthScale = Math.min(Math.abs(strength), 2.0) * 0.15; // 0 to 0.3
     spikeDummy.position.set(g[0] * BALL_RADIUS, g[1] * BALL_RADIUS, g[2] * BALL_RADIUS);
-    spikeDummy.scale.setScalar(0.08 + sizeCurve * 0.12);
+    spikeDummy.scale.setScalar(0.06 + sizeCurve * 0.10 + strengthScale);
     spikeDummy.updateMatrix();
 
     spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-    // Color from source cell type
+    // Color from source cell type, brighter for stronger signals
     const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
-    tempColor.copy(color).lerp(WHITE, sizeCurve * 0.5);
+    const brightBoost = Math.min(Math.abs(strength), 1.5);
+    tempColor.copy(color).lerp(WHITE, sizeCurve * 0.4 + brightBoost * 0.2);
     spikesMesh.setColorAt(alive, tempColor);
     alive++;
   }
@@ -1024,6 +1030,11 @@ function animate() {
       system.step();
       // Collect fired IDs after each sub-step so we don't miss transient firings
       for (const id of system.fired_ids()) frameFired.add(id);
+      // Flash arrival targets — spike delivery triggers a glow on the receiving morphon
+      for (const id of system.delivered_target_ids()) {
+        const idx = nodeMap.get(id);
+        if (idx !== undefined) nodeGlow[idx] = Math.min(nodeGlow[idx] + 0.5, 1.0);
+      }
     }
     updateScene();
     if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }

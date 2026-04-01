@@ -176,13 +176,25 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Potential-based post_activity | 3.4A | `system.rs`/`learning.rs`: Motor morphons use graded potential, not binary firing |
 | Excitatory-only feedforward init | 4.1 | `developmental.rs`: Sensory→Associative weights [0.3, 0.8], not mixed-sign Xavier |
 
+| Direct Feedback Alignment (DFA) | Credit assignment | `system.rs`: fixed random feedback_weights project output error to associative layer. Climbing-fiber rule: `Δw = pre_trace × feedback_signal × lr - L2`. No backprop needed. |
+| Analog readout bypass (Purkinje-style) | Credit assignment | `system.rs`: `readout_weights` with delta rule training. Bypasses spike pipeline. Xavier init + L2 decay. `enable_analog_readout()` / `train_readout()` |
+| Tag-and-capture in readout path | 3.7C | `system.rs`: tag-and-capture fires during `train_readout()` on sensory→assoc synapses. 273 consolidations in CartPole. |
+| Motor drift prevention | 3.2 | `morphon.rs`: Motor morphons get `leak_rate=1.0` (memoryless), `noise_scale=0.0`, potential clamp [-10,10] |
+| Sparse zero-bias input encoding | 3.3 | `system.rs`: `feed_input()` uses raw values, no sigmoid bias. 4.5× dynamic range improvement. |
+| V3 Constitutional guards | V3 (2.2) | `morphogenesis.rs`: `min_morphons`, `min_sensory_fraction`, `min_motor_fraction`, `max_single_type_fraction` gate apoptosis |
+| V3 Metabolic budget | V3 (5.2) | `morphon.rs`: `MetabolicConfig` — energy earned through utility (PE reduction), per-synapse maintenance cost, basal trickle. Part of `SystemConfig`. |
+| L2 weight decay on learning paths | Stability | `system.rs`: 0.001 × w decay on DFA + three-factor updates. Prevents drift. |
+| TD critic (value function) | Credit assignment | `system.rs`: critic_ports (Associative subset) predict V(s). TD error = reward + γV(s') - V(s). Used by actor path. |
+
 ## What's Not Yet Implemented
 
 | Feature | Concept Section | Priority | Notes |
 |---------|----------------|----------|-------|
-| Eligibility propagation (multi-hop credit) | Credit assignment | High | Contrastive signal only reaches direct motor synapses (~5 each). Need backward propagation of eligibility boost through Assoc layer. |
-| CartPole convergence | 6.2 | High | best=65, avg~16. Global reward + tag-and-capture. Needs eligibility propagation or temporal difference. |
-| MNIST convergence | 6.2 | High | Contrastive breaks mode collapse (3 classes recognized vs 1). Test acc ~9%. Needs deeper credit. |
+| CartPole convergence | 6.2 | High | best=117 (post-DFA), avg~16. DFA + analog readout + tag-and-capture active. Needs tuning. |
+| MNIST convergence | 6.2 | High | 10.6% test, 3 classes learned (43.5% best per-class). Analog readout active. Needs deeper credit assignment or architectural changes. |
+| V3 SynapticJustification Records | V3 (1.2) | Medium | Every synapse tracks FormationCause + premises + dependents. Foundation for truth maintenance. |
+| V3 4-State Epistemic Model | V3 (1.3) | Medium | Cluster-level epistemic states: Supported/Outdated/Contested/Hypothesis. Depends on justification records. |
+| V3 Epistemic Scarring | V3 (7.1) | Low | Clusters that were repeatedly wrong get higher skepticism thresholds. |
 | GPU acceleration | Product 2.3 | Low | Phase 3 |
 | Curriculum learning / physics simulator integration | 4.2 | Medium | Requires external environment interface |
-| Population-based evolutionary meta-learning | 4.3 | Medium | CMA-ES/PBT over learning params. Would accelerate convergence research. |
+| Population-based evolutionary meta-learning | 4.3 | Medium | CMA-ES/PBT over learning params. `examples/cma_optimize.rs` exists as starting point. |

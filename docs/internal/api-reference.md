@@ -317,6 +317,10 @@ Seven mechanisms operating at different timescales:
 | `apoptosis_min_age` | 1000 | Min age for death eligibility |
 | `apoptosis_energy_threshold` | 0.1 | Energy threshold for death |
 | `max_morphons` | 10,000 | Hard cap on growth |
+| `min_morphons` | 10 | V3 Governor: apoptosis stops below this |
+| `min_sensory_fraction` | 0.05 | V3 Governor: min Sensory fraction |
+| `min_motor_fraction` | 0.02 | V3 Governor: min Motor fraction |
+| `max_single_type_fraction` | 0.80 | V3 Governor: max any single type |
 
 ### Functions
 
@@ -470,16 +474,26 @@ Aggregates all subsystem configs:
 
 Public fields: `morphons`, `topology`, `resonance`, `modulation`, `clusters`, `memory`, `config`.
 
+Internal fields (pub(crate)):
+- `input_ports`, `output_ports` — stable I/O mappings (index → MorphonId)
+- `critic_ports` — subset of Associative morphons predicting state value V(s)
+- `prev_critic_value`, `last_td_error` — TD error computation state
+- `feedback_weights: HashMap<MorphonId, Vec<(MorphonId, f64)>>` — fixed random DFA weights (assoc→motors), initialized once, never updated
+- `readout_weights: Vec<HashMap<MorphonId, f64>>` — analog readout weights (output_index→assoc_id→weight), trained by delta rule
+- `use_analog_readout: bool` — whether to use analog readout bypass
+
 Key methods:
-- `new(config) -> Self` — run developmental program, initialize all subsystems
+- `new(config) -> Self` — run developmental program, initialize DFA feedback weights, warm-up
 - `step() -> MorphogenesisReport` — one simulation step (see Data Flow above)
-- `feed_input(inputs: &[f64])` — distribute values to sensory Morphons
-- `read_output() -> Vec<f64>` — read potentials from motor Morphons (sorted by ID)
+- `feed_input(inputs: &[f64])` — distribute raw values to sensory Morphons (zero-bias, fan-out to port groups)
+- `read_output() -> Vec<f64>` — read output; if `use_analog_readout`, computes `Σ readout_weights × sigmoid(potential)`, otherwise raw motor potentials
 - `process(input) -> Vec<f64>` — feed_input + step + read_output
 - `inject_reward(strength)`, `inject_novelty(strength)`, `inject_arousal(strength)`
 - `inject_reward_at(output_index, strength)` — targeted two-hop reward at a specific output port
 - `inject_inhibition_at(output_index, strength)` — targeted two-hop eligibility decay at a specific output port
 - `reward_contrastive(correct_index, reward_strength, inhibit_strength)` — reward correct output, inhibit incorrect ones
+- `enable_analog_readout()` — initialize readout weights with Xavier scaling, enable analog bypass
+- `train_readout(correct_index)` — delta rule update on readout weights + DFA backprojection + tag-and-capture on input synapses
 - `process_steps(input, n) -> Vec<f64>` — multi-step processing (feed input each step, read output after n steps)
 - `inspect() -> SystemStats` — full system statistics
 - `diagnostics() -> &Diagnostics` — current learning pipeline diagnostics
