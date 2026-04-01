@@ -160,7 +160,7 @@ pub fn division(
 
     let candidates: Vec<MorphonId> = morphons
         .values()
-        .filter(|m| m.should_divide())
+        .filter(|m| m.should_divide(params.division_threshold))
         .map(|m| m.id)
         .collect();
 
@@ -364,6 +364,7 @@ pub fn fusion(
                 clusters,
                 topology,
                 next_morphon_id,
+                params.max_morphons,
             );
 
             clusters.insert(
@@ -392,6 +393,7 @@ fn create_inhibitory_morphons_for_cluster(
     clusters: &mut HashMap<ClusterId, Cluster>,
     topology: &mut Topology,
     next_morphon_id: &mut MorphonId,
+    max_morphons: usize,
 ) -> Vec<MorphonId> {
     let mut created = Vec::new();
     let existing_cluster_ids: Vec<ClusterId> = clusters.keys().copied().collect();
@@ -405,6 +407,11 @@ fn create_inhibitory_morphons_for_cluster(
             Some(c) => c.members.clone(),
             None => continue,
         };
+
+        // Respect morphon cap — don't leak morphons past max_morphons
+        if morphons.len() >= max_morphons {
+            break;
+        }
 
         // Create one inhibitory morphon for this cluster pair
         let inh_id = *next_morphon_id;

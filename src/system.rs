@@ -164,38 +164,43 @@ impl System {
 
         // === Spontaneous developmental activity ===
         // Analogous to retinal waves and cortical spontaneous bursting in utero.
-        // Before external input begins, drive noise through the network with sustained
-        // high modulation to establish initial firing correlations across the feedforward
-        // pathway. Without this, associative/motor morphons never fire, no positive
-        // Hebbian coincidences form, and the learning rule can only produce LTD.
-        //
-        // Modulation is re-injected every step because it decays (reward 0.95x, novelty
-        // 0.90x, arousal 0.85x per step). Without continuous injection, the signal
-        // vanishes before weight updates can accumulate meaningful changes.
+        // Drives noise through the network with sustained modulation to establish
+        // initial firing correlations. Lifecycle events (division, fusion, etc.) are
+        // disabled — the warm-up is for learning correlations, not structural changes.
+        let saved_lifecycle = system.config.lifecycle.clone();
+        system.config.lifecycle = LifecycleConfig {
+            division: false,
+            differentiation: false,
+            fusion: false,
+            apoptosis: false,
+            migration: false,
+        };
+
         for step in 0..100_u64 {
-            // Inject noise as pseudo-sensory input to drive activity through the network
             let n_inputs = system.input_ports.len();
             if n_inputs > 0 {
                 let noise_input: Vec<f64> = (0..n_inputs)
                     .map(|i| {
                         let v = ((i as u64).wrapping_mul(step.wrapping_add(997)) % 1000) as f64 / 1000.0;
-                        0.5 + v * 1.0 // range [0.5, 1.5] — strong enough to propagate
+                        0.5 + v * 1.0
                     })
                     .collect();
                 system.feed_input(&noise_input);
             }
-            // Sustain high modulation so the three-factor rule produces positive
-            // weight changes on feedforward synapses where pre+post both fire.
             system.modulation.inject_reward(0.3);
             system.modulation.inject_novelty(0.3);
             system.modulation.inject_arousal(0.3);
             system.step();
         }
-        // Reset to clean state after developmental activity — the system should
-        // appear freshly created to the caller, with step_count = 0.
+
+        // Reset to clean state — system appears freshly created to the caller.
+        system.config.lifecycle = saved_lifecycle;
         system.modulation = Neuromodulation::default();
         system.step_count = 0;
         system.resonance.clear();
+        for m in system.morphons.values_mut() {
+            m.division_pressure = 0.0;
+        }
 
         system
     }

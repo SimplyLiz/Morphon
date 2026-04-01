@@ -208,7 +208,9 @@ impl Morphon {
         let noise = (noise_raw - 0.5) * 0.1;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
-        // Guard against NaN/Inf from numerical instability
+        // Clamp potential to prevent saturation from dense connectivity.
+        // Without this, 300+ inputs each adding 0.07 = 21.0, sigmoid(21) ≈ 1.0 always.
+        self.potential = self.potential.clamp(-5.0, 5.0);
         if !self.potential.is_finite() {
             self.potential = 0.0;
         }
@@ -270,8 +272,8 @@ impl Morphon {
     }
 
     /// Check if this Morphon is ready to divide.
-    pub fn should_divide(&self) -> bool {
-        self.division_pressure > 1.0 && self.energy > 0.3
+    pub fn should_divide(&self, division_threshold: f64) -> bool {
+        self.division_pressure > division_threshold && self.energy > 0.3
     }
 
     /// Differentiate towards a target cell type.
