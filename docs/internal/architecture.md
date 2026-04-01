@@ -60,12 +60,14 @@ Step N
 │  ├─ resonance.deliver()       → deliver spikes that reached their target
 │  ├─ compute degree_map        → pre-compute synapse count per morphon for metabolic cost
 │  ├─ morphons.par_iter_mut()   → integrate input, fire/not-fire, metabolic budget, update state
+│  ├─ k-WTA lateral inhibition  → top 5% associative morphons survive, rest suppressed + threshold boost
 │  └─ DFA feedback injection    → project output error to associative layer via fixed random weights
 │
 ├─ MEDIUM (every 10 steps)
 │  ├─ update_eligibility()      → fast eligibility traces + slow synaptic tags
 │  ├─ apply_weight_update()     → three-factor rule + tag-and-capture
-│  └─ DFA climbing-fiber rule   → Δw = pre_trace × feedback_signal × lr - L2 decay
+│  ├─ DFA climbing-fiber rule   → Δw = pre_trace × feedback_signal × lr - L2 decay
+│  └─ weight normalization      → per-neuron L1 norm on Associative incoming weights (Diehl & Cook 2015)
 │
 ├─ SLOW (every 100 steps)
 │  ├─ synaptogenesis()          → grow new connections between correlated pairs
@@ -146,6 +148,22 @@ A parallel output pathway that bypasses spike propagation entirely. Enabled via 
 Weights are initialized with Xavier scaling (`1/√n_assoc`) and trained with the **delta rule**: `Δw = lr × sigmoid(P_i) × (target_j - output_j) - L2_decay`. Targets are one-hot encoded (1.0 for correct class, 0.0 otherwise).
 
 Output errors are backprojected through the same fixed DFA weights (not the readout weights) as "dendritic injection" to the hidden layer. This creates a loop: readout trains the output, DFA feedback trains the hidden layer.
+
+### k-Winner-Take-All Lateral Inhibition
+
+Associative (and Stem) morphons compete via k-WTA each fast step (Diehl & Cook 2015). Only the top k most active morphons survive firing; the rest are suppressed.
+
+- **k = 5% of population** (minimum 3) — allows sparse distributed representations
+- **Suppression is mild**: non-winners have `fired` reset and potential clamped to `threshold × 0.5`, but potential isn't zeroed — preserving information for the next step
+- **Adaptive threshold boost**: winners get `threshold += 0.02` each time they win. This prevents any single neuron from dominating all inputs. Homeostatic threshold regulation (in `Morphon::step()`) decays threshold back over time.
+
+Combined with weight normalization, this forces different associative morphons to specialize on different input patterns.
+
+### Per-Neuron Weight Normalization
+
+L1 normalization on incoming positive weights for Associative/Stem morphons, run every medium tick. Target norm = `n_incoming × 0.3`. Strengthening some inputs forces weakening of others — creates synaptic competition that produces specialized feature detectors.
+
+Only positive weights are normalized (inhibitory connections are left untouched). This preserves the sign structure of the network while ensuring excitatory drive stays bounded.
 
 ### Motor Drift Prevention
 

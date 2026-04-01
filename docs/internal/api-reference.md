@@ -69,7 +69,16 @@ println!("Clusters: {}", stats.fused_clusters);
 
 Methods:
 - `apply(x: f64) -> f64` — apply the function
+- `max_output() -> f64` — maximum possible output value (used for threshold clamping)
 - `for_cell_type(cell_type) -> Self` — get default for a cell type
+
+### `DevelopmentalProgram` (enum)
+
+`Cortical`, `Hippocampal`, `Cerebellar`, `Custom`.
+
+### Free Functions
+
+- `default_receptors(cell_type) -> ReceptorSet` — get default receptor set for a cell type
 
 ### `HyperbolicPoint` (struct)
 
@@ -154,7 +163,7 @@ Constructors: `new(weight)`, `.with_delay(delay)`
 | | `activation_fn` | `ActivationFn` | Sigmoid |
 | | `receptors` | `ReceptorSet` | all 4 |
 | State | `potential` | `f64` | 0.0 |
-| | `threshold` | `f64` | 1.0 |
+| | `threshold` | `f64` | 0.3 |
 | | `refractory_timer` | `f64` | 0.0 |
 | | `prediction_error` | `f64` | 0.0 |
 | | `desire` | `f64` | 0.0 |
@@ -193,10 +202,12 @@ Methods:
 | `arousal` | 0.0 | 0.85 |
 | `homeostasis` | 0.5 | 0.99 (towards 0.5 baseline) |
 | `reward_baseline` | 0.0 | EMA of reward (α=0.01) — used for advantage computation |
+| `prev_reward` | 0.0 | Previous step's reward level (for delta computation) |
 
 Methods:
 - `inject_reward(strength)`, `inject_novelty(strength)`, `inject_arousal(strength)`, `inject_homeostasis(strength)` — inject signal (clamped to 0.0..1.0)
 - `reward_advantage() -> f64` — `(reward - reward_baseline).max(0.0)` — the advantage signal used by the learning rule
+- `reward_delta() -> f64` — change in reward since last step
 - `inject(channel, strength)` — generic injection
 - `level(channel) -> f64` — read current level
 - `combined_signal(αr, αn, αa, αh) -> f64` — `αr*R + αn*N + αa*A + αh*H`
@@ -266,6 +277,7 @@ True if: not consolidated AND age > 100 AND |weight| < weight_min AND usage_coun
 | `target` | `MorphonId` | Destination Morphon |
 | `strength` | `f64` | `synapse.weight` |
 | `delay` | `f64` | Remaining delay |
+| `initial_delay` | `f64` | Original delay at creation (for progress calculation) |
 
 ### `ResonanceEngine` (struct)
 
@@ -273,7 +285,9 @@ Methods:
 - `new() -> Self`
 - `propagate(morphons, topology)` — generate SpikeEvents for all firing Morphons' outgoing connections
 - `deliver(morphons, dt) -> Vec<SpikeEvent>` — decrement delays, deliver expired spikes to targets' `input_accumulator`
+- `last_delivered() -> &[SpikeEvent]` — spikes delivered in the most recent `deliver()` call
 - `pending_count() -> usize`
+- `pending_spikes() -> &VecDeque<SpikeEvent>` — all spikes still in transit
 - `clear()`
 
 Complexity: O(k*N) where k = average connectivity.
@@ -286,13 +300,16 @@ Built on `petgraph::DiGraph<MorphonId, Synapse>` with a `HashMap<MorphonId, Node
 
 ### `Topology` (struct)
 
+Public fields:
+- `graph: DiGraph<MorphonId, Synapse>` — the underlying petgraph (direct access for advanced operations)
+
 Methods:
 - `new()`, `add_morphon(id)`, `remove_morphon(id)`
 - `add_synapse(from, to, synapse)`, `remove_synapse(edge)`
 - `incoming(id)`, `outgoing(id)` — get connections with synapse data
 - `incoming_synapses_mut(id)` — get edge indices for mutation
 - `synapse_mut(edge)`, `synapse_between(from, to)`
-- `has_connection(from, to)`, `degree(id)`
+- `has_connection(from, to)`, `degree(id)`, `node_index(id) -> Option<NodeIndex>`
 - `morphon_count()`, `synapse_count()`
 - `all_morphon_ids()`, `all_edges()`
 - `duplicate_connections(parent_id, child_id, rng)` — copy ~50% of parent's connections to child with weight mutations (for mitosis)
@@ -347,6 +364,7 @@ Orchestration:
 | `id` | `ClusterId` |
 | `members` | `Vec<MorphonId>` |
 | `shared_threshold` | `f64` |
+| `inhibitory_morphons` | `Vec<MorphonId>` |
 
 ---
 
@@ -410,6 +428,14 @@ For each pair of clusters: if both have mean activity > 0.3 and their synchrony 
 
 **D) Checkpoint/Rollback**
 
+### `LocalCheckpoint` (struct)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `morphon_states` | `Vec<(MorphonId, f64, f64)>` | (id, prediction_error, potential) per morphon |
+| `avg_prediction_error` | `f64` | Average PE at checkpoint time |
+| `synapse_states` | `Vec<(MorphonId, MorphonId, f64)>` | (from, to, weight) for rollback |
+
 - `create_checkpoint(morphon_ids, morphons, topology) -> LocalCheckpoint` — snapshot PE, potentials, synapse weights
 - `should_rollback(checkpoint, morphon_ids, morphons, params) -> bool` — true if avg PE increased more than threshold
 - `rollback_synapses(checkpoint, topology)` — revert synapse weights to checkpoint state
@@ -438,14 +464,27 @@ Result of `config.tick(step_number)`. Fields: `fast` (always true), `medium`, `s
 
 ### `DevelopmentalConfig` (struct)
 
+| Field | Type | Default |
+|-------|------|---------|
+| `program` | `DevelopmentalProgram` | Cortical |
+| `seed_size` | `usize` | 100 |
+| `dimensions` | `usize` | 8 |
+| `initial_connectivity` | `f64` | 0.1 |
+| `proliferation_rounds` | `usize` | 3 |
+| `type_ratios` | `CellTypeRatios` | sensory 0.2, assoc 0.5, motor 0.2, mod 0.1 |
+| `target_input_size` | `Option<usize>` | None |
+| `target_output_size` | `Option<usize>` | None |
+
+`target_input_size` / `target_output_size`: when set, developmental creates exactly this many Sensory/Motor morphons for precise I/O port matching.
+
+### `CellTypeRatios` (struct)
+
 | Field | Default |
 |-------|---------|
-| `program` | Cortical |
-| `seed_size` | 100 |
-| `dimensions` | 8 |
-| `initial_connectivity` | 0.1 |
-| `proliferation_rounds` | 3 |
-| `type_ratios` | sensory 0.2, assoc 0.5, motor 0.2, mod 0.1 |
+| `sensory` | 0.2 |
+| `associative` | 0.5 |
+| `motor` | 0.2 |
+| `modulatory` | 0.1 |
 
 Presets: `cortical()`, `hippocampal()`, `cerebellar()`.
 
@@ -470,6 +509,10 @@ Aggregates all subsystem configs:
 - `working_memory_capacity` (default 7), `episodic_memory_capacity` (default 1000)
 - `dt` (default 1.0)
 
+Methods:
+- `save_json(path) -> io::Result<()>` — serialize config to JSON file for reproducibility
+- `load_json(path) -> io::Result<Self>` — load config from JSON file
+
 ### `System` (struct)
 
 Public fields: `morphons`, `topology`, `resonance`, `modulation`, `clusters`, `memory`, `config`.
@@ -492,8 +535,14 @@ Key methods:
 - `inject_reward_at(output_index, strength)` — targeted two-hop reward at a specific output port
 - `inject_inhibition_at(output_index, strength)` — targeted two-hop eligibility decay at a specific output port
 - `reward_contrastive(correct_index, reward_strength, inhibit_strength)` — reward correct output, inhibit incorrect ones
+- `teach_hidden(correct_index, strength)` — inject DFA feedback signal for a specific correct output
+- `teach_supervised(correct_index, learning_rate)` — combined: train_readout + teach_hidden + reward_contrastive
+- `teach_supervised_with_input(input, correct_index, learning_rate)` — feed_input + step + teach_supervised in one call
 - `enable_analog_readout()` — initialize readout weights with Xavier scaling, enable analog bypass
-- `train_readout(correct_index)` — delta rule update on readout weights + DFA backprojection + tag-and-capture on input synapses
+- `train_readout(correct_index, learning_rate)` — delta rule update on readout weights + DFA backprojection + tag-and-capture on input synapses
+- `critic_value() -> f64` — current state value estimate V(s) from critic morphons
+- `critic_size() -> usize` — number of critic morphons
+- `inject_td_error(reward, gamma) -> f64` — compute TD error (reward + γV(s') - V(s)), inject as reward, return the TD error
 - `process_steps(input, n) -> Vec<f64>` — multi-step processing (feed input each step, read output after n steps)
 - `inspect() -> SystemStats` — full system statistics
 - `diagnostics() -> &Diagnostics` — current learning pipeline diagnostics
@@ -603,10 +652,18 @@ output = system.process([1.0, 0.5, 0.3])
 system.inject_reward(0.8)
 system.inject_novelty(0.6)
 system.inject_arousal(0.9)
+system.inject_reward_at(0, 0.5)
+system.inject_inhibition_at(1, 0.3)
+system.reward_contrastive(0, 0.8, 0.3)
+system.teach_hidden(0, 0.5)
+system.enable_analog_readout()
+system.train_readout(0, 0.01)
 stats = system.inspect()
 json = system.save_json()
 restored = morphon.System.load_json(json)
 ```
+
+Methods: `process`, `feed_input`, `step`, `read_output`, `inject_reward`, `inject_novelty`, `inject_arousal`, `inject_reward_at`, `inject_inhibition_at`, `reward_contrastive`, `teach_hidden`, `enable_analog_readout`, `train_readout`, `inspect`, `save_json`, `load_json` (static), `step_count` (property).
 
 ### `morphon.SystemStats`
 
@@ -619,13 +676,23 @@ Read-only properties: `total_morphons`, `total_synapses`, `fused_clusters`, `max
 ### `WasmSystem`
 
 ```javascript
-const system = new WasmSystem(100, "cortical", 8, 4, 2);
+const system = new WasmSystem(100, "cortical", 8);
 const output = system.process(new Float64Array([1.0, 0.5]));
 system.inject_reward(0.8);
 system.inject_reward_at(0, 0.5);
 system.inject_inhibition_at(1, 0.3);
 system.reward_contrastive(0, 0.8, 0.3);
+system.teach_hidden(0, 0.5);
+system.enable_analog_readout();
+system.train_readout(0, 0.01);
 const stats = system.inspect();  // JSON string
 ```
 
-Exposes all core System methods plus contrastive reward API. Powers the Three.js web visualizer in `web/`.
+Methods: `process`, `step`, `feed_input`, `read_output`, `inject_reward`, `inject_novelty`, `inject_arousal`, `inject_reward_at`, `inject_inhibition_at`, `reward_contrastive`, `teach_hidden`, `enable_analog_readout`, `train_readout`, `inspect` (JSON), `lineage_json`, `save_json`, `loadJson` (static), `topology_json`, `modulation_json`.
+
+Visualization helpers (for Three.js web viz):
+- `fired_ids() -> Vec<u32>` — IDs of morphons that fired this step
+- `pending_spikes_flat() -> Vec<f64>` — flat array of [source, target, progress, ...] for spike animation
+- `delivered_target_ids() -> Vec<u32>` — target IDs of spikes delivered this step (for flash effect)
+
+Powers the Three.js web visualizer in `web/`.

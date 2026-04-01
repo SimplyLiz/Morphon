@@ -49,6 +49,26 @@ const firingHistory = [];
 const morphonHistory = [];
 const MAX_HISTORY = 120;
 
+// === RASTER PLOT STATE ===
+const RASTER_WINDOW = 600; // rolling window in simulation steps
+const CELL_TYPE_ORDER = ['Sensory', 'Associative', 'Motor', 'Modulatory', 'Stem', 'Fused'];
+const RASTER_COLORS = {
+  Stem:        [0x88, 0x90, 0xa4],
+  Sensory:     [0x00, 0xd4, 0xff],
+  Associative: [0xa7, 0x8b, 0xfa],
+  Motor:       [0xff, 0x6b, 0x35],
+  Modulatory:  [0x34, 0xd3, 0x99],
+  Fused:       [0xf4, 0x72, 0xb6],
+};
+let morphonOrder = [];       // sorted [{id, cellType}] for Y-axis
+let morphonYMap = new Map(); // id → Y row
+let rasterCanvas, rasterCtx;
+let offscreenCanvas, offscreenCtx;
+let rasterImageData = null;
+let rasterScrollX = 0;
+let rasterMorphonCount = 0;  // cached to detect topology changes
+let stepAccumulator = 0;     // for sub-1x speed
+
 // Cached stats to avoid double inspect() calls
 let cachedStats = null;
 // Saved state for save/load
@@ -154,7 +174,8 @@ function initScene() {
   // Renderer
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  const sceneH = window.innerHeight - 160; // account for raster panel
+  renderer.setSize(window.innerWidth, sceneH);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
   renderer.setClearColor(0x050510);
@@ -165,7 +186,7 @@ function initScene() {
   scene.fog = new THREE.FogExp2(0x050510, 0.006);
 
   // Camera
-  camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 500);
+  camera = new THREE.PerspectiveCamera(55, window.innerWidth / sceneH, 0.1, 500);
   camera.position.set(0, 8, 22);
 
   // Controls
@@ -296,12 +317,14 @@ function initScene() {
 }
 
 function onResize() {
-  const w = window.innerWidth, h = window.innerHeight;
+  const rasterH = 160; // matches CSS #raster-panel height
+  const w = window.innerWidth, h = window.innerHeight - rasterH;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   composer.setSize(w, h);
   bloomPass.resolution.set(w, h);
+  resizeRasterCanvas();
 }
 
 // ============================================================
@@ -765,12 +788,21 @@ function setupControls() {
   document.getElementById('btn-step').addEventListener('click', () => {
     if (system) {
       makeInput('noise'); system.step();
-      updateScene(); updatePanels(); detectEvents();
+      const fired = system.fired_ids();
+      rasterStampStep(fired);
+      if (nodeData.length !== rasterMorphonCount) rebuildMorphonOrder();
+      updateScene(); updatePanels(); detectEvents(); drawRasterPlot();
     }
   });
 
+  // Logarithmic speed mapping: 0→0.5x, 50→10x, 100→50x
+  function sliderToSpeed(val) {
+    return 0.5 * Math.pow(100, val / 100);
+  }
   document.getElementById('speed-slider').addEventListener('input', (e) => {
-    stepsPerFrame = parseInt(e.target.value);
+    stepsPerFrame = sliderToSpeed(parseInt(e.target.value));
+    document.getElementById('speed-val').textContent =
+      stepsPerFrame < 1 ? stepsPerFrame.toFixed(1) + 'x' : Math.round(stepsPerFrame) + 'x';
   });
 
   // Also clear cell type filter on reset
@@ -783,7 +815,9 @@ function setupControls() {
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
     nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
-    lastSpikeCount = 0;
+    lastSpikeCount = 0; stepAccumulator = 0;
+    rasterScrollX = 0; rasterImageData = null; rasterMorphonCount = 0;
+    morphonOrder = []; morphonYMap.clear();
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
     document.getElementById('events').innerHTML = '';
@@ -814,11 +848,16 @@ function setupControls() {
     document.getElementById('events').innerHTML = '';
   });
 
-  // Speed slider — show value
-  const speedSlider = document.getElementById('speed-slider');
-  const speedVal = document.getElementById('speed-val');
-  speedSlider.addEventListener('input', () => {
-    speedVal.textContent = speedSlider.value + 'x';
+  // LOG toggle and raster clear
+  document.getElementById('btn-toggle-log')?.addEventListener('click', () => {
+    document.getElementById('event-log')?.classList.toggle('visible');
+  });
+  document.getElementById('btn-raster-clear')?.addEventListener('click', () => {
+    rasterScrollX = 0;
+    if (rasterImageData) {
+      const d = rasterImageData.data;
+      for (let i = 0; i < d.length; i += 4) { d[i] = 6; d[i+1] = 8; d[i+2] = 15; d[i+3] = 255; }
+    }
   });
 
   // Save/Load
@@ -1027,6 +1066,137 @@ function updateSpikes() {
 }
 
 // ============================================================
+// RASTER PLOT
+// ============================================================
+function initRaster() {
+  rasterCanvas = document.getElementById('raster-canvas');
+  rasterCtx = rasterCanvas.getContext('2d');
+  rasterCtx.imageSmoothingEnabled = false;
+  offscreenCanvas = document.createElement('canvas');
+  offscreenCtx = offscreenCanvas.getContext('2d');
+  resizeRasterCanvas();
+}
+
+function resizeRasterCanvas() {
+  if (!rasterCanvas) return;
+  const wrap = document.getElementById('raster-canvas-wrap');
+  if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  rasterCanvas.width = Math.floor(rect.width);
+  rasterCanvas.height = Math.floor(rect.height);
+  rasterCtx.imageSmoothingEnabled = false;
+}
+
+function rebuildMorphonOrder() {
+  const groups = {};
+  for (const type of CELL_TYPE_ORDER) groups[type] = [];
+  for (const n of nodeData) {
+    const type = CELL_TYPE_ORDER.includes(n.cell_type) ? n.cell_type : 'Stem';
+    groups[type].push(n.id);
+  }
+  morphonOrder = [];
+  for (const type of CELL_TYPE_ORDER) {
+    groups[type].sort((a, b) => a - b);
+    for (const id of groups[type]) morphonOrder.push({ id, cellType: type });
+  }
+  morphonYMap.clear();
+  morphonOrder.forEach((m, i) => morphonYMap.set(m.id, i));
+
+  // Recreate ImageData at new size
+  const h = morphonOrder.length || 1;
+  rasterMorphonCount = nodeData.length;
+  offscreenCanvas.width = RASTER_WINDOW;
+  offscreenCanvas.height = h;
+  rasterImageData = offscreenCtx.createImageData(RASTER_WINDOW, h);
+  // Fill with background
+  const d = rasterImageData.data;
+  for (let i = 0; i < d.length; i += 4) { d[i] = 6; d[i+1] = 8; d[i+2] = 15; d[i+3] = 255; }
+  rasterScrollX = 0;
+
+  // Update Y-axis labels
+  const labelsEl = document.getElementById('raster-labels');
+  if (labelsEl) {
+    labelsEl.innerHTML = '';
+    let prevType = '';
+    for (let i = 0; i < morphonOrder.length; i++) {
+      if (morphonOrder[i].cellType !== prevType) {
+        prevType = morphonOrder[i].cellType;
+        const span = document.createElement('span');
+        span.textContent = prevType.substring(0, 3).toUpperCase();
+        span.style.color = `rgb(${RASTER_COLORS[prevType].join(',')})`;
+        labelsEl.appendChild(span);
+      }
+    }
+  }
+}
+
+function rasterStampStep(firedIds) {
+  if (!rasterImageData || morphonOrder.length === 0) return;
+  const w = RASTER_WINDOW;
+  const h = morphonOrder.length;
+  const data = rasterImageData.data;
+  const col = rasterScrollX % w;
+
+  // Clear this column to background
+  for (let y = 0; y < h; y++) {
+    const idx = (y * w + col) * 4;
+    data[idx] = 6; data[idx+1] = 8; data[idx+2] = 15; data[idx+3] = 255;
+  }
+
+  // Stamp fired morphons
+  for (const id of firedIds) {
+    const y = morphonYMap.get(id);
+    if (y === undefined) continue;
+    const rgb = RASTER_COLORS[morphonOrder[y].cellType] || RASTER_COLORS.Stem;
+    const idx = (y * w + col) * 4;
+    data[idx] = rgb[0]; data[idx+1] = rgb[1]; data[idx+2] = rgb[2]; data[idx+3] = 255;
+  }
+
+  rasterScrollX++;
+}
+
+function drawRasterPlot() {
+  if (!rasterCtx || !rasterImageData || morphonOrder.length === 0) return;
+  const w = RASTER_WINDOW;
+  const h = morphonOrder.length;
+  const cw = rasterCanvas.width - 40; // leave room for labels
+  const ch = rasterCanvas.height;
+  if (cw <= 0 || ch <= 0) return;
+
+  // Put ImageData onto offscreen canvas
+  offscreenCtx.putImageData(rasterImageData, 0, 0);
+
+  rasterCtx.clearRect(0, 0, rasterCanvas.width, rasterCanvas.height);
+
+  // Draw in two parts so newest data is at the right edge
+  const col = rasterScrollX % w;
+  const rightW = w - col;
+  const leftW = col;
+
+  if (rightW > 0) {
+    rasterCtx.drawImage(offscreenCanvas, col, 0, rightW, h, 40, 0, (rightW / w) * cw, ch);
+  }
+  if (leftW > 0) {
+    rasterCtx.drawImage(offscreenCanvas, 0, 0, leftW, h, 40 + (rightW / w) * cw, 0, (leftW / w) * cw, ch);
+  }
+
+  // Draw cell-type group separators
+  rasterCtx.strokeStyle = 'rgba(80,140,255,0.15)';
+  rasterCtx.lineWidth = 0.5;
+  let prevType = '';
+  for (let i = 0; i < morphonOrder.length; i++) {
+    if (morphonOrder[i].cellType !== prevType && prevType !== '') {
+      const y = (i / morphonOrder.length) * ch;
+      rasterCtx.beginPath();
+      rasterCtx.moveTo(40, y);
+      rasterCtx.lineTo(40 + cw, y);
+      rasterCtx.stroke();
+    }
+    prevType = morphonOrder[i].cellType;
+  }
+}
+
+// ============================================================
 // ANIMATION LOOP
 // ============================================================
 let frameCount = 0;
@@ -1038,21 +1208,33 @@ function animate() {
 
   if (running && system) {
     frameFired.clear();
-    for (let i = 0; i < stepsPerFrame; i++) {
+    // Accumulate fractional steps for sub-1x speeds
+    stepAccumulator += stepsPerFrame;
+    const stepsThisFrame = Math.floor(stepAccumulator);
+    stepAccumulator -= stepsThisFrame;
+
+    for (let i = 0; i < stepsThisFrame; i++) {
       // Auto-inject noise unless user sent input recently (500ms grace period)
       if (frameCount % 3 === 0 && performance.now() - lastUserInputTime > 500) makeInput('noise');
       system.step();
-      // Collect fired IDs after each sub-step so we don't miss transient firings
-      for (const id of system.fired_ids()) frameFired.add(id);
+      const fired = system.fired_ids();
+      for (const id of fired) frameFired.add(id);
+      // Stamp raster plot for each sub-step
+      rasterStampStep(fired);
       // Flash arrival targets — spike delivery triggers a glow on the receiving morphon
       try {
         for (const id of system.delivered_target_ids()) {
           const idx = nodeMap.get(id);
           if (idx !== undefined) nodeGlow[idx] = Math.min(nodeGlow[idx] + 0.5, 1.0);
         }
-      } catch(_) {} // graceful fallback if method not available (cached WASM)
+      } catch(_) {}
     }
+
+    // Rebuild raster Y-axis if morphon count changed
+    if (nodeData.length !== rasterMorphonCount) rebuildMorphonOrder();
+
     updateScene();
+    drawRasterPlot();
     if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }
   }
 
@@ -1081,12 +1263,14 @@ function animate() {
 async function main() {
   initScene();
   setupControls();
+  initRaster();
   await init();
 
   system = new WasmSystem(60, 'cortical', 3);
   for (let i = 0; i < 30; i++) { makeInput('noise'); system.step(); }
 
   updateScene();
+  rebuildMorphonOrder();
   updatePanels();
 
   const loading = document.getElementById('loading');

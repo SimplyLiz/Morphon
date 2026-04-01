@@ -43,7 +43,8 @@
 
   #scene-container {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0;
+    bottom: 160px;
     z-index: 0;
   }
 
@@ -355,9 +356,60 @@
   #event-log {
     bottom: 16px; left: 16px; right: 16px;
     max-height: 100px;
+    display: none; /* hidden by default, toggle via LOG button */
   }
+  #event-log.visible { display: block; }
   #event-log .panel {
     padding: 10px 14px;
+  }
+
+  /* === RASTER PANEL === */
+  #raster-panel {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    height: 160px;
+    z-index: 10;
+    background: var(--panel);
+    border-top: 1px solid var(--panel-border);
+    backdrop-filter: blur(20px);
+    display: flex;
+    flex-direction: column;
+    padding: 6px 12px 4px;
+  }
+  #raster-panel .raster-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+    flex-shrink: 0;
+  }
+  #raster-panel .raster-header .section-title { margin-bottom: 0; }
+  #raster-canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  #raster-canvas {
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  #raster-labels {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 36px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    pointer-events: none;
+  }
+  #raster-labels span {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+    text-align: right;
+    padding-right: 4px;
   }
   .events-scroll {
     max-height: 70px;
@@ -550,7 +602,7 @@
     <button id="btn-pause" class="active" title="Play / Pause">&#9654;</button>
     <button id="btn-step" title="Single Step">&#9197;</button>
     <span style="color:var(--text-dim);font-size:10px;margin:0 2px;">SPEED</span>
-    <input type="range" id="speed-slider" min="1" max="50" value="10">
+    <input type="range" id="speed-slider" min="0" max="100" value="50" step="1">
     <span class="speed-val" id="speed-val">10x</span>
     <select id="program-select">
       <option value="cortical">Cortical</option>
@@ -667,6 +719,21 @@
       <button id="btn-clear-log" style="font-size:9px;padding:2px 8px;">CLEAR</button>
     </div>
     <div class="events-scroll" id="events"></div>
+  </div>
+</div>
+
+<!-- RASTER PLOT -->
+<div id="raster-panel">
+  <div class="raster-header">
+    <div class="section-title">Spike Raster</div>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <button id="btn-toggle-log" style="font-size:9px;padding:2px 8px;">LOG</button>
+      <button id="btn-raster-clear" style="font-size:9px;padding:2px 8px;">CLEAR</button>
+    </div>
+  </div>
+  <div id="raster-canvas-wrap">
+    <div id="raster-labels"></div>
+    <canvas id="raster-canvas"></canvas>
   </div>
 </div>
 

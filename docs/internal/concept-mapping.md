@@ -185,6 +185,9 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | V3 Metabolic budget | V3 (5.2) | `morphon.rs`: `MetabolicConfig` — energy earned through utility (PE reduction), per-synapse maintenance cost, basal trickle. Part of `SystemConfig`. |
 | L2 weight decay on learning paths | Stability | `system.rs`: 0.001 × w decay on DFA + three-factor updates. Prevents drift. |
 | TD critic (value function) | Credit assignment | `system.rs`: critic_ports (Associative subset) predict V(s). TD error = reward + γV(s') - V(s). Used by actor path. |
+| k-WTA lateral inhibition | Hidden layer specialization | `system.rs`: top 5% associative morphons survive each step, rest suppressed. Adaptive threshold boost on winners. (Diehl & Cook 2015) |
+| Per-neuron weight normalization | Hidden layer specialization | `system.rs`: L1 norm on incoming positive weights for Associative morphons. Target norm = n_incoming × 0.3. Creates synaptic competition. |
+| NaN guards | Stability | `morphon.rs`: `potential.is_finite()` check resets NaN to 0.0. Prevents cascading corruption from hyperbolic math edge cases. |
 
 ## What's Not Yet Implemented
 
