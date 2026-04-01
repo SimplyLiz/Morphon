@@ -30,7 +30,7 @@ const FORCE_MAG: f64 = 10.0;
 const DT: f64 = 0.02;
 const X_THRESHOLD: f64 = 2.4;
 const THETA_THRESHOLD: f64 = 12.0 * std::f64::consts::PI / 180.0;
-const INTERNAL_STEPS: usize = 8;
+const INTERNAL_STEPS: usize = 4;
 const GAMMA: f64 = 0.99;
 
 struct CartPole {
@@ -47,24 +47,30 @@ impl CartPole {
 
     /// Sparse encoding: split each observation into positive/negative channels.
     /// Zero bias — inactive channels stay at 0, preserving class discrimination.
-    fn observe(&self) -> [f64; 8] {
-        let amp = 5.0;
+    /// Population-coded observation: 4 values × 8 threshold tiles = 32 channels.
+    /// Each tile fires (value > 0) only when the observation falls in its receptive field.
+    /// This gives the hidden layer fundamentally different input patterns for different
+    /// pole angles — solving the "uniformity problem" where all states look identical.
+    fn observe(&self) -> Vec<f64> {
         let raw = [
             self.x / X_THRESHOLD,
             self.x_dot.clamp(-3.0, 3.0) / 3.0,
             self.theta / THETA_THRESHOLD,
             self.theta_dot.clamp(-3.0, 3.0) / 3.0,
         ];
-        [
-            raw[0].max(0.0) * amp,
-            (-raw[0]).max(0.0) * amp,
-            raw[1].max(0.0) * amp,
-            (-raw[1]).max(0.0) * amp,
-            raw[2].max(0.0) * amp,
-            (-raw[2]).max(0.0) * amp,
-            raw[3].max(0.0) * amp,
-            (-raw[3]).max(0.0) * amp,
-        ]
+        // 8 tiles per observation, spanning [-1, 1] with Gaussian-like receptive fields
+        let centers: [f64; 8] = [-0.85, -0.60, -0.35, -0.10, 0.10, 0.35, 0.60, 0.85];
+        let width = 0.3; // receptive field width (sigma)
+        let amp = 4.0;
+        let mut out = Vec::with_capacity(32);
+        for &val in &raw {
+            for &center in &centers {
+                // Gaussian tuning curve: peaks when val ≈ center
+                let activation = (-(val - center).powi(2) / (2.0 * width * width)).exp() * amp;
+                out.push(activation);
+            }
+        }
+        out
     }
 
     fn step(&mut self, action: f64) -> bool {
@@ -95,7 +101,7 @@ struct Critic {
 
 impl Critic {
     fn new() -> Self {
-        Self { weights: [0.0; 8], bias: 0.0, lr: 0.005 }
+        Self { weights: [0.0; 8], bias: 0.0, lr: 0.02 }
     }
 
     fn features(env: &CartPole) -> [f64; 8] {
@@ -128,7 +134,7 @@ fn create_system() -> System {
             dimensions: 4,
             initial_connectivity: 0.25,
             proliferation_rounds: 2,
-            target_input_size: Some(8),  // 4 obs × 2 channels (pos/neg sparse encoding)
+            target_input_size: Some(32), // 4 obs × 8 Gaussian tiles (population coding)
             target_output_size: Some(2),
             ..DevelopmentalConfig::cerebellar()
         },
@@ -140,19 +146,19 @@ fn create_system() -> System {
             memory_period: 25,
         },
         learning: LearningParams {
-            tau_eligibility: 15.0,
-            tau_trace: 12.0,
+            tau_eligibility: 3.0,   // short window — CartPole is reactive, not delayed-reward
+            tau_trace: 5.0,         // tighter STDP window for precise credit
             a_plus: 1.0,
-            a_minus: -0.8,
+            a_minus: -0.5,          // weaker LTD to prevent inhibitory drift
             tau_tag: 500.0,
             tag_threshold: 0.3,
-            capture_threshold: 0.3,
+            capture_threshold: 10.0, // effectively disable consolidation — stay plastic
             capture_rate: 0.2,
-            weight_max: 5.0,
+            weight_max: 3.0,        // tighter bounds prevent weight divergence
             weight_min: 0.01,
-            alpha_reward: 3.0,
+            alpha_reward: 2.0,      // reduced — was overwhelming with fixed DFA signal
             alpha_novelty: 0.5,
-            alpha_arousal: 1.0,
+            alpha_arousal: 0.5,     // reduced — high arousal was destabilizing
             alpha_homeostasis: 0.1,
         },
         morphogenesis: MorphogenesisParams {
@@ -206,24 +212,26 @@ fn run_episode(
 
         let reward = if alive {
             1.0 + 0.5 * (1.0 - (env.theta / THETA_THRESHOLD).abs())
-        } else { 0.0 };
+        } else { -1.0 }; // negative terminal signal for stronger TD error on failure
 
-        let td_error = critic.update(&pre_state, reward, env, !alive);
+        // Use the MI system's built-in TD critic. This:
+        // 1. Computes δ = R + γV(s') - V(s) from internal critic morphons
+        // 2. Sets last_td_error (enabling DFA feedback to hidden layer)
+        // 3. Injects reward signal for three-factor learning
+        let _td_error = system.inject_td_error(reward, GAMMA);
+
+        // Also update external critic for readout training signal
+        let ext_td = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
-        // Train analog readout with learning rate schedule:
-        // Constant lr — no schedule. The lr decay was causing degradation after ep 500.
+        // Train analog readout — primary learning signal for action selection
         let base_lr = 0.2;
-        if td_error > 0.0 {
-            system.train_readout(chosen, td_error.min(1.0) * base_lr);
+        if ext_td > 0.0 {
+            system.train_readout(chosen, ext_td.min(1.0) * base_lr);
         } else {
             let other = 1 - chosen;
-            system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
+            system.train_readout(other, ext_td.abs().min(1.0) * base_lr * 0.5);
         }
-
-        // Neuromodulation for the three-factor hidden layer
-        let scaled_td = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
-        system.inject_reward(scaled_td);
 
         // TD(λ)-like trace stretching: when pole is in danger (>50% of threshold),
         // inject novelty to boost plasticity. This extends the effective eligibility

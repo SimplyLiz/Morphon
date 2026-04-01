@@ -84,9 +84,11 @@ let edgeData = [];
 
 // Spike particles — JS-side animated, fed from real engine firing data
 const MAX_SPIKES = 3000;
-const SPIKE_VISUAL_FRAMES = 25; // visual lifetime in frames (~0.4s at 60fps)
+const SPIKE_VISUAL_FRAMES = 30; // visual lifetime in frames (~0.5s at 60fps)
+const SPIKE_COOLDOWN = 12;       // frames between spawns per morphon
 let spikesMesh;
-const liveSpikes = []; // {fromIdx, toIdx, age, color, strength}
+const liveSpikes = [];
+const spikeCooldowns = new Map(); // morphon id → frames remaining
 
 // Raycasting
 const raycaster = new THREE.Raycaster();
@@ -202,9 +204,9 @@ function initScene() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.6,   // strength — subtle
-    0.35,  // radius — tight halos
-    0.75   // threshold — fired nodes at 3.5x brightness exceed this
+    0.5,   // strength
+    0.3,   // radius — tight halos
+    0.85   // threshold
   );
   composer.addPass(bloomPass);
   // Vignette — draws eye to center
@@ -292,7 +294,7 @@ function initScene() {
   edgeGeo.setAttribute('position', new THREE.BufferAttribute(edgePositions, 3).setUsage(THREE.DynamicDrawUsage));
   edgeGeo.setAttribute('color', new THREE.BufferAttribute(edgeColors, 3).setUsage(THREE.DynamicDrawUsage));
   const edgeMat = new THREE.LineBasicMaterial({
-    vertexColors: true, transparent: true, opacity: 0.3,
+    vertexColors: true, transparent: true, opacity: 0.25,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   edgesMesh = new THREE.LineSegments(edgeGeo, edgeMat);
@@ -474,11 +476,11 @@ function updateScene() {
     const bright = 1.0 - dim * 0.85;
 
     if (n.id === selectedNodeId) {
-      tempColor.copy(color).multiplyScalar(3.5);
+      tempColor.copy(color).multiplyScalar(3.0);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Normal: vivid cell-type color, slightly brighter when recently fired
-      const intensity = bright * (1.0 + glow * 1.5);
+      // Resting: vivid cell color. Firing: gentle bloom-worthy brightening.
+      const intensity = bright * (0.85 + glow * 1.2);
       tempColor.copy(color).multiplyScalar(intensity);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -549,13 +551,13 @@ function updateScene() {
       r = 0.5; g = 0.7; b = 1.0;
     } else {
       // Base brightness from weight + heat boost from recent activity
-      const brightness = (0.05 + w * 0.18 + heat * 0.4) * (1.0 - edgeDimFactor * 0.9);
+      const brightness = (0.05 + w * 0.15 + heat * 0.25) * (1.0 - edgeDimFactor * 0.9);
       r = sourceColor.r * brightness;
       g = sourceColor.g * brightness;
       b = sourceColor.b * brightness;
       // Hot synapses shift toward white
-      if (heat > 0.1) {
-        const heatWhite = heat * 0.3;
+      if (heat > 0.15) {
+        const heatWhite = heat * 0.15;
         r += heatWhite; g += heatWhite; b += heatWhite;
       }
     }
@@ -577,24 +579,37 @@ function updateScene() {
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
   // === SPIKE SPAWNING from real engine firing data ===
-  // Use frameFired (accumulated across sub-steps) + real topology edges
+  // One representative spike per firing morphon, with cooldown to prevent stacking.
+  // Tick down all cooldowns
+  for (const [id, cd] of spikeCooldowns) {
+    if (cd <= 1) spikeCooldowns.delete(id);
+    else spikeCooldowns.set(id, cd - 1);
+  }
   for (const id of frameFired) {
     if (liveSpikes.length >= MAX_SPIKES * 0.7) break;
+    if (spikeCooldowns.has(id)) continue; // still on cooldown
     const fromIdx = nodeMap.get(id);
     if (fromIdx === undefined) continue;
     const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
 
+    // Pick the strongest outgoing edge as the representative
+    let bestEdge = null, bestWeight = -1;
     for (const e of edges) {
       if (e.from !== id) continue;
-      if (liveSpikes.length >= MAX_SPIKES * 0.7) break;
-      const toIdx = nodeMap.get(e.to);
-      if (toIdx === undefined) continue;
+      const aw = Math.abs(e.weight);
+      if (aw > bestWeight) {
+        const toIdx = nodeMap.get(e.to);
+        if (toIdx !== undefined) { bestEdge = { toIdx, weight: aw }; bestWeight = aw; }
+      }
+    }
+    if (bestEdge) {
       liveSpikes.push({
-        fromIdx, toIdx,
+        fromIdx, toIdx: bestEdge.toIdx,
         age: 0,
         color: color.clone(),
-        strength: Math.abs(e.weight),
+        strength: bestEdge.weight,
       });
+      spikeCooldowns.set(id, SPIKE_COOLDOWN);
     }
   }
 }
@@ -856,7 +871,7 @@ function setupControls() {
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
     nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
-    lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0;
+    lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0; spikeCooldowns.clear();
     rasterScrollX = 0; rasterMorphonCount = 0;
     rasterHistory.fill(null); groupRateHistory = [];
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
@@ -1177,30 +1192,25 @@ function updateSpikes() {
     s.age++;
     if (s.age > SPIKE_VISUAL_FRAMES) { liveSpikes.splice(i, 1); continue; }
 
-    // Smooth progress with ease-in-out for gentle flow
-    const raw = s.age / SPIKE_VISUAL_FRAMES;
-    const t = raw * raw * (3.0 - 2.0 * raw); // smoothstep
+    // Linear progress — constant speed, no easing stutter
+    const t = s.age / SPIKE_VISUAL_FRAMES;
 
-    // Interpolate along Poincaré geodesic
+    // Lerp position along the edge (simple, fast, no GC)
     const fi = s.fromIdx * 3, ti = s.toIdx * 3;
-    const g = geodesicPoint(
-      nodePositions[fi] * INV_BALL, nodePositions[fi+1] * INV_BALL, nodePositions[fi+2] * INV_BALL,
-      nodePositions[ti] * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
-      t
-    );
-    if (!isFinite(g[0]) || !isFinite(g[1]) || !isFinite(g[2])) continue;
+    const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
+    const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
+    const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
 
-    // Small orb — slight swell at midpoint
-    const swell = Math.sin(t * Math.PI);
-    spikeDummy.position.set(g[0] * BALL_RADIUS, g[1] * BALL_RADIUS, g[2] * BALL_RADIUS);
-    spikeDummy.scale.setScalar(0.04 + swell * 0.05);
+    // Tiny orb
+    spikeDummy.position.set(x, y, z);
+    spikeDummy.scale.setScalar(0.035);
     spikeDummy.updateMatrix();
 
     if (alive < MAX_SPIKES) {
       spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      // Soft glow — cell-type color, slight bloom via brightness > 1.0
-      const fade = raw < 0.85 ? 1.0 : (1.0 - raw) / 0.15; // gentle fade out
-      tempColor.copy(s.color).multiplyScalar(1.2 * fade);
+      // Bright enough to trigger bloom (threshold 0.85), fade at end
+      const fade = t < 0.8 ? 1.0 : (1.0 - t) * 5.0;
+      tempColor.copy(s.color).multiplyScalar(1.8 * fade);
       spikesMesh.setColorAt(alive, tempColor);
       alive++;
     }
@@ -1435,7 +1445,7 @@ function animate() {
   // Dynamic bloom
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
-    bloomPass.strength = 0.7 + activity * 0.5;
+    bloomPass.strength = 0.45 + activity * 0.25;
   }
 
   controls.update();

@@ -258,7 +258,7 @@ impl System {
             total_died: 0,
             total_transdifferentiations: 0,
             recent_performance: 0.0,
-            consolidation_gate: 15.0, // consolidate once above 15 (current avg)
+            consolidation_gate: 10.0, // consolidate once above random baseline
             peak_performance: 0.0,
         };
 
@@ -500,7 +500,7 @@ impl System {
 
                             // TD-LTP: Δw = lr × δ × pre_trace
                             // Only LTP direction — critic converges to value estimate
-                            let td_lr = 0.01;
+                            let td_lr = 0.03;
                             let delta_w = td_lr * td_err * synapse.pre_trace;
                             synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
                             synapse.age += 1;
@@ -562,7 +562,7 @@ impl System {
                                 // Capture: strong DFA update + high reward → consolidate
                                 // Performance-gated capture: no consolidation until proven performance
                                 if synapse.tag > 0.1
-                                    && self.modulation.reward > 0.3
+                                    && self.modulation.reward > self.config.learning.capture_threshold
                                     && !synapse.consolidated
                                     && self.recent_performance > self.consolidation_gate
                                 {
@@ -629,13 +629,16 @@ impl System {
                 }
 
                 // Target norm: proportional to number of connections
-                let target_norm = edge_indices.len() as f64 * 0.3; // ~0.3 per synapse avg
+                let target_norm = edge_indices.len() as f64 * 0.3;
                 if pos_sum > 0.01 {
-                    let scale = target_norm / pos_sum;
+                    // Clamp scale to [0.5, 2.0] to prevent weight explosion
+                    // when pos_sum is very small relative to target_norm.
+                    let scale = (target_norm / pos_sum).clamp(0.5, 2.0);
                     for &ei in &edge_indices {
                         if let Some(syn) = self.topology.synapse_mut(ei) {
                             if syn.weight > 0.0 {
                                 syn.weight *= scale;
+                                syn.weight = syn.weight.clamp(0.0, self.config.learning.weight_max);
                             }
                         }
                     }
@@ -991,7 +994,7 @@ impl System {
                             syn.tag = syn.tag.min(1.0);
                             syn.tag_strength = syn.tag;
                         }
-                        if syn.tag > 0.3 && !syn.consolidated && can_consolidate {
+                        if syn.tag > self.config.learning.capture_threshold && !syn.consolidated && can_consolidate {
                             syn.consolidated = true;
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
@@ -1552,10 +1555,13 @@ impl System {
         self.prev_critic_value = v_new;
         self.last_td_error = td_error;
 
-        // Inject TD error as the reward signal — positive = better than expected,
-        // negative = worse than expected. Scale to [0, 1] for the modulation channel.
-        let scaled = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
-        self.modulation.inject_reward(scaled);
+        // Inject positive TD as reward; negative TD → no injection, let decay
+        // reduce the channel. This preserves directional signal via reward_delta():
+        // positive TD → reward spike → positive delta → strengthen active traces
+        // negative TD → reward decays → negative delta → weaken active traces
+        if td_error > 0.0 {
+            self.modulation.inject_reward(td_error.min(1.0));
+        }
 
         td_error
     }
