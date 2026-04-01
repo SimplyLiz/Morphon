@@ -82,6 +82,8 @@ pub struct SystemStats {
     pub working_memory_items: usize,
     pub episodic_memory_items: usize,
     pub step_count: u64,
+    pub total_born: usize,
+    pub total_died: usize,
 }
 
 /// The Morphogenic Intelligence System.
@@ -118,6 +120,11 @@ pub struct System {
 
     /// Learning pipeline diagnostics (updated every step).
     pub(crate) diag: Diagnostics,
+
+    /// Cumulative morphon birth count.
+    pub(crate) total_born: usize,
+    /// Cumulative morphon death count.
+    pub(crate) total_died: usize,
 }
 
 impl System {
@@ -160,6 +167,8 @@ impl System {
             next_cluster_id: 0,
             step_count: 0,
             diag: Diagnostics::default(),
+            total_born: 0,
+            total_died: 0,
         };
 
         // === Spontaneous developmental activity ===
@@ -351,6 +360,8 @@ impl System {
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
+            self.total_born += glacial_report.morphons_born;
+            self.total_died += glacial_report.morphons_died;
             report.differentiations = glacial_report.differentiations;
             report.fusions = glacial_report.fusions;
             report.defusions = glacial_report.defusions;
@@ -687,6 +698,8 @@ impl System {
             working_memory_items: self.memory.working.len(),
             episodic_memory_items: self.memory.episodic.len(),
             step_count: self.step_count,
+            total_born: self.total_born,
+            total_died: self.total_died,
         }
     }
 

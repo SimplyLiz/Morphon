@@ -45,6 +45,10 @@ mod bindings {
         #[pyo3(get)]
         pub step_count: u64,
         #[pyo3(get)]
+        pub total_born: usize,
+        #[pyo3(get)]
+        pub total_died: usize,
+        #[pyo3(get)]
         pub differentiation_map: HashMap<String, usize>,
     }
 
@@ -171,6 +175,8 @@ mod bindings {
                 working_memory_items: stats.working_memory_items,
                 episodic_memory_items: stats.episodic_memory_items,
                 step_count: stats.step_count,
+                total_born: stats.total_born,
+                total_died: stats.total_died,
                 differentiation_map,
             }
         }

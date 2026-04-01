@@ -390,13 +390,16 @@ function updateScene() {
   const sizes = new Float32Array(nodeCount);
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
-    dispPos[i*3]   = n.x * BALL_RADIUS;
-    dispPos[i*3+1] = n.y * BALL_RADIUS;
-    dispPos[i*3+2] = n.z * BALL_RADIUS;
-    sizes[i] = NODE_BASE_SIZE + n.energy * 0.2;
+    let x = n.x * BALL_RADIUS, y = n.y * BALL_RADIUS, z = n.z * BALL_RADIUS;
+    // Guard against NaN/Infinity from the engine — place at origin if bad
+    if (!isFinite(x)) x = 0;
+    if (!isFinite(y)) y = 0;
+    if (!isFinite(z)) z = 0;
+    dispPos[i*3] = x; dispPos[i*3+1] = y; dispPos[i*3+2] = z;
+    sizes[i] = NODE_BASE_SIZE + (isFinite(n.energy) ? n.energy : 0) * 0.2;
   }
   // Run a few relaxation iterations — O(n²) is fine for n < 2000
-  const MIN_SEP = 0.9; // minimum distance between node centers (in world units)
+  const MIN_SEP = 0.9;
   for (let iter = 0; iter < 3; iter++) {
     for (let i = 0; i < nodeCount; i++) {
       for (let j = i + 1; j < nodeCount; j++) {
@@ -407,11 +410,13 @@ function updateScene() {
         const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
         const minDist = (sizes[i] + sizes[j]) * MIN_SEP;
         if (dist < minDist) {
-          // Push apart along their connecting vector (or random if coincident)
           if (dist < 0.001) {
-            dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); dz = (Math.random() - 0.5);
-            const rn = Math.sqrt(dx*dx+dy*dy+dz*dz) || 1;
-            dx /= rn; dy /= rn; dz /= rn;
+            // Deterministic spread for coincident nodes (seeded by index)
+            const ang1 = (i * 2.399 + j * 0.618) % 6.283;
+            const ang2 = (j * 1.571 + i * 0.382) % 3.142;
+            dx = Math.sin(ang2) * Math.cos(ang1);
+            dy = Math.sin(ang2) * Math.sin(ang1);
+            dz = Math.cos(ang2);
           } else {
             dx /= dist; dy /= dist; dz /= dist;
           }
@@ -424,6 +429,16 @@ function updateScene() {
           dispPos[jx+2] += dz * push;
         }
       }
+    }
+  }
+  // Clamp all positions back inside the ball so nothing flies off-screen
+  const maxR = BALL_RADIUS * 0.95;
+  for (let i = 0; i < nodeCount; i++) {
+    const ix = i*3;
+    const r = Math.sqrt(dispPos[ix]*dispPos[ix] + dispPos[ix+1]*dispPos[ix+1] + dispPos[ix+2]*dispPos[ix+2]);
+    if (r > maxR) {
+      const s = maxR / r;
+      dispPos[ix] *= s; dispPos[ix+1] *= s; dispPos[ix+2] *= s;
     }
   }
 

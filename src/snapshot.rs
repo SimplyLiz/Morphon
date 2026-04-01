@@ -100,6 +100,8 @@ impl System {
             next_cluster_id: snapshot.next_cluster_id,
             step_count: snapshot.step_count,
             diag: crate::diagnostics::Diagnostics::default(),
+            total_born: 0,
+            total_died: 0,
         }
     }
 
