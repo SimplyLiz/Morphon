@@ -171,7 +171,9 @@ fn create_system() -> System {
         working_memory_capacity: 7,
         episodic_memory_capacity: 200,
     };
-    System::new(config)
+    let mut sys = System::new(config);
+    sys.enable_analog_readout(); // Purkinje-style analog output bypass
+    sys
 }
 
 fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> f64 {
@@ -207,15 +209,16 @@ fn run_episode(
         let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
 
+        // Train analog readout: TD error > 0 → reinforce chosen action,
+        // TD error < 0 → reinforce the OTHER action.
         if td_error > 0.0 {
-            system.reward_contrastive(chosen, td_error.min(1.0), td_error.min(1.0) * 0.3);
+            system.train_readout(chosen, td_error.min(1.0) * 0.2);
         } else {
             let other = 1 - chosen;
-            let penalty = td_error.abs().min(1.0);
-            system.reward_contrastive(other, penalty * 0.5, penalty * 0.2);
-            system.inject_arousal(penalty * 0.3);
+            system.train_readout(other, td_error.abs().min(1.0) * 0.1);
         }
 
+        // Also inject neuromodulation for the three-factor hidden layer
         let scaled_td = (td_error * 0.3 + 0.5).clamp(0.0, 1.0);
         system.inject_reward(scaled_td);
 

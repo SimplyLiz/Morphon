@@ -41,6 +41,14 @@ pub struct MorphogenesisParams {
     pub apoptosis_energy_threshold: f64,
     /// Maximum number of morphons (prevent unbounded growth).
     pub max_morphons: usize,
+    /// V3 Governor: minimum morphon count — apoptosis stops below this.
+    pub min_morphons: usize,
+    /// V3 Governor: minimum fraction of Sensory morphons (prevent I/O starvation).
+    pub min_sensory_fraction: f64,
+    /// V3 Governor: minimum fraction of Motor morphons (prevent output death).
+    pub min_motor_fraction: f64,
+    /// V3 Governor: maximum fraction of any single cell type (prevent Modulatory explosion).
+    pub max_single_type_fraction: f64,
 }
 
 impl Default for MorphogenesisParams {
@@ -56,6 +64,10 @@ impl Default for MorphogenesisParams {
             apoptosis_min_age: 1000,
             apoptosis_energy_threshold: 0.1,
             max_morphons: 10_000,
+            min_morphons: 10,
+            min_sensory_fraction: 0.05,
+            min_motor_fraction: 0.02,
+            max_single_type_fraction: 0.80,
         }
     }
 }
@@ -691,6 +703,18 @@ pub fn apoptosis(
     topology: &mut Topology,
     params: &MorphogenesisParams,
 ) -> usize {
+    // V3 Governor: energy floor — don't apoptose below minimum morphon count
+    if morphons.len() <= params.min_morphons {
+        return 0;
+    }
+
+    // Count cell types for diversity guard
+    let mut type_counts: HashMap<CellType, usize> = HashMap::new();
+    for m in morphons.values() {
+        *type_counts.entry(m.cell_type).or_insert(0) += 1;
+    }
+    let total = morphons.len() as f64;
+
     let to_remove: Vec<MorphonId> = morphons
         .values()
         .filter(|m| {
@@ -698,7 +722,20 @@ pub fn apoptosis(
                 && m.energy < params.apoptosis_energy_threshold
                 && m.activity_history.mean() < 0.01
                 && m.fused_with.is_none()
-                && topology.degree(m.id) < 3 // poorly connected
+                && topology.degree(m.id) < 3
+
+                // V3 Governor: protect minimum cell type fractions
+                && match m.cell_type {
+                    CellType::Sensory => {
+                        let count = *type_counts.get(&CellType::Sensory).unwrap_or(&0);
+                        count as f64 / total > params.min_sensory_fraction
+                    }
+                    CellType::Motor => {
+                        let count = *type_counts.get(&CellType::Motor).unwrap_or(&0);
+                        count as f64 / total > params.min_motor_fraction
+                    }
+                    _ => true,
+                }
         })
         .map(|m| m.id)
         .collect();
