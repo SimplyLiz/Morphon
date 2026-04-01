@@ -851,12 +851,14 @@ impl System {
     /// V_j = Σ_i readout_weights[j][i] × sigmoid(P_i)
     fn read_output_analog(&self) -> Vec<f64> {
         self.readout_weights.iter().map(|weights| {
-            weights.iter().map(|(&assoc_id, &w)| {
-                let act = self.morphons.get(&assoc_id)
-                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
+            let v: f64 = weights.iter().map(|(&assoc_id, &w)| {
+                let p = self.morphons.get(&assoc_id)
+                    .map(|m| if m.potential.is_finite() { m.potential.clamp(-10.0, 10.0) } else { 0.0 })
                     .unwrap_or(0.0);
+                let act = 1.0 / (1.0 + (-p).exp());
                 w * act
-            }).sum()
+            }).sum();
+            if v.is_finite() { v } else { 0.0 }
         }).collect()
     }
 
@@ -914,11 +916,15 @@ impl System {
         let outputs = self.read_output_analog();
         if outputs.len() != n_out { return; }
 
+        // Sanitize outputs — NaN from morphon potential overflow kills the chain
+        let outputs: Vec<f64> = outputs.iter().map(|&x| if x.is_finite() { x } else { 0.0 }).collect();
+
         // Softmax: exp(x_j) / Σ_k exp(x_k), with numerical stability (subtract max)
         let max_out = outputs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let exps: Vec<f64> = outputs.iter().map(|&x| (x - max_out).exp()).collect();
+        let exps: Vec<f64> = outputs.iter().map(|&x| (x - max_out).clamp(-50.0, 0.0).exp()).collect();
         let sum_exp: f64 = exps.iter().sum();
-        let softmax: Vec<f64> = exps.iter().map(|e| e / sum_exp.max(1e-10)).collect();
+        if sum_exp < 1e-10 { return; } // all outputs identical → no gradient
+        let softmax: Vec<f64> = exps.iter().map(|e| e / sum_exp).collect();
 
         // Cross-entropy gradient: error_j = target_j - softmax_j
         let errors: Vec<f64> = (0..n_out).map(|j| {
@@ -926,10 +932,13 @@ impl System {
             target - softmax[j]
         }).collect();
 
-        // Collect pre-synaptic activities (sigmoid of morphon potentials)
+        // Collect pre-synaptic activities (sigmoid of morphon potentials, NaN-safe)
         let activities: HashMap<MorphonId, f64> = self.readout_weights[0].keys()
             .filter_map(|&id| {
-                self.morphons.get(&id).map(|m| (id, 1.0 / (1.0 + (-m.potential).exp())))
+                self.morphons.get(&id).map(|m| {
+                    let p = if m.potential.is_finite() { m.potential } else { 0.0 };
+                    (id, 1.0 / (1.0 + (-p.clamp(-10.0, 10.0)).exp()))
+                })
             })
             .collect();
 
@@ -939,8 +948,10 @@ impl System {
             for (&id, w) in self.readout_weights[j].iter_mut() {
                 let act = activities.get(&id).copied().unwrap_or(0.0);
                 let weight_decay = 0.001 * *w;
-                *w += learning_rate * act * errors[j] - weight_decay;
-                *w = w.clamp(-5.0, 5.0);
+                let delta = learning_rate * act * errors[j] - weight_decay;
+                if delta.is_finite() {
+                    *w = (*w + delta).clamp(-5.0, 5.0);
+                }
             }
         }
 

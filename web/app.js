@@ -452,12 +452,12 @@ function updateScene() {
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
 
-    // === GLOW: smooth lerp up on fire, smooth decay down ===
+    // === GLOW: soft ramp up on fire, gentle decay ===
     const prevGlow = nodeGlow.get(n.id) || 0;
     const glowTarget = frameFired.has(n.id) ? 1.0 : 0.0;
     const glow = glowTarget > prevGlow
-      ? prevGlow + (glowTarget - prevGlow) * 0.4   // ramp up over ~3 frames
-      : prevGlow * 0.88;                             // decay over ~8 frames
+      ? prevGlow + (glowTarget - prevGlow) * 0.35
+      : prevGlow * 0.92;
     nodeGlow.set(n.id, glow);
 
     // === SMOOTH CONTEXT DIMMING (selection OR cell type filter) ===
@@ -474,19 +474,12 @@ function updateScene() {
     const bright = 1.0 - dim * 0.85;
 
     if (n.id === selectedNodeId) {
-      tempColor.copy(color).multiplyScalar(4.0);
+      tempColor.copy(color).multiplyScalar(3.5);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Continuous brightness: blend from resting to firing based on glow.
-      // Rest brightness ensures all cell types (including dark Stem) stay visible.
-      const restBright = 0.55 * bright;
-      const fireBright = 3.0 * (1.0 - dim * 0.4);
-      const intensity = restBright + glow * (fireBright - restBright);
+      // Normal: vivid cell-type color, slightly brighter when recently fired
+      const intensity = bright * (1.0 + glow * 1.5);
       tempColor.copy(color).multiplyScalar(intensity);
-      // Ensure minimum RGB so dark colors don't render black
-      tempColor.r = Math.max(tempColor.r, 0.04);
-      tempColor.g = Math.max(tempColor.g, 0.04);
-      tempColor.b = Math.max(tempColor.b, 0.04);
       nodesMesh.setColorAt(i, tempColor);
     }
 
@@ -1177,7 +1170,6 @@ function geodesicPoint(p0, p1, p2, q0, q1, q2, t) {
 }
 
 function updateSpikes() {
-  // Animate JS-side spikes (spawned from real engine firing data in updateScene)
   let alive = 0;
 
   for (let i = liveSpikes.length - 1; i >= 0; i--) {
@@ -1185,32 +1177,30 @@ function updateSpikes() {
     s.age++;
     if (s.age > SPIKE_VISUAL_FRAMES) { liveSpikes.splice(i, 1); continue; }
 
-    // Smooth progress 0→1 with ease-out curve
+    // Smooth progress with ease-in-out for gentle flow
     const raw = s.age / SPIKE_VISUAL_FRAMES;
-    const t = 1.0 - (1.0 - raw) * (1.0 - raw); // ease-out quadratic
+    const t = raw * raw * (3.0 - 2.0 * raw); // smoothstep
 
     // Interpolate along Poincaré geodesic
     const fi = s.fromIdx * 3, ti = s.toIdx * 3;
     const g = geodesicPoint(
-      nodePositions[fi]   * INV_BALL, nodePositions[fi+1] * INV_BALL, nodePositions[fi+2] * INV_BALL,
-      nodePositions[ti]   * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
+      nodePositions[fi] * INV_BALL, nodePositions[fi+1] * INV_BALL, nodePositions[fi+2] * INV_BALL,
+      nodePositions[ti] * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
       t
     );
     if (!isFinite(g[0]) || !isFinite(g[1]) || !isFinite(g[2])) continue;
 
-    // Size: sine curve peaks at midpoint + strength scaling
-    const sizeCurve = Math.sin(t * Math.PI);
-    const strengthScale = Math.min(s.strength, 2.0) * 0.1;
+    // Small orb — slight swell at midpoint
+    const swell = Math.sin(t * Math.PI);
     spikeDummy.position.set(g[0] * BALL_RADIUS, g[1] * BALL_RADIUS, g[2] * BALL_RADIUS);
-    spikeDummy.scale.setScalar(0.07 + sizeCurve * 0.10 + strengthScale);
+    spikeDummy.scale.setScalar(0.04 + swell * 0.05);
     spikeDummy.updateMatrix();
 
     if (alive < MAX_SPIKES) {
       spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      // Color: lerp toward white at peak, fade alpha near end of life
-      const fade = t < 0.8 ? 1.0 : (1.0 - t) * 5.0; // fade out last 20%
-      tempColor.copy(s.color).lerp(WHITE, sizeCurve * 0.35);
-      tempColor.multiplyScalar(0.7 + sizeCurve * 0.8 * fade);
+      // Soft glow — cell-type color, slight bloom via brightness > 1.0
+      const fade = raw < 0.85 ? 1.0 : (1.0 - raw) / 0.15; // gentle fade out
+      tempColor.copy(s.color).multiplyScalar(1.2 * fade);
       spikesMesh.setColorAt(alive, tempColor);
       alive++;
     }

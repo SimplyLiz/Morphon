@@ -83,11 +83,12 @@ impl Diagnostics {
 
         for ei in topology.graph.edge_indices() {
             if let Some(syn) = topology.graph.edge_weight(ei) {
-                weight_sum += syn.weight;
-                weight_sq_sum += syn.weight * syn.weight;
-                weight_abs_max = weight_abs_max.max(syn.weight.abs());
+                let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+                weight_sum += w;
+                weight_sq_sum += w * w;
+                weight_abs_max = weight_abs_max.max(w.abs());
 
-                let e_abs = syn.eligibility.abs();
+                let e_abs = if syn.eligibility.is_finite() { syn.eligibility.abs() } else { 0.0 };
                 eligibility_abs_sum += e_abs;
                 eligibility_max_abs = eligibility_max_abs.max(e_abs);
                 if e_abs > 0.01 {

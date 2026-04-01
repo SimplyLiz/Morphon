@@ -116,8 +116,15 @@ pub fn update_eligibility(
     }
 
     // Eligibility trace: exponential decay + STDP contributions
-    synapse.eligibility += (-synapse.eligibility / params.tau_eligibility + stdp) * dt;
-    synapse.eligibility = synapse.eligibility.clamp(-1.0, 1.0);
+    let e_delta = (-synapse.eligibility / params.tau_eligibility + stdp) * dt;
+    if e_delta.is_finite() {
+        synapse.eligibility += e_delta;
+    }
+    synapse.eligibility = if synapse.eligibility.is_finite() {
+        synapse.eligibility.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
 
     // Slow synaptic tag: set when eligibility is strongly positive
     if synapse.eligibility > params.tag_threshold && !synapse.consolidated {
@@ -175,7 +182,9 @@ pub fn apply_weight_update(
 
     // Standard three-factor: fast eligibility × receptor-gated modulation
     let delta_w = synapse.eligibility * m * plasticity_rate;
-    synapse.weight += delta_w;
+    if delta_w.is_finite() {
+        synapse.weight += delta_w;
+    }
 
     // Tag-and-Capture: only if morphon has Reward receptor
     let captured = post_receptors.contains(&ModulatorType::Reward)
@@ -184,12 +193,19 @@ pub fn apply_weight_update(
         && !synapse.consolidated;
 
     if captured {
-        synapse.weight += params.capture_rate * synapse.tag_strength * modulation.reward;
+        let cap_delta = params.capture_rate * synapse.tag_strength * modulation.reward;
+        if cap_delta.is_finite() {
+            synapse.weight += cap_delta;
+        }
         synapse.consolidated = true;
         synapse.tag = 0.0;
     }
 
-    synapse.weight = synapse.weight.clamp(-params.weight_max, params.weight_max);
+    synapse.weight = if synapse.weight.is_finite() {
+        synapse.weight.clamp(-params.weight_max, params.weight_max)
+    } else {
+        0.0
+    };
 
     if synapse.eligibility.abs() > 0.1 {
         synapse.usage_count += 1;
