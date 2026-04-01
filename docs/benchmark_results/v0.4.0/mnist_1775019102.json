@@ -1,0 +1,88 @@
+{
+  "benchmark": "mnist",
+  "diagnostics": {
+    "active_tags": 919,
+    "total_captures": 84581,
+    "weight_mean": -0.2945518325297759,
+    "weight_std": 0.9819642701710899
+  },
+  "epochs": 3,
+  "profile": "standard",
+  "results": {
+    "per_class": [
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 0,
+        "total": 56
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 1,
+        "total": 57
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 2,
+        "total": 51
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 3,
+        "total": 49
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 4,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 5,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 6,
+        "total": 50
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 7,
+        "total": 51
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 8,
+        "total": 40
+      },
+      {
+        "accuracy": 100.0,
+        "correct": 54,
+        "digit": 9,
+        "total": 54
+      }
+    ],
+    "test_accuracy": 10.8
+  },
+  "system": {
+    "clusters": 44,
+    "firing_rate": 0.19134860050890584,
+    "generation": 5,
+    "morphons": 1965,
+    "prediction_error": 0.1139098571956411,
+    "synapses": 87797
+  },
+  "test_samples": 500,
+  "timestamp": 1775019102,
+  "train_samples": 2000,
+  "version": "0.4.0"
+}

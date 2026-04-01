@@ -201,7 +201,9 @@ pub fn develop(
         }
 
         // Fan-in from associative → motor: EVERY motor connects to ALL associative.
-        // Xavier scaling: 1/sqrt(associative.len())
+        // Small random Xavier-scaled weights — breaks symmetry so each motor class
+        // starts with a unique receptive field. Zero init causes mode collapse
+        // (all motors respond identically → first class to win locks in).
         let assoc_to_motor_scale = 1.0 / (associative.len() as f64).max(1.0).sqrt();
         for &a in &associative {
             for &m in &motor {
@@ -212,8 +214,8 @@ pub fn develop(
             }
         }
 
-        // Direct sensory → motor shortcuts (sparse, Xavier-scaled).
-        let direct_scale = 1.0 / (sensory.len() as f64).max(1.0).sqrt();
+        // Direct sensory → motor shortcuts (sparse, small random).
+        let direct_scale = 0.1 / (sensory.len() as f64).max(1.0).sqrt();
         for (i, &s) in sensory.iter().enumerate() {
             let t = motor[i % motor.len().max(1)];
             if !topology.has_connection(s, t) {

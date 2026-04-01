@@ -217,14 +217,18 @@ impl Morphon {
         // Update potential with leaky integration + spontaneous noise
         // Noise ensures baseline Hebbian coincidences even without external input
         let leak_rate = 0.1;
-        // Pseudo-random noise centered at zero (range [-0.05, +0.05])
+        // Pseudo-random noise centered at zero.
+        // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
+        // Other types get standard noise (0.1) for baseline activity.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise = (noise_raw - 0.5) * 0.1;
+        let noise_scale = if self.cell_type == CellType::Motor { 0.02 } else { 0.1 };
+        let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
         // Clamp potential to prevent saturation from dense connectivity.
-        // Without this, 300+ inputs each adding 0.07 = 21.0, sigmoid(21) ≈ 1.0 always.
-        self.potential = self.potential.clamp(-5.0, 5.0);
+        // [-10, 10] is wide enough that motor morphons don't hit the wall easily
+        // but still prevents overflow from 300+ simultaneous inputs.
+        self.potential = self.potential.clamp(-10.0, 10.0);
         if !self.potential.is_finite() {
             self.potential = 0.0;
         }
@@ -265,8 +269,9 @@ impl Morphon {
             self.division_pressure = (self.division_pressure - 0.005).max(0.0);
         }
 
-        // Energy regeneration (slow), clamped to [0, 1]
-        self.energy = (self.energy + 0.001).clamp(0.0, 1.0);
+        // Energy regeneration, clamped to [0, 1].
+        // Rate (0.003) vs fire cost (0.005) allows ~60% max sustained firing rate.
+        self.energy = (self.energy + 0.003).clamp(0.0, 1.0);
 
         // Tick down migration cooldown
         if self.migration_cooldown > 0.0 {

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Morphon Benchmark Dashboard v0.4.0</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e4e4e7;
+    --muted: #71717a;
+    --accent: #818cf8;
+    --accent2: #34d399;
+    --accent3: #f472b6;
+    --accent4: #fbbf24;
+    --danger: #ef4444;
+    --success: #22c55e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem;
+    line-height: 1.6;
+  }
+  .header {
+    text-align: center;
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 1.8rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--accent3));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 0.5rem;
+  }
+  .header .meta {
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  .header .meta span { margin: 0 0.75rem; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 1rem;
+  }
+  .card.wide { grid-column: 1 / -1; }
+  .stat-row {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .stat {
+    flex: 1;
+    min-width: 100px;
+    text-align: center;
+    padding: 0.75rem;
+    background: var(--bg);
+    border-radius: 8px;
+  }
+  .stat .value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .stat .value.success { color: var(--success); }
+  .stat .value.danger { color: var(--danger); }
+  .stat .value.warn { color: var(--accent4); }
+  .stat .label {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 0.25rem;
+  }
+  .chart-container {
+    position: relative;
+    height: 280px;
+  }
+  .chart-container.tall {
+    height: 350px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+  th, td {
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+  }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge.solved { background: rgba(34, 197, 94, 0.15); color: var(--success); }
+  .badge.unsolved { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>MORPHON</h1>
+  <div class="meta">
+    <span>v0.4.0</span>
+    <span>|</span>
+    <span>quick</span>
+    <span>|</span>
+    <span>2026-04-01 04:39 UTC</span>
+    <span>|</span>
+    <span>macos aarch64</span>
+  </div>
+</div>
+
+<!-- CartPole -->
+<div class="grid">
+  <div class="card">
+    <h2>CartPole Control</h2>
+    <div class="stat-row">
+      <div class="stat">
+        <div class="value ">77</div>
+        <div class="label">Best Steps</div>
+      </div>
+      <div class="stat">
+        <div class="value">15.5</div>
+        <div class="label">Avg (100)</div>
+      </div>
+      <div class="stat">
+        <div class="value">300</div>
+        <div class="label">Morphons</div>
+      </div>
+      <div class="stat">
+        <div class="value">1387</div>
+        <div class="label">Synapses</div>
+      </div>
+    </div>
+    <div class="stat-row">
+      <div class="stat">
+        <div class="value">69</div>
+        <div class="label">Clusters</div>
+      </div>
+      <div class="stat">
+        <div class="value">0.097</div>
+        <div class="label">Firing Rate</div>
+      </div>
+      <div class="stat">
+        <span class="badge unsolved">NOT SOLVED</span>
+        <div class="label" style="margin-top:0.5rem">Status</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Anomaly Detection -->
+  <div class="card">
+    <h2>Anomaly Detection</h2>
+    <div class="chart-container">
+      <canvas id="anomalyChart"></canvas>
+    </div>
+    <div class="stat-row" style="margin-top:0.75rem">
+      <div class="stat">
+        <div class="value">78</div>
+        <div class="label">Morphons</div>
+      </div>
+      <div class="stat">
+        <div class="value">800</div>
+        <div class="label">Series Len</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Micro-Benchmarks -->
+<div class="grid">
+  <div class="card wide">
+    <h2>Micro-Benchmarks (Criterion)</h2>
+    <div class="chart-container tall">
+      <canvas id="microChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Scaling -->
+<div class="grid">
+  <div class="card">
+    <h2>System Step Scaling</h2>
+    <div class="chart-container">
+      <canvas id="scalingStepChart"></canvas>
+    </div>
+    <div style="text-align:center;margin-top:0.5rem;color:var(--muted);font-size:0.8rem">
+      Scaling exponent: <span style="color:var(--accent)">1.37</span>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Resonance Propagation Scaling</h2>
+    <div class="chart-container">
+      <canvas id="scalingResChart"></canvas>
+    </div>
+    <div style="text-align:center;margin-top:0.5rem;color:var(--muted);font-size:0.8rem">
+      Scaling exponent: <span style="color:var(--accent)">0.52</span>
+    </div>
+  </div>
+</div>
+
+<!-- MNIST -->
+<div class="grid">
+  <div class="card">
+    <h2>MNIST Classification</h2>
+    <div class="stat-row">
+      <div class="stat">
+        <div class="value danger">7.5%</div>
+        <div class="label">Test Accuracy</div>
+      </div>
+      <div class="stat">
+        <div class="value">35192</div>
+        <div class="label">Morphons</div>
+      </div>
+      <div class="stat">
+        <div class="value">11881446</div>
+        <div class="label">Synapses</div>
+      </div>
+    </div>
+    <div class="chart-container" style="height:200px">
+      <canvas id="mnistChart"></canvas>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Generated by bench_report v0.4.0
+</footer>
+
+<script>
+Chart.defaults.color = '#71717a';
+Chart.defaults.borderColor = '#2a2d3a';
+Chart.defaults.font.family = "'SF Mono', 'Fira Code', monospace";
+Chart.defaults.font.size = 11;
+
+// Micro-benchmarks (horizontal bar, log scale)
+new Chart(document.getElementById('microChart'), {
+  type: 'bar',
+  data: {
+    labels: ["eligibility_update_1000_synapses","process_input","pruning_500_edges","synaptic_scaling_100_morphons","synaptogenesis_100_morphons","system_step_100_morphons","weight_update_1000_synapses"],
+    datasets: [{
+      label: 'Median (us)',
+      data: [2.20,3113.99,6.55,25.39,137.90,1944.09,33.87],
+      backgroundColor: 'rgba(129, 140, 248, 0.6)',
+      borderColor: 'rgba(129, 140, 248, 1)',
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        type: 'logarithmic',
+        title: { display: true, text: 'Time (us)' },
+        grid: { color: '#1e2030' },
+      },
+      y: { grid: { display: false } }
+    }
+  }
+});
+
+// Scaling: System Step
+new Chart(document.getElementById('scalingStepChart'), {
+  type: 'line',
+  data: {
+    labels: [50,200,500],
+    datasets: [{
+      label: 'System Step',
+      data: [88.1,359.8,2215.6],
+      borderColor: '#818cf8',
+      backgroundColor: 'rgba(129, 140, 248, 0.1)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 5,
+      pointHoverRadius: 7,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { title: { display: true, text: 'Morphons' }, grid: { color: '#1e2030' } },
+      y: { title: { display: true, text: 'Time (us)' }, grid: { color: '#1e2030' } }
+    }
+  }
+});
+
+// Scaling: Resonance
+new Chart(document.getElementById('scalingResChart'), {
+  type: 'line',
+  data: {
+    labels: [50,200,500],
+    datasets: [{
+      label: 'Resonance',
+      data: [291.0,764.8,922.4],
+      borderColor: '#34d399',
+      backgroundColor: 'rgba(52, 211, 153, 0.1)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 5,
+      pointHoverRadius: 7,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { title: { display: true, text: 'Morphons' }, grid: { color: '#1e2030' } },
+      y: { title: { display: true, text: 'Time (us)' }, grid: { color: '#1e2030' } }
+    }
+  }
+});
+
+// Anomaly Detection
+new Chart(document.getElementById('anomalyChart'), {
+  type: 'bar',
+  data: {
+    labels: ["1.5","2","2.5","3"],
+    datasets: [
+      { label: 'Precision', data: [0.119,0.286,0.000,0.000], backgroundColor: 'rgba(129, 140, 248, 0.7)', borderRadius: 4 },
+      { label: 'Recall', data: [0.192,0.154,0.000,0.000], backgroundColor: 'rgba(52, 211, 153, 0.7)', borderRadius: 4 },
+      { label: 'F1', data: [0.147,0.200,0.000,0.000], backgroundColor: 'rgba(244, 114, 182, 0.7)', borderRadius: 4 },
+    ]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { position: 'top' } },
+    scales: {
+      x: { title: { display: true, text: 'Sigma Threshold' }, grid: { display: false } },
+      y: { title: { display: true, text: 'Score' }, min: 0, max: 1, grid: { color: '#1e2030' } }
+    }
+  }
+});
+
+// MNIST per-digit
+new Chart(document.getElementById('mnistChart'), {
+  type: 'bar',
+  data: {
+    labels: [0,1,2,3,4,5,6,7,8,9],
+    datasets: [{
+      label: 'Accuracy %',
+      data: [0.0,0.0,0.0,0.0,0.0,29.4,0.0,0.0,58.8,0.0],
+      backgroundColor: function(ctx) {
+        const v = ctx.raw;
+        if (v > 30) return 'rgba(52, 211, 153, 0.7)';
+        if (v > 10) return 'rgba(251, 191, 36, 0.7)';
+        return 'rgba(239, 68, 68, 0.5)';
+      },
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { title: { display: true, text: 'Digit' }, grid: { display: false } },
+      y: { title: { display: true, text: 'Accuracy %' }, min: 0, max: 100, grid: { color: '#1e2030' } }
+    }
+  }
+});
+</script>
+</body>
+</html>

@@ -544,11 +544,11 @@ function updateScene() {
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
   // === SPIKE SPAWNING ===
-  // frameFired is accumulated across all sub-steps in the animation loop
-  const newFired = frameFired;
-
-  for (const id of newFired) {
-    if (prevFired.has(id)) continue;
+  // frameFired is accumulated across all sub-steps in the animation loop.
+  // Per-node cooldown allows re-spawning every ~4 frames for sustained firing.
+  for (const id of frameFired) {
+    const cd = spikeSpawnCooldown.get(id) || 0;
+    if (cd > 0) { spikeSpawnCooldown.set(id, cd - 1); continue; }
     if (spikes.length >= MAX_SPIKES * 0.7) break;
     const fromIdx = nodeMap.get(id);
     if (fromIdx === undefined) continue;
@@ -569,9 +569,12 @@ function updateScene() {
       });
       spawned++;
     }
+    spikeSpawnCooldown.set(id, 4); // wait 4 frames before spawning again
   }
-
-  prevFired = new Set(newFired); // copy — newFired aliases frameFired which gets cleared
+  // Decay cooldowns for morphons that stopped firing
+  for (const [id, cd] of spikeSpawnCooldown) {
+    if (!frameFired.has(id)) spikeSpawnCooldown.delete(id);
+  }
 }
 
 // ============================================================
@@ -802,6 +805,7 @@ function setupControls() {
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
     nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
+    spikeSpawnCooldown.clear();
     firingHistory.length = 0;
     lastMorphonCount = 0; lastSynapseCount = 0;
     spikes.length = 0;

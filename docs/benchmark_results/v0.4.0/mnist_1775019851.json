@@ -2,87 +2,87 @@
   "benchmark": "mnist",
   "diagnostics": {
     "active_tags": 0,
-    "total_captures": 78151,
-    "weight_mean": -0.04363985156505299,
-    "weight_std": 0.12028405775310852
+    "total_captures": 74252,
+    "weight_mean": -0.12170693229646457,
+    "weight_std": 0.5495237269222009
   },
-  "epochs": 1,
-  "profile": "quick",
+  "epochs": 3,
+  "profile": "standard",
   "results": {
     "per_class": [
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 0,
-        "total": 21
+        "total": 56
       },
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 1,
-        "total": 24
+        "total": 57
       },
       {
-        "accuracy": 39.130434782608695,
-        "correct": 9,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 2,
-        "total": 23
+        "total": 51
       },
       {
-        "accuracy": 22.22222222222222,
-        "correct": 4,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 3,
-        "total": 18
+        "total": 49
       },
       {
-        "accuracy": 25.0,
-        "correct": 4,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 4,
-        "total": 16
+        "total": 46
       },
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 5,
-        "total": 17
+        "total": 46
       },
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 6,
-        "total": 16
+        "total": 50
       },
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 7,
-        "total": 21
+        "total": 51
       },
       {
         "accuracy": 0.0,
         "correct": 0,
         "digit": 8,
-        "total": 17
+        "total": 40
       },
       {
-        "accuracy": 0.0,
-        "correct": 0,
+        "accuracy": 100.0,
+        "correct": 54,
         "digit": 9,
-        "total": 27
+        "total": 54
       }
     ],
-    "test_accuracy": 8.5
+    "test_accuracy": 10.8
   },
   "system": {
-    "clusters": 8,
-    "firing_rate": 0.194,
+    "clusters": 2,
+    "firing_rate": 0.203,
     "generation": 2,
     "morphons": 2000,
-    "prediction_error": 0.0875695015727581,
-    "synapses": 114695
+    "prediction_error": 0.06473366837223499,
+    "synapses": 109971
   },
-  "test_samples": 200,
-  "timestamp": 1775019992,
-  "train_samples": 500,
+  "test_samples": 500,
+  "timestamp": 1775019851,
+  "train_samples": 2000,
   "version": "0.4.0"
 }

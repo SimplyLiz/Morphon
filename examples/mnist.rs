@@ -47,20 +47,22 @@ fn create_system() -> System {
             homeostasis_period: 10,
             memory_period: 50,
         },
+        // Adapted from CMA-ES classify_tiny findings, scaled for 10-class MNIST.
+        // Lower STDP magnitudes to prevent early mode collapse on one class.
         learning: LearningParams {
-            tau_eligibility: 5.0,
-            tau_trace: 10.0,
-            a_plus: 1.0,
-            a_minus: -1.0,
+            tau_eligibility: 2.0,
+            tau_trace: 5.0,
+            a_plus: 2.0,           // gentler than CMA-ES ±5.0 (10 classes need more exploration)
+            a_minus: -2.0,
             tau_tag: 200.0,
-            tag_threshold: 0.3,
+            tag_threshold: 0.5,
             capture_threshold: 0.2,
-            capture_rate: 0.15,
-            weight_max: 3.0,
+            capture_rate: 0.5,
+            weight_max: 2.0,
             weight_min: 0.01,
-            alpha_reward: 2.5,
-            alpha_novelty: 0.5,
-            alpha_arousal: 1.0,
+            alpha_reward: 0.5,      // novelty-driven (CMA-ES finding)
+            alpha_novelty: 3.0,
+            alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
         },
         morphogenesis: MorphogenesisParams {
@@ -96,20 +98,18 @@ fn train_one(system: &mut System, pixels: &[f64], label: usize, steps: usize) ->
     let pred = classify(system, pixels, steps);
     let correct = pred == label;
 
-    // Contrastive reward: boost the correct class, inhibit the predicted (wrong) class.
-    system.reward_contrastive(
-        label,
-        if correct { 0.8 } else { 0.6 },
-        0.4,
-    );
+    // CMA-ES optimal recipe: teach_hidden is the PRIMARY mechanism.
+    // Direct teaching signal to hidden layer (strength ~2.0) provides
+    // credit assignment that reward broadcast cannot achieve.
+    system.teach_hidden(label, 1.9);
 
-    if !correct {
-        system.inject_arousal(0.4);
-    }
+    // Minimal contrastive reward (CMA-ES: reward=0.1, inhibit=0.0)
+    system.reward_contrastive(label, 0.1, 0.0);
 
-    // Run 2 more steps with the same input to let the contrastive signal
-    // propagate through the weight update path (medium tick).
-    // This gives the eligibility boost time to affect interior synapses.
+    // Novelty injection drives plasticity (CMA-ES: alpha_novelty=3.0)
+    system.inject_novelty(0.3);
+
+    // Let teaching signal propagate through weight updates
     for _ in 0..2 {
         system.feed_input(pixels);
         system.step();
@@ -161,12 +161,11 @@ fn main() {
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
     println!("Types: {:?}\n", s.differentiation_map);
 
-    // Warm up
-    let warmup = vec![1.0; IMG_PIXELS];
-    for _ in 0..5 { system.process_steps(&warmup, 3); }
+    // No external warmup — System::new() handles developmental activity.
+    // Input bias removed: zero-bias encoding preserves dynamic range.
 
     let mut rng = rand::rng();
-    let steps_per_sample = 3;
+    let steps_per_sample = 5;  // 784→371→10 needs more propagation time
 
     for epoch in 0..num_epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
