@@ -397,6 +397,16 @@ impl RingBuffer {
         }
     }
 
+    /// Overwrite the most recently pushed value (rewind one position).
+    /// Used by k-WTA to correct activity_history when a neuron's firing
+    /// is suppressed after morphon.step() already pushed 1.0.
+    pub fn overwrite_last(&mut self, value: f64) {
+        if self.len > 0 {
+            let last = if self.head == 0 { self.data.len() - 1 } else { self.head - 1 };
+            self.data[last] = value;
+        }
+    }
+
     pub fn push(&mut self, value: f64) {
         self.data[self.head] = value;
         self.head = (self.head + 1) % self.data.len();

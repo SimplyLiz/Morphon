@@ -420,14 +420,19 @@ impl System {
                 let winners: std::collections::HashSet<MorphonId> = assoc_potentials[..k]
                     .iter().map(|(id, _, _)| *id).collect();
 
-                // Suppress non-winners: reset fired flag, clamp potential below threshold
+                // Suppress non-winners: reset fired flag, correct activity history.
+                // morphon.step() already ran and may have pushed 1.0 to activity_history
+                // for neurons that fired. We need to OVERWRITE that entry, not add another.
+                // Double-pushing (1.0 then 0.0) inflates the mean to ~0.5, which prevents
+                // apoptosis from ever detecting these neurons as "silent."
                 for &(id, _, _) in &assoc_potentials[k..] {
                     if let Some(m) = self.morphons.get_mut(&id) {
                         if m.fired {
                             m.fired = false;
-                            m.activity_history.push(0.0); // undo the 1.0 pushed in step()
+                            // Overwrite the 1.0 that step() just pushed by replacing
+                            // the most recent entry (rewind head, then push 0.0)
+                            m.activity_history.overwrite_last(0.0);
                         }
-                        // Mild suppression — don't destroy potential, just prevent firing
                         m.potential = m.potential.min(m.threshold * 0.5);
                     }
                 }
