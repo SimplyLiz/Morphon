@@ -187,12 +187,14 @@ pub fn develop(
         } else { 0 };
 
         // Xavier-like scaling: weight magnitude = 1/sqrt(fan_in)
-        let sens_to_assoc_scale = 1.0 / (conns_per_sens as f64).max(1.0).sqrt();
+        // Sensory → Associative: EXCITATORY only. These must be positive and strong
+        // enough to cross the associative morphon's threshold (~0.3) with a single spike.
+        // Mixed-sign initialization here creates dead pathways that never activate.
         for (i, &s) in sensory.iter().enumerate() {
             for j in 0..conns_per_sens.min(associative.len()) {
                 let t = associative[(i.wrapping_mul(7) + j) % associative.len()];
                 if !topology.has_connection(s, t) {
-                    let w = rng.random_range(-sens_to_assoc_scale..sens_to_assoc_scale);
+                    let w = rng.random_range(0.3..0.8); // positive, above threshold
                     topology.add_synapse(s, t, Synapse::new(w).with_delay(0.1));
                 }
             }

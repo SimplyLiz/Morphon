@@ -94,16 +94,24 @@ pub fn update_eligibility(
     synapse.pre_trace *= trace_decay;
     synapse.post_trace *= trace_decay;
 
-    // STDP: event-driven eligibility updates
+    // Weight-dependent (multiplicative) STDP with soft bounds.
+    // LTP scales as (w_max - w): easy to strengthen weak synapses, hard to over-strengthen.
+    // LTD scales as (w - w_min): easy to weaken strong synapses, protects weak ones.
+    // This produces stable long-tail weight distributions instead of bimodal collapse
+    // (Gilson & Fukai 2011, van Rossum et al. 2000).
+    let w = synapse.weight;
+    let ltp_scale = (params.weight_max - w) / params.weight_max; // 1.0 at w=0, 0.0 at w=w_max
+    let ltd_scale = (w + params.weight_max) / (2.0 * params.weight_max); // 0.0 at w=-w_max, 1.0 at w=w_max
+
     let mut stdp = 0.0;
     if pre_fired {
         // Pre-before-post: LTD proportional to how recently post was active
-        stdp += params.a_minus * synapse.post_trace;
+        stdp += params.a_minus * synapse.post_trace * ltd_scale;
         synapse.pre_trace += 1.0;
     }
     if post_activity > 0.01 {
-        // Post active (spiking or graded): LTP proportional to pre trace × activity level
-        stdp += params.a_plus * synapse.pre_trace * post_activity;
+        // Post active: LTP proportional to pre trace × activity level
+        stdp += params.a_plus * synapse.pre_trace * post_activity * ltp_scale;
         synapse.post_trace += post_activity;
     }
 

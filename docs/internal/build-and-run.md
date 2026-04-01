@@ -41,8 +41,15 @@ cargo bench
 
 ## Run Examples
 
+All examples support run profiles: `--quick` (default), `--standard`, `--extended`.
+
 ```bash
-cargo run --example cartpole --release
+cargo run --example cartpole --release              # quick (default, fast dev cycle)
+cargo run --example cartpole --release -- --standard # longer run
+cargo run --example cartpole --release -- --extended # full benchmark
+cargo run --example anomaly --release
+cargo run --example mnist --release                  # requires ./data/ with MNIST files
+cargo run --example classify_tiny --release          # minimal sanity check
 ```
 
 ## Python Bindings
@@ -96,7 +103,10 @@ Morphon/
 ├── tests/
 │   └── integration_test.rs
 ├── examples/
-│   └── cartpole.rs         # CartPole RL benchmark
+│   ├── cartpole.rs         # CartPole RL control task
+│   ├── anomaly.rs          # Sensor anomaly detection
+│   ├── mnist.rs            # MNIST digit classification (full 784px)
+│   └── classify_tiny.rs    # Minimal classification sanity check
 ├── benches/
 │   └── benchmarks.rs
 └── docs/

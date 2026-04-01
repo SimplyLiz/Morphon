@@ -181,6 +181,7 @@ Methods:
 
 Methods:
 - `inject_reward(strength)`, `inject_novelty(strength)`, `inject_arousal(strength)`, `inject_homeostasis(strength)` — inject signal (clamped to 0.0..1.0)
+- `reward_advantage() -> f64` — `(reward - reward_baseline).max(0.0)` — the advantage signal used by the learning rule
 - `inject(channel, strength)` — generic injection
 - `level(channel) -> f64` — read current level
 - `combined_signal(αr, αn, αa, αh) -> f64` — `αr*R + αn*N + αa*A + αh*H`
@@ -197,8 +198,11 @@ Methods:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `tau_eligibility` | 20.0 | Fast trace time constant |
+| `tau_trace` | 10.0 | STDP spike trace window (Lava/Loihi: 10) |
+| `a_plus` | 1.0 | LTP magnitude (post fires, pre_trace > 0) |
+| `a_minus` | -1.0 | LTD magnitude (pre fires, post_trace > 0) |
 | `tau_tag` | 6000.0 | Slow tag time constant |
-| `tag_threshold` | 0.7 | Hebbian threshold for tagging |
+| `tag_threshold` | 0.3 | Eligibility threshold for tagging |
 | `capture_threshold` | 0.5 | Reward threshold for capture |
 | `capture_rate` | 0.1 | Learning rate at capture |
 | `weight_max` | 5.0 | Weight clamp |
@@ -210,21 +214,20 @@ Methods:
 
 ### Functions
 
-**`update_eligibility(synapse, pre_fired, post_fired, params, dt)`**
+**`update_eligibility(synapse, pre_fired, post_activity, params, dt)`**
 
-Updates both the fast eligibility trace and the slow synaptic tag:
-- Fast: `e += (-e/τ_e + H(pre,post)) * dt`, clamped to [-1, 1]
-- Slow: if `H > tag_threshold` and not consolidated, set `tag = 1.0`, `tag_strength = H`. Tag decays as `tag *= exp(-dt/τ_tag)`.
+Trace-based STDP (Frémaux & Gerstner 2016). Updates pre/post traces and eligibility:
+1. Decay `pre_trace` and `post_trace` by `exp(-dt/τ_trace)`
+2. If pre fired: `stdp += a_minus * post_trace` (LTD), then `pre_trace += 1.0`
+3. If post active (>0.01): `stdp += a_plus * pre_trace * post_activity` (LTP), then `post_trace += post_activity`
+4. Eligibility: `e += (-e/τ_e + stdp) * dt`, clamped to [-1, 1]
+5. Slow tag: if `eligibility > tag_threshold` and not consolidated, `tag = 1.0`, `tag_strength = eligibility`
 
-Hebbian coincidence H:
-| pre | post | H |
-|-----|------|---|
-| true | true | 1.0 (LTP) |
-| true | false | -0.5 (mild LTD) |
-| false | true | -0.3 (mild LTD) |
-| false | false | 0.0 |
+`post_activity` is continuous: 1.0 for spiking morphons, normalized membrane potential for Motor morphons (graded readout, matches DSQN/SpikeGym pattern).
 
-**`apply_weight_update(synapse, modulation, params, plasticity_rate)`**
+**`apply_weight_update(synapse, modulation, params, plasticity_rate, post_receptors)`**
+
+Receptor-gated: only modulation channels matching `post_receptors` are included. Reward channel uses **advantage** (`reward - baseline`, clamped ≥ 0) instead of raw reward.
 
 Standard: `Δw = eligibility * M(t) * plasticity_rate`
 
@@ -458,7 +461,12 @@ Key methods:
 - `read_output() -> Vec<f64>` — read potentials from motor Morphons (sorted by ID)
 - `process(input) -> Vec<f64>` — feed_input + step + read_output
 - `inject_reward(strength)`, `inject_novelty(strength)`, `inject_arousal(strength)`
+- `inject_reward_at(output_index, strength)` — targeted two-hop reward at a specific output port
+- `inject_inhibition_at(output_index, strength)` — targeted two-hop eligibility decay at a specific output port
+- `reward_contrastive(correct_index, reward_strength, inhibit_strength)` — reward correct output, inhibit incorrect ones
+- `process_steps(input, n) -> Vec<f64>` — multi-step processing (feed input each step, read output after n steps)
 - `inspect() -> SystemStats` — full system statistics
+- `diagnostics() -> &Diagnostics` — current learning pipeline diagnostics
 - `step_count() -> u64`
 
 ### `SystemStats` (struct)
@@ -476,6 +484,37 @@ Key methods:
 | `working_memory_items` | `usize` |
 | `episodic_memory_items` | `usize` |
 | `step_count` | `u64` |
+| `total_born` | `usize` |
+| `total_died` | `usize` |
+
+---
+
+## `diagnostics.rs` — Learning Pipeline Observability
+
+### `Diagnostics` (struct, Serialize/Deserialize)
+
+| Group | Field | Type | Description |
+|-------|-------|------|-------------|
+| Weights | `weight_mean` | `f64` | Mean synapse weight |
+| | `weight_std` | `f64` | Std dev of synapse weights |
+| | `weight_abs_max` | `f64` | Max absolute weight |
+| | `total_synapses` | `usize` | Total synapse count |
+| Eligibility | `eligibility_mean_abs` | `f64` | Mean absolute eligibility |
+| | `eligibility_max_abs` | `f64` | Max absolute eligibility |
+| | `eligibility_nonzero_count` | `usize` | Synapses with \|e\| > 0.01 |
+| Tags | `active_tags` | `usize` | Synapses with tag > 0.1 |
+| | `captures_this_step` | `u64` | Captures this step |
+| | `total_captures` | `u64` | Cumulative captures |
+| Firing | `firing_by_type` | `HashMap<CellType, (usize, usize)>` | (firing, total) per cell type |
+| Spikes | `spikes_delivered_this_step` | `usize` | Delivered this step |
+| | `spikes_pending` | `usize` | Still in transit |
+| Structural | `rollback_triggered` | `bool` | Rollback this step |
+| | `total_rollbacks` | `u64` | Cumulative rollbacks |
+
+Methods:
+- `snapshot(morphons, topology) -> Self` — compute diagnostics from current state
+- `summary() -> String` — one-line formatted summary for logging
+- `firing_summary() -> String` — per-type firing rate percentages
 
 ---
 
@@ -541,4 +580,22 @@ restored = morphon.System.load_json(json)
 
 ### `morphon.SystemStats`
 
-Read-only properties: `total_morphons`, `total_synapses`, `fused_clusters`, `max_generation`, `avg_energy`, `avg_prediction_error`, `firing_rate`, `working_memory_items`, `episodic_memory_items`, `step_count`, `differentiation_map` (dict of str→int).
+Read-only properties: `total_morphons`, `total_synapses`, `fused_clusters`, `max_generation`, `avg_energy`, `avg_prediction_error`, `firing_rate`, `working_memory_items`, `episodic_memory_items`, `step_count`, `total_born`, `total_died`, `differentiation_map` (dict of str→int).
+
+---
+
+## `wasm.rs` — WASM Bindings (feature: `wasm`)
+
+### `WasmSystem`
+
+```javascript
+const system = new WasmSystem(100, "cortical", 8, 4, 2);
+const output = system.process(new Float64Array([1.0, 0.5]));
+system.inject_reward(0.8);
+system.inject_reward_at(0, 0.5);
+system.inject_inhibition_at(1, 0.3);
+system.reward_contrastive(0, 0.8, 0.3);
+const stats = system.inspect();  // JSON string
+```
+
+Exposes all core System methods plus contrastive reward API. Powers the Three.js web visualizer in `web/`.

@@ -137,7 +137,7 @@ fn run_episode(system: &mut System, env: &mut CartPole, max_steps: usize, epsilo
     for _ in 0..max_steps {
         let obs = env.observe();
         // 3 internal steps per action to let signals propagate through the network
-        let outputs = system.process_steps(&obs, 3);
+        let outputs = system.process_steps(&obs, 5);
         let action = select_action(&outputs, epsilon, rng);
 
         let alive = env.step(action);
@@ -192,7 +192,7 @@ fn main() {
     println!("Types: {:?}\n", stats.differentiation_map);
 
     // Warm up
-    for _ in 0..20 { system.process_steps(&[1.0, 1.0, 1.0, 1.0], 3); }
+    for _ in 0..20 { system.process_steps(&[1.0, 1.0, 1.0, 1.0], 5); }
     let mut best = 0usize;
     let mut recent: Vec<usize> = Vec::new();
 

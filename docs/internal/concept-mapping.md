@@ -21,6 +21,7 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | `desire: Float` | `morphon.rs: Morphon.desire` | Done (EMA of PE) |
 | `incoming/outgoing` | `topology.rs: Topology` | Done (petgraph DiGraph) |
 | `eligibility_traces` | `morphon.rs: Synapse.eligibility` | Done |
+| `pre_trace` / `post_trace` | `morphon.rs: Synapse.pre_trace/post_trace` | Done (STDP spike traces, τ=10) |
 | `activity_history: RingBuffer` | `morphon.rs: Morphon.activity_history` | Done (100-step window) |
 | `age: Int` | `morphon.rs: Morphon.age` | Done |
 | `energy: Float` | `morphon.rs: Morphon.energy` | Done |
@@ -54,7 +55,7 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 
 | Mechanism | Concept Section | Implemented In | Status |
 |-----------|----------------|---------------|--------|
-| A) Synaptic Plasticity | 3.4A | `learning.rs` | Done (three-factor rule) |
+| A) Synaptic Plasticity | 3.4A | `learning.rs` | Done (trace-based STDP + three-factor rule + advantage modulation) |
 | B) Synaptogenesis/Pruning | 3.4B | `morphogenesis.rs: synaptogenesis(), pruning()` | Done |
 | C) Cell Division (Mitosis) | 3.4C | `morphogenesis.rs: division()`, `morphon.rs: divide()` | Done (inheritance + mutation + lineage tracking) |
 | D) Differentiation | 3.4D | `morphogenesis.rs: differentiation(), dedifferentiation()` | Done (diff, dediff, transdiff) |
@@ -70,7 +71,8 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Novelty (Acetylcholine) | `neuromodulation.rs: novelty` | Done |
 | Arousal (Noradrenaline) | `neuromodulation.rs: arousal` | Done |
 | Homeostasis (Serotonin) | `neuromodulation.rs: homeostasis` | Done |
-| Formula: ẇ = e * (αr*R + αn*N + αa*A + αh*H) | `learning.rs: apply_weight_update()` | Done |
+| Formula: ẇ = e * (αr*R + αn*N + αa*A + αh*H) | `learning.rs: apply_weight_update()` | Done (receptor-gated, reward uses advantage) |
+| Reward advantage (reward - baseline) | `neuromodulation.rs: reward_advantage()` | Done (EMA baseline, clamped ≥ 0) |
 | Global broadcast | Single struct, all Morphons read | Done |
 
 ## Section 3.6: Memory Architecture
@@ -110,7 +112,7 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Exponential map (migration) | `HyperbolicPoint::exp_map()` | Done |
 | Logarithmic map (gradients) | `HyperbolicPoint::log_map()` | Done |
 | Möbius addition | `HyperbolicPoint::mobius_add()` | Done |
-| Learnable curvature | `HyperbolicPoint.curvature` | Done (field exists, not yet learned at runtime) |
+| Learnable curvature | `HyperbolicPoint.curvature` | Done (field exists, learned at runtime in slow path) |
 | Specificity = distance from origin | `HyperbolicPoint::specificity()` | Done |
 
 ## Section 4.1: Developmental Programs
@@ -160,6 +162,15 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | Anomaly detection benchmark | 6.2 | `examples/anomaly.rs`: sensor anomaly detection demo |
 | MNIST full 784px | 6.2 | `examples/mnist.rs`: full resolution, no downsampling, auto-scaled seed |
 | WASM runtime | Product 2.3 | `src/wasm.rs` + `web/index.html`. 350KB binary, Poincare disk viz. |
+| Trace-based STDP | 3.4A | `learning.rs`: pre/post traces (τ=10), widens STDP window from 1 to ~10 steps (Frémaux & Gerstner 2016) |
+| Advantage modulation | 3.5 | `neuromodulation.rs`: reward_advantage() = (reward - baseline EMA).max(0). Eliminates unsupervised weight drift |
+| Spontaneous developmental activity | 4.1 | `system.rs`: 100-step warm-up with noise input + modulation, lifecycle disabled |
+| Growth cap enforcement | 3.4C | `morphogenesis.rs`: hard cap on morphon count respected during division |
+| Lifecycle disable during warm-up | 4.1 | `system.rs`: structural plasticity disabled during spontaneous activity phase |
+| Contrastive reward (two-hop) | Credit assignment | `system.rs`: inject_reward_at() with backward hop to associative layer |
+| Total born/died tracking | Observability | `system.rs`: SystemStats.total_born/total_died |
+| classify_tiny example | 6.2 | `examples/classify_tiny.rs`: minimal classification sanity check |
+| Run profiles | Usability | Examples support --quick/--standard/--extended CLI flags |
 
 ## What's Not Yet Implemented
 
