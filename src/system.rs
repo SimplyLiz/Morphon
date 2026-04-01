@@ -675,13 +675,19 @@ impl System {
                         }
 
                         // (b) Heterosynaptic depression:
-                        // Post fired → depress ALL incoming synapses slightly,
-                        // regardless of pre activity. Normalizes total input,
-                        // prevents winner-take-all collapse.
+                        // Post fired → decay ALL incoming weights toward zero.
+                        // This normalizes total input and prevents runaway.
+                        // Multiplicative decay: w *= (1 - rate), pushes toward 0
+                        // regardless of sign (positive shrinks, negative shrinks).
                         if fired {
-                            synapse.weight -= hsd_rate * synapse.weight.abs();
-                            synapse.weight = synapse.weight.max(-wmax);
+                            synapse.weight *= 1.0 - hsd_rate;
                         }
+
+                        // Blanket weight sanitizer — catch any -inf/NaN from upstream
+                        if !synapse.weight.is_finite() {
+                            synapse.weight = 0.0;
+                        }
+                        synapse.weight = synapse.weight.clamp(-wmax, wmax);
                     }
                 }
             }

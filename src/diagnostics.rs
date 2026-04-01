@@ -83,7 +83,7 @@ impl Diagnostics {
 
         for ei in topology.graph.edge_indices() {
             if let Some(syn) = topology.graph.edge_weight(ei) {
-                let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+                let w = if syn.weight.is_finite() { syn.weight.clamp(-100.0, 100.0) } else { 0.0 };
                 weight_sum += w;
                 weight_sq_sum += w * w;
                 weight_abs_max = weight_abs_max.max(w.abs());

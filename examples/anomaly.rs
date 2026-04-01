@@ -81,6 +81,8 @@ fn create_system() -> System {
             alpha_novelty: 1.0,
             alpha_arousal: 0.5,
             alpha_homeostasis: 0.2,
+            transmitter_potentiation: 0.001,
+            heterosynaptic_depression: 0.002,
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: 200,

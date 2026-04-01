@@ -127,6 +127,8 @@ fn evaluate(x: &DVector<f64>) -> f64 {
             alpha_novelty: p.alpha_novelty,
             alpha_arousal: p.alpha_arousal,
             alpha_homeostasis: 0.1,
+            transmitter_potentiation: 0.001,
+            heterosynaptic_depression: 0.002,
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: 100,

@@ -204,9 +204,9 @@ function initScene() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.28,  // strength — soft glow
-    0.3,   // radius — tight halos
-    0.85   // threshold
+    0.45,  // strength
+    0.35,  // radius
+    0.55   // threshold — lowered so PBR-attenuated firing colors still bloom
   );
   composer.addPass(bloomPass);
   // Vignette — draws eye to center
@@ -272,14 +272,15 @@ function initScene() {
     const r3 = ring.clone(); r3.rotation.y = Math.PI / 2; scene.add(r3);
   }
 
-  // === NODE MESH — PBR with emissive for glow + 3D shading ===
+  // === NODE MESH ===
   const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
-  // MeshBasicMaterial: no lighting interaction, purely instance-colored.
-  // Eliminates z-fighting visibility — overlapping surfaces render the same color
-  // regardless of normal direction, so depth buffer flicker is invisible.
-  // The 3D look comes from bloom, glow variation, and size — not from shading.
-  const nodeMat = new THREE.MeshBasicMaterial({
-    color: 0xffffff,  // multiplied by instance color
+  // Hybrid: high emissive (self-lit, hides z-fighting) + subtle diffuse (3D depth).
+  // Instance color drives the diffuse channel; emissive is a dim version of it.
+  const nodeMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,         // instance color multiplies this
+    emissive: 0x0a0a0e,     // very subtle self-illumination — just enough for 3D depth
+    metalness: 0.0,
+    roughness: 0.75,
   });
   nodesMesh = new THREE.InstancedMesh(nodeGeo, nodeMat, MAX_NODES);
   nodesMesh.count = 0;
@@ -484,8 +485,8 @@ function updateScene() {
       tempColor.copy(color).multiplyScalar(2.5);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Resting: dim. Firing: soft glow that clears bloom threshold.
-      const intensity = bright * (0.45 + glow * 0.95);
+      // Resting: low (below bloom 0.55). Firing: clearly above for visible glow.
+      const intensity = bright * (0.25 + glow * 2.0);
       tempColor.copy(color).multiplyScalar(intensity);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -1450,7 +1451,7 @@ function animate() {
   // Dynamic bloom
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
-    bloomPass.strength = 0.23 + activity * 0.15;
+    bloomPass.strength = 0.34 + activity * 0.22;
   }
 
   controls.update();

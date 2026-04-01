@@ -102,6 +102,8 @@ fn create_system() -> System {
             alpha_novelty: 3.0,
             alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
+            transmitter_potentiation: 0.001,
+            heterosynaptic_depression: 0.002,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.05,
@@ -236,52 +238,110 @@ fn main() {
     }
 
     // =========================================================================
-    // PHASE 2: Supervised readout on frozen hidden representations
-    // Enable analog readout and train it with the delta rule.
-    // Hidden layer weights are NOT updated during this phase — only readout weights.
+    // PHASE 2: Post-hoc labeling (Diehl & Cook 2015)
+    // Present labeled images, record which hidden neurons fire for each class.
+    // Assign each neuron to the class it responds to most frequently.
+    // At test time, classify by which class's assigned neurons are most active.
+    // No gradient, no delta rule, no mode collapse — pure statistics.
     // =========================================================================
-    println!("--- PHASE 2: Supervised readout training (delta rule) ---\n");
+    println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
-    // Enable analog readout (creates random readout weights)
-    system.enable_analog_readout();
-
-    // Freeze hidden layer: disable STDP by setting medium_period very high
-    // (no eligibility updates = no weight changes in the spiking network).
-    // The k-WTA and spike propagation still run — only plasticity is frozen.
+    // Freeze hidden layer
     system.config.scheduler.medium_period = 999999;
 
-    for epoch in 0..phase2_epochs {
-        let mut indices: Vec<usize> = (0..train_images.len()).collect();
-        indices.shuffle(&mut rng);
+    // Collect associative morphon IDs
+    let assoc_ids: Vec<morphon_core::MorphonId> = system.morphons.values()
+        .filter(|m| m.cell_type == morphon_core::CellType::Associative
+            || m.cell_type == morphon_core::CellType::Stem)
+        .map(|m| m.id)
+        .collect();
 
-        let mut correct = 0;
-        let mut total = 0;
+    // For each hidden neuron, count how many times it fired per class
+    let mut neuron_class_counts: std::collections::HashMap<morphon_core::MorphonId, Vec<usize>> =
+        assoc_ids.iter().map(|&id| (id, vec![0usize; NUM_CLASSES])).collect();
 
-        for (bi, &idx) in indices.iter().take(phase2_samples).enumerate() {
-            let pred = classify(&mut system, &train_images[idx], &mut rng);
-            let label = train_labels[idx];
-            if pred == label { correct += 1; }
-            total += 1;
+    let label_samples = phase2_samples.min(train_images.len());
+    let mut indices: Vec<usize> = (0..train_images.len()).collect();
+    indices.shuffle(&mut rng);
 
-            // Softmax cross-entropy readout training
-            system.train_readout(label, 0.01);
+    println!("  Labeling {} samples...", label_samples);
+    for (bi, &idx) in indices.iter().take(label_samples).enumerate() {
+        present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
+        let label = train_labels[idx];
 
-            if (bi + 1) % 500 == 0 {
-                println!("  Phase2 Ep{} [{:>4}/{}] acc={:.1}%",
-                    epoch + 1, bi + 1, phase2_samples,
-                    correct as f64 / total as f64 * 100.0);
+        // Record which hidden neurons fired during this image
+        for &aid in &assoc_ids {
+            if let Some(m) = system.morphons.get(&aid) {
+                if m.fired || m.activity_history.mean() > 0.05 {
+                    if let Some(counts) = neuron_class_counts.get_mut(&aid) {
+                        counts[label] += 1;
+                    }
+                }
             }
         }
 
-        // Test
-        println!("\n  Test after Phase2 Epoch {}:", epoch + 1);
-        let (test_acc, _) = evaluate(&mut system, &test_images, &test_labels, test_n, &mut rng);
-        println!("  => test={:.1}%\n", test_acc);
+        if (bi + 1) % 500 == 0 {
+            println!("  [{}/{}] labeled", bi + 1, label_samples);
+        }
     }
 
-    // Final evaluation with full per-class breakdown
+    // Assign each neuron to its most-responded class
+    let neuron_labels: std::collections::HashMap<morphon_core::MorphonId, usize> =
+        neuron_class_counts.iter()
+            .filter_map(|(&id, counts)| {
+                let total: usize = counts.iter().sum();
+                if total == 0 { return None; }
+                let best_class = counts.iter().enumerate()
+                    .max_by_key(|&(_, c)| *c)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                Some((id, best_class))
+            })
+            .collect();
+
+    let labeled_count = neuron_labels.len();
+    let mut class_neuron_counts = vec![0usize; NUM_CLASSES];
+    for &c in neuron_labels.values() { class_neuron_counts[c] += 1; }
+    println!("  {} neurons labeled: {:?}\n", labeled_count, class_neuron_counts);
+
+    // Test: classify by which class's neurons are most active
+    println!("--- Testing with post-hoc labels ---\n");
+    let mut cc = vec![0usize; NUM_CLASSES];
+    let mut ct = vec![0usize; NUM_CLASSES];
+    for i in 0..test_images.len().min(test_n) {
+        present_image(&mut system, &test_images[i], STEPS_PER_IMAGE, &mut rng);
+
+        // Vote: sum activity of neurons assigned to each class
+        let mut class_votes = vec![0.0f64; NUM_CLASSES];
+        for (&aid, &assigned_class) in &neuron_labels {
+            if let Some(m) = system.morphons.get(&aid) {
+                let activity = if m.fired { 1.0 } else { m.activity_history.mean() };
+                class_votes[assigned_class] += activity;
+            }
+        }
+
+        let pred = class_votes.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        ct[test_labels[i]] += 1;
+        if pred == test_labels[i] { cc[test_labels[i]] += 1; }
+    }
+
+    // Per-class results from the post-hoc classification above
     println!("=== Final Per-Class Test Accuracy ===");
-    let (test_acc, per_class) = evaluate(&mut system, &test_images, &test_labels, test_n, &mut rng);
+    let mut per_class = Vec::new();
+    let total_correct: usize = cc.iter().sum();
+    let total_tested: usize = ct.iter().sum();
+    let test_acc = if total_tested > 0 { total_correct as f64 / total_tested as f64 * 100.0 } else { 0.0 };
+    for c in 0..NUM_CLASSES {
+        if ct[c] > 0 {
+            let class_acc = cc[c] as f64 / ct[c] as f64 * 100.0;
+            println!("  {}: {:.1}% ({}/{})", c, class_acc, cc[c], ct[c]);
+            per_class.push(json!({"digit": c, "accuracy": class_acc, "correct": cc[c], "total": ct[c]}));
+        }
+    }
 
     println!("\n=== Final ===");
     let s = system.inspect();

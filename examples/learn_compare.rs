@@ -68,6 +68,8 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
             alpha_novelty: 3.0,
             alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
+            transmitter_potentiation: 0.001,
+            heterosynaptic_depression: 0.002,
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: 60,
