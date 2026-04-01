@@ -380,6 +380,74 @@ impl fmt::Display for HyperbolicPoint {
 /// Legacy alias — all positions are now hyperbolic.
 pub type Position = HyperbolicPoint;
 
+/// Per-morphon frustration state for stochastic exploration.
+///
+/// When prediction error stagnates (desire is high but not improving),
+/// frustration grows, increasing noise to escape local minima.
+/// Biological analog: locus coeruleus noradrenaline burst under
+/// sustained prediction failure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrustrationState {
+    /// Consecutive fast ticks where |PE_delta| < stagnation_threshold.
+    pub stagnation_counter: u32,
+    /// Normalized frustration level in [0.0, 1.0].
+    pub frustration_level: f64,
+    /// Current noise amplitude multiplier applied to potential (1.0 = baseline).
+    pub noise_amplitude: f64,
+    /// Whether this morphon is in active exploration mode.
+    pub exploration_mode: bool,
+    /// Previous prediction_error value (for computing delta).
+    pub prev_pe: f64,
+}
+
+impl Default for FrustrationState {
+    fn default() -> Self {
+        Self {
+            stagnation_counter: 0,
+            frustration_level: 0.0,
+            noise_amplitude: 1.0,
+            exploration_mode: false,
+            prev_pe: 0.0,
+        }
+    }
+}
+
+/// Configuration for frustration-driven stochastic exploration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FrustrationConfig {
+    /// Whether frustration-driven exploration is enabled.
+    pub enabled: bool,
+    /// Minimum PE change to consider non-stagnant.
+    pub stagnation_threshold: f64,
+    /// Stagnation counter value at which frustration saturates.
+    pub saturation_steps: u32,
+    /// Frustration level above which exploration_mode activates.
+    pub exploration_threshold: f64,
+    /// Maximum noise multiplier when fully frustrated.
+    pub max_noise_multiplier: f64,
+    /// Weight perturbation amplitude on medium tick (fraction of weight_max).
+    pub weight_perturbation_scale: f64,
+    /// Whether frustrated morphons can migrate without the desire>=0.3 gate.
+    pub frustration_migration: bool,
+    /// Frustration level above which migration direction is randomized.
+    pub random_migration_threshold: f64,
+}
+
+impl Default for FrustrationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            stagnation_threshold: 0.005,
+            saturation_steps: 200,
+            exploration_threshold: 0.3,
+            max_noise_multiplier: 5.0,
+            weight_perturbation_scale: 0.01,
+            frustration_migration: true,
+            random_migration_threshold: 0.6,
+        }
+    }
+}
+
 /// Ring buffer for activity history tracking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RingBuffer {

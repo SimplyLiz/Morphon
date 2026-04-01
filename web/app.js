@@ -822,18 +822,37 @@ function setModBar(barId, valId, value) {
 function drawSparkline(canvasId, data, color) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
+  // Match backing buffer to CSS size for crisp rendering
+  const rect = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const bw = Math.floor(rect.width * dpr);
+  const bh = Math.floor(rect.height * dpr);
+  if (bw <= 0 || bh <= 0) return;
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw;
+    canvas.height = bh;
+  }
   const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = rect.width, h = rect.height;
 
   ctx.clearRect(0, 0, w, h);
   if (data.length < 2) return;
-  const max = Math.max(...data, 0.01);
 
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || max || 1; // avoid div-by-zero for flat data
+  const pad = 3; // px padding top/bottom
+
+  function yFor(v) {
+    return h - pad - ((v - min) / range) * (h - pad * 2 - 10);
+  }
+
+  // Gradient fill
   ctx.beginPath();
   for (let i = 0; i < data.length; i++) {
     const x = (i / (data.length - 1)) * w;
-    const y = h - (data[i] / max) * h * 0.85 - 2;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    i === 0 ? ctx.moveTo(x, yFor(data[i])) : ctx.lineTo(x, yFor(data[i]));
   }
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   const grad = ctx.createLinearGradient(0, 0, 0, h);
@@ -842,15 +861,24 @@ function drawSparkline(canvasId, data, color) {
   ctx.fillStyle = grad;
   ctx.fill();
 
+  // Line
   ctx.beginPath();
   for (let i = 0; i < data.length; i++) {
     const x = (i / (data.length - 1)) * w;
-    const y = h - (data[i] / max) * h * 0.85 - 2;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    i === 0 ? ctx.moveTo(x, yFor(data[i])) : ctx.lineTo(x, yFor(data[i]));
   }
   ctx.strokeStyle = color;
   ctx.lineWidth = 1.5;
   ctx.stroke();
+
+  // Current value label
+  const last = data[data.length - 1];
+  const label = last < 1 ? (last * 100).toFixed(1) + '%' : last.toFixed(0);
+  ctx.font = '9px "JetBrains Mono", monospace';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = color;
+  ctx.fillText(label, w - 2, 2);
 }
 
 function updateDetailPanel() {

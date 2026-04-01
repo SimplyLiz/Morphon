@@ -70,7 +70,7 @@ impl Default for MorphogenesisParams {
             apoptosis_energy_threshold: 0.1,
             transdifferentiation_desire_threshold: 0.5,
             transdifferentiation_min_age: 500,
-            max_morphons: 10_000,
+            max_morphons: 500,  // sane default — web demo runs at this scale
             min_morphons: 10,
             min_sensory_fraction: 0.05,
             min_motor_fraction: 0.02,
@@ -216,7 +216,13 @@ pub fn division(
 
     let candidates: Vec<MorphonId> = morphons
         .values()
-        .filter(|m| m.should_divide(params.division_threshold))
+        .filter(|m| {
+            // Only Associative and Stem can divide — Sensory/Motor are fixed I/O ports,
+            // Modulatory is controlled by fusion. Without this, Sensory morphons
+            // (100% firing from constant input) reproduce endlessly.
+            (m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            && m.should_divide(params.division_threshold)
+        })
         .map(|m| m.id)
         .collect();
 
