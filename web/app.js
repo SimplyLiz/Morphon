@@ -517,14 +517,23 @@ function updateScene() {
     // Smooth edge dimming: use the avg dim of both endpoints
     const edgeDimFactor = (nodeDim[fromIdx] + nodeDim[toIdx]) * 0.5;
 
+    // Synapse heat: eligibility trace reflects recent spike traffic
+    const heat = Math.min(Math.abs(e.eligibility || 0), 1.0);
+
     let r, g, b;
     if (isHighlighted) {
       r = 0.5; g = 0.7; b = 1.0;
     } else {
-      const brightness = (0.05 + w * 0.18) * (1.0 - edgeDimFactor * 0.9);
+      // Base brightness from weight + heat boost from recent activity
+      const brightness = (0.05 + w * 0.18 + heat * 0.4) * (1.0 - edgeDimFactor * 0.9);
       r = sourceColor.r * brightness;
       g = sourceColor.g * brightness;
       b = sourceColor.b * brightness;
+      // Hot synapses shift toward white
+      if (heat > 0.1) {
+        const heatWhite = heat * 0.3;
+        r += heatWhite; g += heatWhite; b += heatWhite;
+      }
     }
 
     if (e.consolidated && edgeDimFactor < 0.3) { r += 0.05; g += 0.04; b += 0.02; }
@@ -959,7 +968,9 @@ function updateSpikes() {
 
   // Read real pending spikes from the engine — flat buffer, no JSON
   // Layout: [source, target, initial_delay, remaining_delay, strength] × N
-  const buf = system.pending_spikes_flat();
+  let buf;
+  try { buf = system.pending_spikes_flat(); } catch(_) { spikesMesh.count = 0; return; }
+  if (!buf || buf.length === 0) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
   const STRIDE = 5;
   const count = buf.length / STRIDE;
   let alive = 0;
@@ -987,6 +998,9 @@ function updateSpikes() {
       nodePositions[ti]   * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
       t
     );
+
+    // Guard against NaN from degenerate geodesic (coincident points, origin)
+    if (!isFinite(g[0]) || !isFinite(g[1]) || !isFinite(g[2])) continue;
 
     // Size: base + sine curve + strength scaling (stronger synapses = bigger spikes)
     const sizeCurve = Math.sin(t * Math.PI);
@@ -1031,10 +1045,12 @@ function animate() {
       // Collect fired IDs after each sub-step so we don't miss transient firings
       for (const id of system.fired_ids()) frameFired.add(id);
       // Flash arrival targets — spike delivery triggers a glow on the receiving morphon
-      for (const id of system.delivered_target_ids()) {
-        const idx = nodeMap.get(id);
-        if (idx !== undefined) nodeGlow[idx] = Math.min(nodeGlow[idx] + 0.5, 1.0);
-      }
+      try {
+        for (const id of system.delivered_target_ids()) {
+          const idx = nodeMap.get(id);
+          if (idx !== undefined) nodeGlow[idx] = Math.min(nodeGlow[idx] + 0.5, 1.0);
+        }
+      } catch(_) {} // graceful fallback if method not available (cached WASM)
     }
     updateScene();
     if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }

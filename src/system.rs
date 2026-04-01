@@ -361,40 +361,47 @@ impl System {
             m.step(dt, sc, metabolic);
         });
 
-        // 4. Winner-Take-All lateral inhibition in the Associative layer.
-        //    When an associative morphon fires, it suppresses all other associative
-        //    morphons by injecting strong negative current. This forces DIFFERENT
-        //    neurons to respond to DIFFERENT input patterns — the mechanism that
-        //    creates specialized feature detectors (Diehl & Cook 2015).
-        //    Without WTA, all hidden neurons converge to the mean input pattern.
+        // 4. k-Winner-Take-All lateral inhibition in the Associative layer.
+        //    Only the top-k most active associative morphons survive each step.
+        //    All others have their firing suppressed and potential clamped.
+        //    This forces different neurons to specialize on different input patterns
+        //    (Diehl & Cook 2015). k = ~5% of population allows sparse distributed
+        //    representations while maintaining diversity.
         {
-            let fired_assoc: Vec<MorphonId> = self.morphons.values()
-                .filter(|m| m.fired && (m.cell_type == CellType::Associative || m.cell_type == CellType::Stem))
-                .map(|m| m.id)
+            let mut assoc_potentials: Vec<(MorphonId, f64, bool)> = self.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                .map(|m| (m.id, m.potential, m.fired))
                 .collect();
 
-            if !fired_assoc.is_empty() {
-                let inhibition_strength = -2.0; // strong enough to prevent secondary firing
-                let assoc_ids: Vec<MorphonId> = self.morphons.values()
-                    .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
-                    .map(|m| m.id)
-                    .collect();
+            if !assoc_potentials.is_empty() {
+                // k = 5% of population, minimum 3
+                let k = (assoc_potentials.len() as f64 * 0.05).ceil() as usize;
+                let k = k.max(3).min(assoc_potentials.len());
 
-                for &id in &assoc_ids {
-                    if !fired_assoc.contains(&id) {
-                        if let Some(m) = self.morphons.get_mut(&id) {
-                            // Suppress non-winners: push potential below threshold
-                            m.potential += inhibition_strength * fired_assoc.len() as f64
-                                / assoc_ids.len().max(1) as f64;
+                // Sort by potential descending — top-k winners survive
+                assoc_potentials.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                let winners: std::collections::HashSet<MorphonId> = assoc_potentials[..k]
+                    .iter().map(|(id, _, _)| *id).collect();
+
+                // Suppress non-winners: reset fired flag, clamp potential below threshold
+                for &(id, _, _) in &assoc_potentials[k..] {
+                    if let Some(m) = self.morphons.get_mut(&id) {
+                        if m.fired {
+                            m.fired = false;
+                            m.activity_history.push(0.0); // undo the 1.0 pushed in step()
                         }
+                        // Mild suppression — don't destroy potential, just prevent firing
+                        m.potential = m.potential.min(m.threshold * 0.5);
                     }
                 }
 
-                // Adaptive threshold: winners get a small threshold boost to prevent
-                // them from dominating all inputs (Diehl & Cook homeostatic mechanism).
-                for &id in &fired_assoc {
+                // Adaptive threshold: winners get a small threshold boost (Diehl & Cook).
+                // Prevents any single neuron from dominating all inputs.
+                // Slow decay via homeostatic regulation restores threshold over time.
+                for &id in &winners {
                     if let Some(m) = self.morphons.get_mut(&id) {
-                        m.threshold += 0.05; // accumulates, decayed by homeostatic regulation
+                        m.threshold += 0.02;
                     }
                 }
             }
