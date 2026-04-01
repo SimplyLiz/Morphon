@@ -469,7 +469,8 @@ impl System {
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
                                 let dfa_lr = 0.02;
-                                let delta_w = synapse.pre_trace * feedback_sig * dfa_lr;
+                                let weight_decay = 0.001 * synapse.weight; // L2 prevents drift
+                                let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
                                 synapse.age += 1;
                                 if synapse.eligibility.abs() > 0.1 {
@@ -488,6 +489,8 @@ impl System {
                                 if captured {
                                     captures_this_step += 1;
                                 }
+                                // L2 weight decay on all three-factor synapses
+                                synapse.weight -= 0.0005 * synapse.weight;
                             }
                         }
                     }
