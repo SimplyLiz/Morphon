@@ -99,7 +99,7 @@ struct Critic {
 
 impl Critic {
     fn new() -> Self {
-        Self { weights: [0.0; 8], bias: 0.0, lr: 0.02 }
+        Self { weights: [0.0; 8], bias: 0.0, lr: 0.05 }
     }
 
     fn features(env: &CartPole) -> [f64; 8] {
@@ -221,7 +221,7 @@ fn run_episode(
         let chosen = if action > 0.0 { 1 } else { 0 };
 
         // Train analog readout — both positive and negative TD
-        let base_lr = 0.15;
+        let base_lr = 0.2;
         if td_error > 0.0 {
             system.train_readout(chosen, td_error.min(1.0) * base_lr);
         } else {
