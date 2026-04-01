@@ -89,6 +89,13 @@ pub struct SystemStats {
     pub total_born: usize,
     pub total_died: usize,
     pub total_transdifferentiations: usize,
+    // Apoptosis eligibility (from diagnostics)
+    pub apoptosis_age_eligible: usize,
+    pub apoptosis_silent: usize,
+    pub apoptosis_energy_low: usize,
+    pub assoc_activity_min: f64,
+    pub assoc_activity_max: f64,
+    pub assoc_activity_mean: f64,
 }
 
 /// The Morphogenic Intelligence System.
@@ -409,9 +416,8 @@ impl System {
                 .collect();
 
             if !assoc_potentials.is_empty() {
-                // k = 15% of population — enough diversity for the readout
-                // while maintaining competitive specialization via threshold boost.
-                let k = (assoc_potentials.len() as f64 * 0.15).ceil() as usize;
+                // k = configurable fraction of population for competitive specialization.
+                let k = (assoc_potentials.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
                 let k = k.max(3).min(assoc_potentials.len());
 
                 // Sort by potential descending — top-k winners survive
@@ -1600,6 +1606,12 @@ impl System {
             total_born: self.total_born,
             total_died: self.total_died,
             total_transdifferentiations: self.total_transdifferentiations,
+            apoptosis_age_eligible: self.diag.apoptosis_age_eligible,
+            apoptosis_silent: self.diag.apoptosis_silent,
+            apoptosis_energy_low: self.diag.apoptosis_energy_low,
+            assoc_activity_min: self.diag.assoc_activity_min,
+            assoc_activity_max: self.diag.assoc_activity_max,
+            assoc_activity_mean: self.diag.assoc_activity_mean,
         }
     }
 

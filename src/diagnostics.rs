@@ -57,6 +57,18 @@ pub struct Diagnostics {
     /// Average energy across all morphons.
     pub avg_energy: f64,
 
+    // === Apoptosis eligibility breakdown ===
+    /// Morphons old enough for apoptosis (age > min_age).
+    pub apoptosis_age_eligible: usize,
+    /// Of those, how many are silent (activity < 0.005).
+    pub apoptosis_silent: usize,
+    /// Of those, how many have low energy (< threshold).
+    pub apoptosis_energy_low: usize,
+    /// Min/max/mean activity of Associative morphons (for debugging k-WTA).
+    pub assoc_activity_min: f64,
+    pub assoc_activity_max: f64,
+    pub assoc_activity_mean: f64,
+
     // === Structural events ===
     /// Whether checkpoint rollback was triggered this step.
     pub rollback_triggered: bool,
@@ -109,9 +121,14 @@ impl Diagnostics {
         let weight_variance = (weight_sq_sum / n) - (weight_mean * weight_mean);
         let weight_std = weight_variance.max(0.0).sqrt();
 
-        // Firing rates by cell type + average energy
+        // Firing rates by cell type + average energy + apoptosis eligibility
         let mut firing_by_type: HashMap<CellType, (usize, usize)> = HashMap::new();
         let mut energy_sum = 0.0;
+        let mut apoptosis_age_eligible = 0_usize;
+        let mut apoptosis_silent = 0_usize;
+        let mut apoptosis_energy_low = 0_usize;
+        let mut assoc_activities: Vec<f64> = Vec::new();
+
         for m in morphons.values() {
             let entry = firing_by_type.entry(m.cell_type).or_insert((0, 0));
             entry.1 += 1;
@@ -119,7 +136,28 @@ impl Diagnostics {
                 entry.0 += 1;
             }
             energy_sum += m.energy;
+
+            // Apoptosis eligibility tracking
+            if m.age > 1000 {
+                apoptosis_age_eligible += 1;
+                if m.activity_history.mean() < 0.005 {
+                    apoptosis_silent += 1;
+                }
+                if m.energy < 0.1 {
+                    apoptosis_energy_low += 1;
+                }
+            }
+
+            // Associative activity stats
+            if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
+                assoc_activities.push(m.activity_history.mean());
+            }
         }
+
+        let assoc_activity_min = assoc_activities.iter().cloned().fold(f64::INFINITY, f64::min);
+        let assoc_activity_max = assoc_activities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let assoc_activity_mean = if assoc_activities.is_empty() { 0.0 }
+            else { assoc_activities.iter().sum::<f64>() / assoc_activities.len() as f64 };
         let avg_energy = energy_sum / morphons.len().max(1) as f64;
 
         Self {
@@ -135,6 +173,12 @@ impl Diagnostics {
             consolidated_fraction: consolidated_count as f64 / total_synapses.max(1) as f64,
             avg_energy,
             firing_by_type,
+            apoptosis_age_eligible,
+            apoptosis_silent,
+            apoptosis_energy_low,
+            assoc_activity_min: if assoc_activity_min.is_finite() { assoc_activity_min } else { 0.0 },
+            assoc_activity_max: if assoc_activity_max.is_finite() { assoc_activity_max } else { 0.0 },
+            assoc_activity_mean,
             ..Default::default()
         }
     }

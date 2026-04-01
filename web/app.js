@@ -362,8 +362,9 @@ function onResize() {
 // MOUSE INTERACTION
 // ============================================================
 function onMouseMove(e) {
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 }
 
 function onMouseClick(e) {
@@ -419,8 +420,9 @@ function updateRaycast() {
     if (node) {
       tooltip.style.display = 'block';
       const screenPos = _closestPos.clone().project(camera);
-      const sx = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
-      const sy = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const sx = (screenPos.x * 0.5 + 0.5) * rect.width + rect.left;
+      const sy = (-screenPos.y * 0.5 + 0.5) * rect.height + rect.top;
       tooltip.style.left = (sx + 16) + 'px';
       tooltip.style.top = (sy - 10) + 'px';
       tooltip.innerHTML = `

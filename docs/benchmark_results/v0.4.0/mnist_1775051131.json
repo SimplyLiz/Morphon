@@ -1,11 +1,11 @@
 {
   "benchmark": "mnist",
   "diagnostics": {
-    "active_tags": 2596,
+    "active_tags": 1417,
     "consolidated": 0,
     "total_captures": 0,
-    "weight_mean": 1.3477224793431621,
-    "weight_std": 18.391571890171647
+    "weight_mean": -3.570512599713364,
+    "weight_std": 33.09119458537585
   },
   "method": "two-phase (unsupervised STDP + supervised readout)",
   "phase1": {
@@ -20,14 +20,14 @@
   "results": {
     "per_class": [
       {
-        "accuracy": 0.0,
-        "correct": 0,
+        "accuracy": 9.523809523809524,
+        "correct": 2,
         "digit": 0,
         "total": 21
       },
       {
-        "accuracy": 87.5,
-        "correct": 21,
+        "accuracy": 66.66666666666666,
+        "correct": 16,
         "digit": 1,
         "total": 24
       },
@@ -56,8 +56,8 @@
         "total": 17
       },
       {
-        "accuracy": 18.75,
-        "correct": 3,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 6,
         "total": 16
       },
@@ -74,22 +74,22 @@
         "total": 17
       },
       {
-        "accuracy": 7.4074074074074066,
-        "correct": 2,
+        "accuracy": 3.7037037037037033,
+        "correct": 1,
         "digit": 9,
         "total": 27
       }
     ],
-    "test_accuracy": 13.0
+    "test_accuracy": 9.5
   },
   "system": {
     "clusters": 0,
-    "firing_rate": 0.23089300080450523,
+    "firing_rate": 0.20700896495517523,
     "generation": 1,
-    "morphons": 1243,
-    "prediction_error": 0.08031416671964511,
-    "synapses": 6676
+    "morphons": 1227,
+    "prediction_error": 0.07827648687405327,
+    "synapses": 18942
   },
-  "timestamp": 1775051426,
+  "timestamp": 1775051131,
   "version": "0.4.0"
 }

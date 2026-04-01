@@ -28,7 +28,7 @@ const IMG_PIXELS: usize = 28 * 28; // 784
 const NUM_CLASSES: usize = 10;
 /// Simulation steps per image — Poisson spike trains need time for k-WTA
 /// to select winners. Diehl & Cook use 350ms; we use 50 steps as a start.
-const STEPS_PER_IMAGE: usize = 50;
+const STEPS_PER_IMAGE: usize = 30; // reduced — fewer steps = sharper k-WTA selection
 
 /// Convert raw pixels to firing rate probabilities [0, 1].
 /// Each pixel's value becomes the probability of spiking on any given step.
@@ -88,30 +88,39 @@ fn create_system() -> System {
             memory_period: 50,
         },
         learning: LearningParams {
-            tau_eligibility: 2.0,
-            tau_trace: 5.0,
-            a_plus: 2.0,
-            a_minus: -2.0,
+            tau_eligibility: 5.0,   // slightly longer for Poisson integration
+            tau_trace: 8.0,         // wider STDP window for spike train patterns
+            a_plus: 1.0,            // moderate STDP
+            a_minus: -0.6,          // asymmetric: weaker LTD prevents inhibitory collapse
             tau_tag: 200.0,
             tag_threshold: 0.5,
-            capture_threshold: 0.2,
+            capture_threshold: 10.0, // disable consolidation during unsupervised phase
             capture_rate: 0.5,
-            weight_max: 2.0,
+            weight_max: 1.5,        // tight bounds — prevents weight explosion
             weight_min: 0.01,
-            alpha_reward: 0.5,
-            alpha_novelty: 3.0,
+            alpha_reward: 0.3,      // mild — not the primary driver for MNIST
+            alpha_novelty: 1.0,     // novelty drives plasticity (Diehl & Cook)
             alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
-            transmitter_potentiation: 0.001,
-            heterosynaptic_depression: 0.002,
+            transmitter_potentiation: 0.0005, // gentler for large network
+            heterosynaptic_depression: 0.001,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.05,
             max_morphons: 2000,
             ..Default::default()
         },
-        homeostasis: HomeostasisParams::default(),
-        lifecycle: LifecycleConfig::default(),
+        homeostasis: HomeostasisParams {
+            kwta_fraction: 0.03, // ~5-10 winners for class-selective feature detectors
+            ..Default::default()
+        },
+        lifecycle: LifecycleConfig {
+            division: false,     // fixed topology for STDP self-organization
+            differentiation: true,
+            fusion: false,
+            apoptosis: false,    // keep all neurons — we need diversity
+            migration: false,
+        },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,
         working_memory_capacity: 7,
@@ -220,7 +229,7 @@ fn main() {
             present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
 
             // Inject novelty to drive plasticity
-            system.inject_novelty(0.3);
+            system.inject_novelty(0.2);
 
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();

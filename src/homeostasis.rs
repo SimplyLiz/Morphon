@@ -30,6 +30,10 @@ pub struct HomeostasisParams {
     /// Lowered from 0.5 to 0.2 so rollback actually protects against
     /// destabilizing structural changes.
     pub rollback_pe_threshold: f64,
+    /// Fraction of associative morphons that win the k-WTA competition each step.
+    /// CartPole: 0.15 (15%) for diverse representations.
+    /// MNIST: 0.02-0.05 (1-5 winners) for class-selective feature detectors.
+    pub kwta_fraction: f64,
 }
 
 impl Default for HomeostasisParams {
@@ -40,6 +44,7 @@ impl Default for HomeostasisParams {
             inhibition_correlation_threshold: 0.9,
             migration_cooldown_duration: 20.0,
             rollback_pe_threshold: 0.2,
+            kwta_fraction: 0.15,
         }
     }
 }
