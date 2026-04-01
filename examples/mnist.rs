@@ -46,9 +46,22 @@ fn poisson_frame(rates: &[f64], rng: &mut impl Rng) -> Vec<f64> {
 }
 
 /// Present an image as Poisson spike trains over N steps.
-/// On each step, each pixel independently fires with probability = intensity.
-/// This gives k-WTA time to suppress losers and let winners emerge.
+/// Resets associative+motor potentials first (Diehl & Cook: 50ms rest between images).
+/// This ensures each image competes fresh — otherwise the same neurons
+/// win every image due to accumulated potential from previous inputs.
 fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut impl Rng) {
+    // Inter-image reset — clear the slate so k-WTA selects based on THIS image
+    for m in system.morphons.values_mut() {
+        if m.cell_type != morphon_core::CellType::Sensory {
+            m.potential = 0.0;
+            m.prev_potential = 0.0;
+            m.input_accumulator = 0.0;
+            m.fired = false;
+            m.refractory_timer = 0.0;
+        }
+    }
+    system.resonance.clear();
+
     for _ in 0..steps {
         let frame = poisson_frame(rates, rng);
         system.feed_input(&frame);

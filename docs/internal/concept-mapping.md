@@ -58,7 +58,9 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 | A) Synaptic Plasticity | 3.4A | `learning.rs` | Done (trace-based STDP + three-factor rule + advantage modulation) |
 | B) Synaptogenesis/Pruning | 3.4B | `morphogenesis.rs: synaptogenesis(), pruning()` | Done |
 | C) Cell Division (Mitosis) | 3.4C | `morphogenesis.rs: division()`, `morphon.rs: divide()` | Done (inheritance + mutation + lineage tracking) |
-| D) Differentiation | 3.4D | `morphogenesis.rs: differentiation(), dedifferentiation()` | Done (diff, dediff, transdiff) |
+| D) Differentiation | 3.4D | `morphogenesis.rs: differentiation()` | Done (Stem→specialized based on activity patterns) |
+| D') Transdifferentiation | 3.4D | `morphogenesis.rs: transdifferentiation()` | Done (direct A→B conversion under chronic mismatch, no Stem detour) |
+| D'') Dedifferentiation | 3.4D | `morphogenesis.rs: dedifferentiation()` | Done (high desire + arousal → return toward Stem) |
 | E) Fusion / Autonomy Loss | 3.4E | `morphogenesis.rs: fusion(), defusion()` | Done (Cluster struct) |
 | F) Migration | 3.4F | `morphogenesis.rs: migration()` | Done (hyperbolic log/exp maps + damping) |
 | G) Apoptosis | 3.4G | `morphogenesis.rs: apoptosis()` | Done |

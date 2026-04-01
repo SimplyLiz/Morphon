@@ -79,6 +79,7 @@ Step N
 │  ├─ create_checkpoint()       → snapshot local state
 │  ├─ division()                → mitosis for overloaded Morphons
 │  ├─ differentiation()         → stem cells specialize
+│  ├─ transdifferentiation()    → direct A→B cell type conversion (chronic mismatch)
 │  ├─ dedifferentiation()       → stressed cells return to flexibility
 │  ├─ fusion()                  → correlated groups merge into clusters
 │  ├─ defusion()                → stressed clusters break apart

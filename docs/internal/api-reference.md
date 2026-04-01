@@ -338,6 +338,8 @@ Seven mechanisms operating at different timescales:
 | `min_sensory_fraction` | 0.05 | V3 Governor: min Sensory fraction |
 | `min_motor_fraction` | 0.02 | V3 Governor: min Motor fraction |
 | `max_single_type_fraction` | 0.80 | V3 Governor: max any single type |
+| `transdifferentiation_desire_threshold` | 0.5 | Min chronic desire to trigger A→B conversion |
+| `transdifferentiation_min_age` | 500 | Min age before transdifferentiation eligible |
 
 ### Functions
 
@@ -347,7 +349,8 @@ Seven mechanisms operating at different timescales:
 | `pruning()` | Slow | Remove synapses where `should_prune()` is true |
 | `migration()` | Slow | Move Morphons via `log_map`/`exp_map` in hyperbolic space toward neighbors with lower PE. Respects cooldown and homeostasis-modulated rate. |
 | `division()` | Glacial | Mitosis for Morphons where `should_divide()`. Creates child via `exp_map` offset, duplicates ~50% connections. |
-| `differentiation()` | Glacial | Stem cells specialize based on activity patterns (high consistent→Motor, high variable→Sensory, moderate→Associative, low→Modulatory) |
+| `differentiation()` | Glacial | Stem cells specialize based on activity patterns (high consistent→Associative, high variable→Associative) |
+| `transdifferentiation()` | Glacial | Direct A→B cell type conversion for non-Stem, non-I/O morphons under chronic mismatch (high desire). Infers target type from incoming connectivity: >60% of inputs from one type implies a role change. Rate 0.01 (5× slower than normal differentiation). |
 | `dedifferentiation()` | Glacial | High desire + high arousal → reduce differentiation_level |
 | `fusion()` | Glacial | Groups of N>=3 correlated Morphons merge into a Cluster (shared threshold, reduced autonomy) |
 | `defusion()` | Glacial | Clusters with high PE variance break apart |
@@ -355,7 +358,7 @@ Seven mechanisms operating at different timescales:
 
 Orchestration:
 - `step_slow()` — runs synaptogenesis + pruning + migration
-- `step_glacial()` — runs division + differentiation + dedifferentiation + fusion + defusion + apoptosis
+- `step_glacial()` — runs division + differentiation + transdifferentiation + dedifferentiation + fusion + defusion + apoptosis
 
 ### `Cluster` (struct)
 
@@ -365,6 +368,22 @@ Orchestration:
 | `members` | `Vec<MorphonId>` |
 | `shared_threshold` | `f64` |
 | `inhibitory_morphons` | `Vec<MorphonId>` |
+
+### `MorphogenesisReport` (struct)
+
+Returned by `step()` — describes what changed during one simulation step.
+
+| Field | Type |
+|-------|------|
+| `synapses_created` | `usize` |
+| `synapses_pruned` | `usize` |
+| `morphons_born` | `usize` |
+| `morphons_died` | `usize` |
+| `differentiations` | `usize` |
+| `transdifferentiations` | `usize` |
+| `fusions` | `usize` |
+| `defusions` | `usize` |
+| `migrations` | `usize` |
 
 ---
 
@@ -565,6 +584,7 @@ Key methods:
 | `step_count` | `u64` |
 | `total_born` | `usize` |
 | `total_died` | `usize` |
+| `total_transdifferentiations` | `usize` |
 
 ---
 
@@ -667,7 +687,7 @@ Methods: `process`, `feed_input`, `step`, `read_output`, `inject_reward`, `injec
 
 ### `morphon.SystemStats`
 
-Read-only properties: `total_morphons`, `total_synapses`, `fused_clusters`, `max_generation`, `avg_energy`, `avg_prediction_error`, `firing_rate`, `working_memory_items`, `episodic_memory_items`, `step_count`, `total_born`, `total_died`, `differentiation_map` (dict of str→int).
+Read-only properties: `total_morphons`, `total_synapses`, `fused_clusters`, `max_generation`, `avg_energy`, `avg_prediction_error`, `firing_rate`, `working_memory_items`, `episodic_memory_items`, `step_count`, `total_born`, `total_died`, `total_transdifferentiations`, `differentiation_map` (dict of str→int).
 
 ---
 

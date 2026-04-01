@@ -426,7 +426,7 @@
     height: 100%;
   }
   #tab-log {
-    padding: 8px 12px;
+    padding: 4px 10px 6px;
     overflow: hidden;
   }
   #tab-log .events-scroll {
@@ -434,6 +434,95 @@
     flex: 1;
     overflow-y: auto;
   }
+  .log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    flex-shrink: 0;
+  }
+  #log-search {
+    flex: 1;
+    max-width: 220px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 8px;
+    outline: none;
+  }
+  #log-search:focus { border-color: var(--accent); }
+  #log-search::placeholder { color: var(--text-dim); }
+  .log-filters {
+    display: flex;
+    gap: 2px;
+  }
+  .log-filter-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    padding: 2px 5px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid transparent;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0.4;
+  }
+  .log-filter-btn.active { opacity: 1; border-color: var(--panel-border); }
+  #btn-log-pause {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+  #btn-log-pause.paused {
+    color: var(--reward-color);
+  }
+  .log-menu-wrap { position: relative; }
+  #btn-log-menu {
+    font-size: 12px;
+    padding: 1px 6px;
+    letter-spacing: 2px;
+  }
+  .log-menu {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 4px 0;
+    min-width: 180px;
+    backdrop-filter: blur(20px);
+    z-index: 20;
+  }
+  .log-menu.hidden { display: none; }
+  .log-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    padding: 5px 12px;
+    cursor: pointer;
+  }
+  .log-menu button:hover { background: rgba(80,140,255,0.1); }
+  .event-item.hidden { display: none; }
+  #log-status {
+    flex-shrink: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    padding: 3px 4px 1px;
+    border-top: 1px solid var(--panel-border);
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+  }
+  #log-status .log-stat { display: inline; }
+  #log-status .log-stat-val { color: var(--text); }
   .events-scroll {
     max-height: 70px;
     overflow-y: auto;
@@ -655,6 +744,7 @@
       <div class="stat-item"><span class="label">Working Mem</span><span class="value small" id="s-wmem">-</span></div>
       <div class="stat-item"><span class="label">Born</span><span class="value small" id="s-born" style="color:#34d399">0</span></div>
       <div class="stat-item"><span class="label">Died</span><span class="value small" id="s-died" style="color:#f87171">0</span></div>
+      <div class="stat-item"><span class="label">Transdiff</span><span class="value small" id="s-transdiff" style="color:#c084fc">0</span></div>
     </div>
     <div class="sparkline-container">
       <div class="sparkline-label">Firing Rate</div>
@@ -737,20 +827,39 @@
 <!-- BOTTOM TABBED PANEL -->
 <div id="bottom-panel">
   <div class="tab-bar">
-    <button class="tab-btn active" data-tab="tab-raster">RASTER</button>
-    <button class="tab-btn" data-tab="tab-log">LOG</button>
+    <button class="tab-btn active" data-tab="tab-log">LOG</button>
+    <button class="tab-btn" data-tab="tab-raster">RASTER</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
     </div>
   </div>
-  <div id="tab-raster" class="tab-content active">
+  <div id="tab-log" class="tab-content active">
+    <div class="log-toolbar">
+      <input type="text" id="log-search" placeholder="Filter events..." spellcheck="false">
+      <div class="log-filters">
+        <button class="log-filter-btn active" data-filter="all" title="All events">ALL</button>
+        <button class="log-filter-btn active" data-filter="birth" title="Births" style="color:var(--modulatory)">B</button>
+        <button class="log-filter-btn active" data-filter="death" title="Deaths" style="color:var(--arousal-color)">D</button>
+        <button class="log-filter-btn active" data-filter="synapse" title="Synapses" style="color:var(--sensory)">S</button>
+        <button class="log-filter-btn active" data-filter="diff" title="Other" style="color:var(--associative)">O</button>
+      </div>
+      <button id="btn-log-pause" title="Pause log display">&#9646;&#9646;</button>
+      <div class="log-menu-wrap">
+        <button id="btn-log-menu" title="More">&#x22EF;</button>
+        <div id="log-menu" class="log-menu hidden">
+          <button id="btn-log-copy">Copy all to clipboard</button>
+          <button id="btn-log-copy-filtered">Copy filtered to clipboard</button>
+        </div>
+      </div>
+    </div>
+    <div class="events-scroll" id="events"></div>
+    <div id="log-status"></div>
+  </div>
+  <div id="tab-raster" class="tab-content">
     <div id="raster-canvas-wrap">
       <canvas id="raster-canvas"></canvas>
     </div>
-  </div>
-  <div id="tab-log" class="tab-content">
-    <div class="events-scroll" id="events"></div>
   </div>
 </div>
 

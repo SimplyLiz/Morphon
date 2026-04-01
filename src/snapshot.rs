@@ -105,6 +105,7 @@ impl System {
             diag: crate::diagnostics::Diagnostics::default(),
             total_born: 0,
             total_died: 0,
+            total_transdifferentiations: 0,
             feedback_weights: std::collections::HashMap::new(),
             readout_weights: Vec::new(),
             use_analog_readout: false,

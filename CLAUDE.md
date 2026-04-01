@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 cargo build --release                # Build optimized
-cargo test                           # All tests (23: 4 unit + 18 integration + 1 doctest)
+cargo test                           # All tests (116: 97 unit + 18 integration + 1 doctest)
 cargo test <name>                    # Single test
 cargo test -- --nocapture            # Show stdout
 cargo bench                          # Criterion benchmarks (benches/benchmarks.rs)

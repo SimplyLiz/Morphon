@@ -87,6 +87,7 @@ pub struct SystemStats {
     pub step_count: u64,
     pub total_born: usize,
     pub total_died: usize,
+    pub total_transdifferentiations: usize,
 }
 
 /// The Morphogenic Intelligence System.
@@ -150,6 +151,8 @@ pub struct System {
     pub(crate) total_born: usize,
     /// Cumulative morphon death count.
     pub(crate) total_died: usize,
+    /// Cumulative transdifferentiation count.
+    pub(crate) total_transdifferentiations: usize,
 
     /// Running average of recent episode performance (set by caller via report_performance).
     /// Used to gate consolidation: no captures until performance exceeds a threshold.
@@ -253,6 +256,7 @@ impl System {
             diag: Diagnostics::default(),
             total_born: 0,
             total_died: 0,
+            total_transdifferentiations: 0,
             recent_performance: 0.0,
             consolidation_gate: 15.0, // consolidate once above 15 (current avg)
             peak_performance: 0.0,
@@ -659,6 +663,7 @@ impl System {
         if tick.glacial {
             // Checkpoint before structural changes
             let all_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
+            let count_before = self.morphons.len();
             let checkpoint = homeostasis::create_checkpoint(
                 &all_ids,
                 &self.morphons,
@@ -678,9 +683,17 @@ impl System {
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
-            self.total_born += glacial_report.morphons_born;
-            self.total_died += glacial_report.morphons_died;
+
+            // Track ALL births/deaths including fusion's inhibitory morphons
+            let count_after = self.morphons.len();
+            if count_after > count_before {
+                self.total_born += count_after - count_before;
+            } else if count_before > count_after {
+                self.total_died += count_before - count_after;
+            }
             report.differentiations = glacial_report.differentiations;
+            report.transdifferentiations = glacial_report.transdifferentiations;
+            self.total_transdifferentiations += glacial_report.transdifferentiations;
             report.fusions = glacial_report.fusions;
             report.defusions = glacial_report.defusions;
 
@@ -1467,6 +1480,7 @@ impl System {
             step_count: self.step_count,
             total_born: self.total_born,
             total_died: self.total_died,
+            total_transdifferentiations: self.total_transdifferentiations,
         }
     }
 

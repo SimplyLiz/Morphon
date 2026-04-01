@@ -9,13 +9,13 @@ cargo test              # all tests
 cargo test -- --nocapture  # see println! output
 ```
 
-Current status: **113/113 passing** (94 unit + 18 integration + 1 doctest).
+Current status: **116/116 passing** (97 unit + 18 integration + 1 doctest).
 
 ## Test Inventory
 
 ### Unit Tests — by module (94 total)
 
-**morphogenesis (25 tests)**
+**morphogenesis (28 tests)**
 
 | Test | What It Validates |
 |------|-------------------|
@@ -43,6 +43,9 @@ Current status: **113/113 passing** (94 unit + 18 integration + 1 doctest).
 | `apoptosis_keeps_fused_morphons` | Fused morphons survive |
 | `apoptosis_keeps_well_connected_morphons` | Well-connected morphons survive |
 | `step_slow_returns_report` | Slow path returns MorphogenesisReport |
+| `transdifferentiation_converts_mismatched_morphon` | Modulatory with Sensory inputs → Associative |
+| `transdifferentiation_skips_low_desire` | No conversion without chronic mismatch |
+| `transdifferentiation_skips_io_boundary` | Sensory/Motor morphons never transdifferentiate |
 | `step_glacial_respects_lifecycle_config` | Lifecycle flags disable features |
 
 **learning (17 tests)**

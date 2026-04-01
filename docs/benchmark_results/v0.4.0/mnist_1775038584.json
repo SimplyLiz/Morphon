@@ -1,7 +1,7 @@
 {
   "benchmark": "mnist",
   "diagnostics": {
-    "active_tags": 80660,
+    "active_tags": 81155,
     "consolidated": 0,
     "total_captures": 0,
     "weight_mean": null,
@@ -50,8 +50,8 @@
         "total": 16
       },
       {
-        "accuracy": 0.0,
-        "correct": 0,
+        "accuracy": 100.0,
+        "correct": 17,
         "digit": 5,
         "total": 17
       },
@@ -74,22 +74,22 @@
         "total": 17
       },
       {
-        "accuracy": 100.0,
-        "correct": 27,
+        "accuracy": 0.0,
+        "correct": 0,
         "digit": 9,
         "total": 27
       }
     ],
-    "test_accuracy": 13.5
+    "test_accuracy": 8.5
   },
   "system": {
-    "clusters": 21,
-    "firing_rate": 0.07110665998998497,
-    "generation": 3,
-    "morphons": 1997,
-    "prediction_error": 0.06116898424035207,
-    "synapses": 92924
+    "clusters": 19,
+    "firing_rate": 0.07,
+    "generation": 2,
+    "morphons": 2000,
+    "prediction_error": 0.0685372070392161,
+    "synapses": 88658
   },
-  "timestamp": 1775039631,
+  "timestamp": 1775038584,
   "version": "0.4.0"
 }

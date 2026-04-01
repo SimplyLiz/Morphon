@@ -33,7 +33,7 @@ cargo build --features python # with Python bindings
 ## Test
 
 ```bash
-cargo test                   # 113 tests (94 unit + 18 integration + 1 doctest)
+cargo test                   # 116 tests (97 unit + 18 integration + 1 doctest)
 cargo test -- --nocapture    # with output
 ```
 

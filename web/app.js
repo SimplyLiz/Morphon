@@ -39,11 +39,11 @@ let lastSpikeCount = 0; // for dynamic bloom calculation
 let connectedToSelected = new Set();
 // Cell type filter: null = none, string = highlight that type
 let filterCellType = null;
-// Per-node dim factor: 0 = full color, 1 = dimmed. Lerped smoothly.
-const nodeDim = new Float32Array(MAX_NODES);
-const nodeDimTarget = new Float32Array(MAX_NODES);
-// Per-node glow: 1.0 on fire, decays toward 0. Persists across frames.
-const nodeGlow = new Float32Array(MAX_NODES);
+// Per-node dim factor: 0 = full color, 1 = dimmed. Keyed by morphon ID for stable mapping.
+const nodeDim = new Map();
+const nodeDimTarget = new Map();
+// Per-node glow: approaches 1.0 on fire, decays toward 0. Keyed by morphon ID.
+const nodeGlow = new Map();
 
 const firingHistory = [];
 const morphonHistory = [];
@@ -82,10 +82,11 @@ let edgeData = [];
 
 // (glow is now done via emissive brightness + bloom, no separate mesh)
 
-// Spike particles
+// Spike particles — JS-side animated, fed from real engine firing data
 const MAX_SPIKES = 3000;
+const SPIKE_VISUAL_FRAMES = 25; // visual lifetime in frames (~0.4s at 60fps)
 let spikesMesh;
-// spikes are now read directly from engine — no JS-side array
+const liveSpikes = []; // {fromIdx, toIdx, age, color, strength}
 
 // Raycasting
 const raycaster = new THREE.Raycaster();
@@ -418,6 +419,8 @@ function updateScene() {
   const nodes = topo.nodes;
   const edges = topo.edges;
 
+  // Sort nodes by ID for stable frame-to-frame ordering (HashMap iteration is non-deterministic)
+  nodes.sort((a, b) => a.id - b.id);
   nodeData = nodes;
   edgeData = edges;
   nodeMap.clear();
@@ -449,9 +452,13 @@ function updateScene() {
 
     const color = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
 
-    // === GLOW: set to 1 on fire, decay smoothly ===
-    if (frameFired.has(n.id)) nodeGlow[i] = 1.0;
-    else nodeGlow[i] *= 0.85; // decay ~6 frames to dim
+    // === GLOW: smooth lerp up on fire, smooth decay down ===
+    const prevGlow = nodeGlow.get(n.id) || 0;
+    const glowTarget = frameFired.has(n.id) ? 1.0 : 0.0;
+    const glow = glowTarget > prevGlow
+      ? prevGlow + (glowTarget - prevGlow) * 0.4   // ramp up over ~3 frames
+      : prevGlow * 0.88;                             // decay over ~8 frames
+    nodeGlow.set(n.id, glow);
 
     // === SMOOTH CONTEXT DIMMING (selection OR cell type filter) ===
     let shouldDim = false;
@@ -460,24 +467,26 @@ function updateScene() {
     } else if (filterCellType) {
       shouldDim = n.cell_type !== filterCellType;
     }
-    nodeDimTarget[i] = shouldDim ? 1.0 : 0.0;
-    nodeDim[i] += (nodeDimTarget[i] - nodeDim[i]) * 0.1;
-    const dim = nodeDim[i];
+    const dimTarget = shouldDim ? 1.0 : 0.0;
+    const prevDim = nodeDim.get(n.id) || 0;
+    const dim = prevDim + (dimTarget - prevDim) * 0.1;
+    nodeDim.set(n.id, dim);
     const bright = 1.0 - dim * 0.85;
-    const glow = nodeGlow[i];
 
     if (n.id === selectedNodeId) {
-      // Selected: bright bloom
       tempColor.copy(color).multiplyScalar(4.0);
       nodesMesh.setColorAt(i, tempColor);
-    } else if (glow > 0.05 && dim < 0.5) {
-      // Recently fired: HDR brightness proportional to glow, fading smoothly
-      const intensity = 1.0 + glow * 2.5; // 1.0 (just dimming) to 3.5 (just fired)
-      tempColor.copy(color).multiplyScalar(intensity * (1.0 - dim));
-      nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Resting: dim cell-type color
-      tempColor.copy(color).multiplyScalar(bright);
+      // Continuous brightness: blend from resting to firing based on glow.
+      // Rest brightness ensures all cell types (including dark Stem) stay visible.
+      const restBright = 0.55 * bright;
+      const fireBright = 3.0 * (1.0 - dim * 0.4);
+      const intensity = restBright + glow * (fireBright - restBright);
+      tempColor.copy(color).multiplyScalar(intensity);
+      // Ensure minimum RGB so dark colors don't render black
+      tempColor.r = Math.max(tempColor.r, 0.04);
+      tempColor.g = Math.max(tempColor.g, 0.04);
+      tempColor.b = Math.max(tempColor.b, 0.04);
       nodesMesh.setColorAt(i, tempColor);
     }
 
@@ -537,7 +546,7 @@ function updateScene() {
     const sourceColor = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
     const isHighlighted = hasSelection && (e.from === selectedNodeId || e.to === selectedNodeId);
     // Smooth edge dimming: use the avg dim of both endpoints
-    const edgeDimFactor = (nodeDim[fromIdx] + nodeDim[toIdx]) * 0.5;
+    const edgeDimFactor = ((nodeDim.get(e.from) || 0) + (nodeDim.get(e.to) || 0)) * 0.5;
 
     // Synapse heat: eligibility trace reflects recent spike traffic
     const heat = Math.min(Math.abs(e.eligibility || 0), 1.0);
@@ -574,7 +583,27 @@ function updateScene() {
   edgesMesh.geometry.attributes.color.needsUpdate = true;
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
 
-  // Spikes are now read from the engine in updateSpikes() — no JS-side spawning.
+  // === SPIKE SPAWNING from real engine firing data ===
+  // Use frameFired (accumulated across sub-steps) + real topology edges
+  for (const id of frameFired) {
+    if (liveSpikes.length >= MAX_SPIKES * 0.7) break;
+    const fromIdx = nodeMap.get(id);
+    if (fromIdx === undefined) continue;
+    const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
+
+    for (const e of edges) {
+      if (e.from !== id) continue;
+      if (liveSpikes.length >= MAX_SPIKES * 0.7) break;
+      const toIdx = nodeMap.get(e.to);
+      if (toIdx === undefined) continue;
+      liveSpikes.push({
+        fromIdx, toIdx,
+        age: 0,
+        color: color.clone(),
+        strength: Math.abs(e.weight),
+      });
+    }
+  }
 }
 
 // ============================================================
@@ -601,6 +630,7 @@ function updatePanels() {
   document.getElementById('s-wmem').textContent = stats.working_memory_items;
   document.getElementById('s-born').textContent = stats.total_born || 0;
   document.getElementById('s-died').textContent = stats.total_died || 0;
+  document.getElementById('s-transdiff').textContent = stats.total_transdifferentiations || 0;
 
   const counts = stats.differentiation_map || {};
   for (const type of ['Stem', 'Sensory', 'Associative', 'Motor', 'Modulatory', 'Fused']) {
@@ -746,13 +776,32 @@ function detectEvents() {
   lastSynapseCount = sc;
 }
 
+// Buffer for events added while paused — flushed on resume
+const pendingEvents = [];
+
 function addEvent(step, text, cssClass) {
+  if (window._logPaused && window._logPaused()) {
+    pendingEvents.push({ step, text, cssClass });
+    if (pendingEvents.length > 500) pendingEvents.shift(); // cap buffer
+    return;
+  }
+  // Flush any pending events first
+  while (pendingEvents.length > 0) {
+    const e = pendingEvents.shift();
+    _insertEvent(e.step, e.text, e.cssClass);
+  }
+  _insertEvent(step, text, cssClass);
+}
+
+function _insertEvent(step, text, cssClass) {
   const eventsEl = document.getElementById('events');
   const el = document.createElement('div');
   el.className = 'event-item';
   el.innerHTML = `<span class="${cssClass}">[${step}]</span> ${text}`;
   eventsEl.insertBefore(el, eventsEl.firstChild);
-  while (eventsEl.children.length > 100) eventsEl.removeChild(eventsEl.lastChild);
+  while (eventsEl.children.length > 500) eventsEl.removeChild(eventsEl.lastChild);
+  // Apply current filters to new event
+  if (window._applyLogFilters) window._applyLogFilters();
 }
 
 // ============================================================
@@ -813,8 +862,8 @@ function setupControls() {
     system = new WasmSystem(60, program, 3);
     selectedNodeId = null; hoveredNodeId = null;
     connectedToSelected.clear();
-    nodeDim.fill(0); nodeDimTarget.fill(0); nodeGlow.fill(0);
-    lastSpikeCount = 0; stepAccumulator = 0;
+    nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
+    lastSpikeCount = 0; stepAccumulator = 0; liveSpikes.length = 0;
     rasterScrollX = 0; rasterMorphonCount = 0;
     rasterHistory.fill(null); groupRateHistory = [];
     morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
@@ -878,6 +927,113 @@ function setupControls() {
     }
   });
 
+  // === LOG FEATURES ===
+  let logPaused = false;
+  const logFilters = { birth: true, death: true, synapse: true, diff: true };
+
+  // Filter buttons
+  document.querySelectorAll('.log-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const f = btn.dataset.filter;
+      if (f === 'all') {
+        // Toggle all on/off
+        const allActive = Object.values(logFilters).every(v => v);
+        for (const k in logFilters) logFilters[k] = !allActive;
+        document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.toggle('active', !allActive));
+      } else {
+        logFilters[f] = !logFilters[f];
+        btn.classList.toggle('active', logFilters[f]);
+        // Update ALL button state
+        const allOn = Object.values(logFilters).every(v => v);
+        document.querySelector('.log-filter-btn[data-filter="all"]')?.classList.toggle('active', allOn);
+      }
+      applyLogFilters();
+    });
+  });
+
+  // Search
+  document.getElementById('log-search')?.addEventListener('input', () => applyLogFilters());
+
+  function applyLogFilters() {
+    const searchTerm = (document.getElementById('log-search')?.value || '').toLowerCase();
+    const items = document.querySelectorAll('#events .event-item');
+    let total = 0, visible = 0;
+    let births = 0, deaths = 0, synapses = 0, other = 0;
+    items.forEach(el => {
+      total++;
+      const text = el.textContent.toLowerCase();
+      const matchesSearch = !searchTerm || text.includes(searchTerm);
+      let matchesFilter = true;
+      let type = 'other';
+      if (el.querySelector('.event-birth')) { type = 'birth'; births++; }
+      else if (el.querySelector('.event-death')) { type = 'death'; deaths++; }
+      else if (el.querySelector('.event-synapse')) { type = 'synapse'; synapses++; }
+      else { other++; }
+      if (type === 'birth') matchesFilter = logFilters.birth;
+      else if (type === 'death') matchesFilter = logFilters.death;
+      else if (type === 'synapse') matchesFilter = logFilters.synapse;
+      else matchesFilter = logFilters.diff;
+      const show = matchesSearch && matchesFilter;
+      el.classList.toggle('hidden', !show);
+      if (show) visible++;
+    });
+    // Update status bar (bottom-right)
+    const statusEl = document.getElementById('log-status');
+    if (statusEl) {
+      const parts = [
+        `<span class="log-stat">Total: <span class="log-stat-val">${total}</span></span>`,
+        visible !== total ? `<span class="log-stat">Showing: <span class="log-stat-val">${visible}</span></span>` : '',
+        `<span class="log-stat" style="color:var(--modulatory)">B:<span class="log-stat-val">${births}</span></span>`,
+        `<span class="log-stat" style="color:var(--arousal-color)">D:<span class="log-stat-val">${deaths}</span></span>`,
+        `<span class="log-stat" style="color:var(--sensory)">S:<span class="log-stat-val">${synapses}</span></span>`,
+        `<span class="log-stat" style="color:var(--associative)">O:<span class="log-stat-val">${other}</span></span>`,
+      ].filter(Boolean);
+      statusEl.innerHTML = parts.join('');
+    }
+  }
+
+  // Pause log display
+  document.getElementById('btn-log-pause')?.addEventListener('click', () => {
+    logPaused = !logPaused;
+    const btn = document.getElementById('btn-log-pause');
+    btn.classList.toggle('paused', logPaused);
+    btn.innerHTML = logPaused ? '&#9654;' : '&#9646;&#9646;';
+    btn.title = logPaused ? 'Resume log display' : 'Pause log display';
+  });
+
+  // Menu toggle
+  document.getElementById('btn-log-menu')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.getElementById('log-menu')?.classList.toggle('hidden');
+  });
+  document.addEventListener('click', () => {
+    document.getElementById('log-menu')?.classList.add('hidden');
+  });
+
+  // Copy all to clipboard
+  document.getElementById('btn-log-copy')?.addEventListener('click', () => {
+    const lines = [];
+    document.querySelectorAll('#events .event-item').forEach(el => lines.push(el.textContent.trim()));
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      addEvent('', `Copied ${lines.length} log entries to clipboard`, 'event-diff');
+    });
+    document.getElementById('log-menu')?.classList.add('hidden');
+  });
+
+  // Copy filtered to clipboard
+  document.getElementById('btn-log-copy-filtered')?.addEventListener('click', () => {
+    const lines = [];
+    document.querySelectorAll('#events .event-item:not(.hidden)').forEach(el => lines.push(el.textContent.trim()));
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      addEvent('', `Copied ${lines.length} filtered entries to clipboard`, 'event-diff');
+    });
+    document.getElementById('log-menu')?.classList.add('hidden');
+  });
+
+  // Expose logPaused to addEvent
+  window._logPaused = () => logPaused;
+  window._applyLogFilters = applyLogFilters;
+
   // Save/Load
   document.getElementById('btn-save').addEventListener('click', () => {
     if (!system) return;
@@ -892,7 +1048,7 @@ function setupControls() {
       system = WasmSystem.loadJson(savedState);
       selectedNodeId = null; hoveredNodeId = null;
       connectedToSelected.clear(); filterCellType = null;
-      nodeDim.fill(0); nodeDimTarget.fill(0);
+      nodeDim.clear(); nodeDimTarget.clear();
       clearCellTypeActive();
       addEvent('', 'State loaded', 'event-diff');
       updateScene(); updatePanels();
@@ -1021,58 +1177,43 @@ function geodesicPoint(p0, p1, p2, q0, q1, q2, t) {
 }
 
 function updateSpikes() {
-  if (!system) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
-
-  // Read real pending spikes from the engine — flat buffer, no JSON
-  // Layout: [source, target, initial_delay, remaining_delay, strength] × N
-  let buf;
-  try { buf = system.pending_spikes_flat(); } catch(_) { spikesMesh.count = 0; return; }
-  if (!buf || buf.length === 0) { spikesMesh.count = 0; lastSpikeCount = 0; return; }
-  const STRIDE = 5;
-  const count = buf.length / STRIDE;
+  // Animate JS-side spikes (spawned from real engine firing data in updateScene)
   let alive = 0;
 
-  for (let i = 0; i < count && alive < MAX_SPIKES; i++) {
-    const sourceId = buf[i * STRIDE];
-    const targetId = buf[i * STRIDE + 1];
-    const initialDelay = buf[i * STRIDE + 2];
-    const remainingDelay = buf[i * STRIDE + 3];
-    const strength = buf[i * STRIDE + 4];
+  for (let i = liveSpikes.length - 1; i >= 0; i--) {
+    const s = liveSpikes[i];
+    s.age++;
+    if (s.age > SPIKE_VISUAL_FRAMES) { liveSpikes.splice(i, 1); continue; }
 
-    const fromIdx = nodeMap.get(sourceId);
-    const toIdx = nodeMap.get(targetId);
-    if (fromIdx === undefined || toIdx === undefined) continue;
+    // Smooth progress 0→1 with ease-out curve
+    const raw = s.age / SPIKE_VISUAL_FRAMES;
+    const t = 1.0 - (1.0 - raw) * (1.0 - raw); // ease-out quadratic
 
-    // Progress: 0 at source, 1 at target
-    const t = initialDelay > 0
-      ? Math.max(0, Math.min(1, 1.0 - remainingDelay / initialDelay))
-      : 1.0;
-
-    // Interpolate along Poincaré geodesic (unit-ball coords)
-    const fi = fromIdx * 3, ti = toIdx * 3;
+    // Interpolate along Poincaré geodesic
+    const fi = s.fromIdx * 3, ti = s.toIdx * 3;
     const g = geodesicPoint(
       nodePositions[fi]   * INV_BALL, nodePositions[fi+1] * INV_BALL, nodePositions[fi+2] * INV_BALL,
       nodePositions[ti]   * INV_BALL, nodePositions[ti+1] * INV_BALL, nodePositions[ti+2] * INV_BALL,
       t
     );
-
-    // Guard against NaN from degenerate geodesic (coincident points, origin)
     if (!isFinite(g[0]) || !isFinite(g[1]) || !isFinite(g[2])) continue;
 
-    // Size: base + sine curve + strength scaling (stronger synapses = bigger spikes)
+    // Size: sine curve peaks at midpoint + strength scaling
     const sizeCurve = Math.sin(t * Math.PI);
-    const strengthScale = Math.min(Math.abs(strength), 2.0) * 0.15; // 0 to 0.3
+    const strengthScale = Math.min(s.strength, 2.0) * 0.1;
     spikeDummy.position.set(g[0] * BALL_RADIUS, g[1] * BALL_RADIUS, g[2] * BALL_RADIUS);
-    spikeDummy.scale.setScalar(0.06 + sizeCurve * 0.10 + strengthScale);
+    spikeDummy.scale.setScalar(0.07 + sizeCurve * 0.10 + strengthScale);
     spikeDummy.updateMatrix();
 
-    spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-    // Color from source cell type, brighter for stronger signals
-    const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
-    const brightBoost = Math.min(Math.abs(strength), 1.5);
-    tempColor.copy(color).lerp(WHITE, sizeCurve * 0.4 + brightBoost * 0.2);
-    spikesMesh.setColorAt(alive, tempColor);
-    alive++;
+    if (alive < MAX_SPIKES) {
+      spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
+      // Color: lerp toward white at peak, fade alpha near end of life
+      const fade = t < 0.8 ? 1.0 : (1.0 - t) * 5.0; // fade out last 20%
+      tempColor.copy(s.color).lerp(WHITE, sizeCurve * 0.35);
+      tempColor.multiplyScalar(0.7 + sizeCurve * 0.8 * fade);
+      spikesMesh.setColorAt(alive, tempColor);
+      alive++;
+    }
   }
 
   lastSpikeCount = alive;
@@ -1278,8 +1419,8 @@ function animate() {
       // Flash arrival targets — spike delivery triggers a glow on the receiving morphon
       try {
         for (const id of system.delivered_target_ids()) {
-          const idx = nodeMap.get(id);
-          if (idx !== undefined) nodeGlow[idx] = Math.min(nodeGlow[idx] + 0.5, 1.0);
+          const cur = nodeGlow.get(id) || 0;
+          nodeGlow.set(id, Math.min(cur + 0.5, 1.0));
         }
       } catch(_) {}
     }

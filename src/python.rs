@@ -49,6 +49,8 @@ mod bindings {
         #[pyo3(get)]
         pub total_died: usize,
         #[pyo3(get)]
+        pub total_transdifferentiations: usize,
+        #[pyo3(get)]
         pub differentiation_map: HashMap<String, usize>,
     }
 
@@ -192,6 +194,7 @@ mod bindings {
                 step_count: stats.step_count,
                 total_born: stats.total_born,
                 total_died: stats.total_died,
+                total_transdifferentiations: stats.total_transdifferentiations,
                 differentiation_map,
             }
         }
