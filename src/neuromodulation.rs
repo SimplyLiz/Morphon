@@ -59,10 +59,14 @@ impl Neuromodulation {
     }
 
     /// The advantage signal: reward minus expected reward.
-    /// Positive = better than average, negative = worse than average.
-    /// This is the modulation signal that should drive weight updates.
+    /// Positive = better than average → strengthen eligible synapses.
+    /// Zero = at or below average → no reward-driven weight change.
+    /// Clamped to [0, ∞) because negative advantage (worse-than-average)
+    /// should suppress reward, not actively depress weights — the absence
+    /// of reward is sufficient signal. Active depression from negative
+    /// advantage kills activity in sparse-reward environments.
     pub fn reward_advantage(&self) -> f64 {
-        self.reward - self.reward_baseline
+        (self.reward - self.reward_baseline).max(0.0)
     }
 
     /// Inject a novelty signal (0.0 to 1.0).
