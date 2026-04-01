@@ -167,6 +167,9 @@ pub struct System {
     /// Updated by the delta rule with exact gradients.
     /// Biologically: Purkinje cell dendritic integration (analog, not spike-based).
     pub(crate) readout_weights: Vec<HashMap<MorphonId, f64>>,
+    /// Per-output bias for analog readout. Absorbs the constant offset from
+    /// sigmoid(resting_potential) ≈ 0.5, freeing weights to learn state differences.
+    pub(crate) readout_bias: Vec<f64>,
     /// Whether to use analog readout (true) or spike-based motor potential (false).
     pub(crate) use_analog_readout: bool,
 
@@ -197,6 +200,9 @@ pub struct System {
     pub(crate) consolidation_gate: f64,
     /// Peak performance seen so far — used for deconsolidation trigger.
     pub(crate) peak_performance: f64,
+
+    /// Running average of episode steps — for episode-relative capture decisions.
+    pub(crate) running_avg_steps: f64,
 
     /// V2: Bioelektrisches Feld — spatial field for indirect morphon communication.
     pub field: Option<MorphonField>,
@@ -291,6 +297,7 @@ impl System {
             last_td_error: 0.0,
             feedback_weights,
             readout_weights: Vec::new(), // initialized below after struct creation
+            readout_bias: Vec::new(),
             use_analog_readout: false,   // off by default, enabled per-task
             next_morphon_id: next_id,
             next_cluster_id: 0,
@@ -303,6 +310,7 @@ impl System {
             recent_performance: 0.0,
             consolidation_gate: 10.0, // consolidate once above random baseline
             peak_performance: 0.0,
+            running_avg_steps: 9.0, // initialize to random baseline
             field: None, // initialized below
             endo,
         };
@@ -638,8 +646,9 @@ impl System {
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
                                 let dfa_lr = 0.02 * plast_rate * self.endo.channels.plasticity_mult as f64; // scaled by Anchor/Sail + Endo
+                                let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
                                 let weight_decay = 0.001 * synapse.weight;
-                                let delta_w = synapse.pre_trace * feedback_sig * dfa_lr - weight_decay;
+                                let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr - weight_decay) * consolidation_scale;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
 
                                 // V3: Record reinforcement event
@@ -649,26 +658,13 @@ impl System {
                                     }
                                 }
 
-                                // Tag-and-Capture on DFA path: consolidate synapses where
-                                // the DFA update was strong AND reward is high.
-                                // This gives the hidden layer long-term memory.
+                                // Tag synapses where DFA update was strong.
+                                // Capture is deferred to episode end (report_episode_end)
+                                // where performance-relative decisions are made.
                                 let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
-                                if dfa_strength > 0.1 && !synapse.consolidated {
+                                if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
                                     synapse.tag = 1.0;
                                     synapse.tag_strength = dfa_strength;
-                                }
-                                // Capture: strong DFA update + high reward → consolidate
-                                // Performance-gated capture: no consolidation until proven performance
-                                if synapse.tag > 0.1
-                                    && self.modulation.reward > self.config.learning.capture_threshold
-                                    && !synapse.consolidated
-                                    && self.recent_performance > self.consolidation_gate
-                                {
-                                    synapse.weight += 0.1 * synapse.tag_strength * self.modulation.reward;
-                                    synapse.weight = synapse.weight.clamp(-wmax, wmax);
-                                    synapse.consolidated = true;
-                                    synapse.tag = 0.0;
-                                    captures_this_step += 1;
                                 }
                                 synapse.age += 1;
                                 if synapse.eligibility.abs() > 0.1 {
@@ -694,13 +690,9 @@ impl System {
                                     &post_receptors,
                                     endo_gains,
                                 );
-                                // Performance gate: undo capture if below threshold
-                                if captured && self.recent_performance <= self.consolidation_gate {
-                                    synapse.consolidated = false; // revert — not ready to consolidate
-                                }
-                                if captured && self.recent_performance > self.consolidation_gate {
-                                    captures_this_step += 1;
-                                }
+                                // Per-tick capture is disabled — capture is now episode-gated
+                                // via report_episode_end(). Tags still accumulate per-tick.
+                                let _ = captured;
                                 // V3: Record reinforcement event
                                 let delta_w_3f = synapse.weight - weight_before;
                                 if delta_w_3f.abs() > 0.001 {
@@ -746,9 +738,10 @@ impl System {
                 // Target norm: proportional to number of connections
                 let target_norm = edge_indices.len() as f64 * 0.3;
                 if pos_sum > 0.01 {
-                    // Clamp scale to [0.5, 2.0] to prevent weight explosion
-                    // when pos_sum is very small relative to target_norm.
-                    let scale = (target_norm / pos_sum).clamp(0.5, 2.0);
+                    // Gentle clamping [0.9, 1.1] preserves weight diversity
+                    // while preventing explosion. Stronger clamping (0.5-2.0)
+                    // collapsed all weights to the target norm, destroying features.
+                    let scale = (target_norm / pos_sum).clamp(0.9, 1.1);
                     for &ei in &edge_indices {
                         if let Some(syn) = self.topology.synapse_mut(ei) {
                             if syn.weight > 0.0 {
@@ -1118,20 +1111,52 @@ impl System {
     /// Analog readout: weighted sum of associative layer potentials.
     /// V_j = Σ_i readout_weights[j][i] × sigmoid(P_i)
     fn read_output_analog(&self) -> Vec<f64> {
-        self.readout_weights.iter().map(|weights| {
-            let v: f64 = weights.iter().map(|(&assoc_id, &w)| {
-                let p = self.morphons.get(&assoc_id)
+        self.readout_weights.iter().enumerate().map(|(j, weights)| {
+            let bias = self.readout_bias.get(j).copied().unwrap_or(0.0);
+            let v: f64 = weights.iter().map(|(&id, &w)| {
+                let p = self.morphons.get(&id)
                     .map(|m| if m.potential.is_finite() { m.potential.clamp(-10.0, 10.0) } else { 0.0 })
                     .unwrap_or(0.0);
-                let act = 1.0 / (1.0 + (-p).exp());
+                // Centered sigmoid: 0 at resting potential, ±0.5 range.
+                // Eliminates constant 0.5 offset that drowns discriminative signal.
+                let act = 1.0 / (1.0 + (-p).exp()) - 0.5;
                 w * act
             }).sum();
-            if v.is_finite() { v } else { 0.0 }
+            let out = bias + v;
+            if out.is_finite() { out } else { 0.0 }
         }).collect()
     }
 
     /// Enable analog readout and initialize readout weights.
     ///
+    /// Reset all morphon voltages to resting potential between episodes.
+    /// Clears refractory timers, input accumulators, and spike queue.
+    /// Preserves weights, thresholds, energy, consolidation — only transient state is reset.
+    /// Biologically analogous to inter-trial interval baseline recovery.
+    pub fn reset_voltages(&mut self) {
+        for m in self.morphons.values_mut() {
+            m.potential = 0.0;
+            m.prev_potential = 0.0;
+            m.fired = false;
+            m.input_accumulator = 0.0;
+            m.refractory_timer = 0.0;
+            m.feedback_signal = 0.0;
+        }
+        self.resonance.clear();
+    }
+
+    /// Zero out readout weights for morphons that don't match the filter.
+    /// Used to restrict readout to specific cell types (e.g., sensory-only).
+    pub fn filter_readout_weights(&mut self, keep: impl Fn(MorphonId) -> bool) {
+        for weights in &mut self.readout_weights {
+            for (id, w) in weights.iter_mut() {
+                if !keep(*id) {
+                    *w = 0.0;
+                }
+            }
+        }
+    }
+
     /// Set the performance threshold for enabling consolidation.
     /// Below this level, the system stays fully plastic (no tag captures).
     pub fn set_consolidation_gate(&mut self, gate: f64) {
@@ -1171,6 +1196,7 @@ impl System {
             }
         }
 
+        self.readout_bias = vec![0.0; self.output_ports.len()];
         self.use_analog_readout = true;
     }
 
@@ -1206,23 +1232,31 @@ impl System {
             target - softmax[j]
         }).collect();
 
-        // Collect pre-synaptic activities (sigmoid of morphon potentials, NaN-safe)
+        // Collect pre-synaptic activities (centered sigmoid: 0 at rest, ±0.5 range)
         let activities: HashMap<MorphonId, f64> = self.readout_weights[0].keys()
             .filter_map(|&id| {
                 self.morphons.get(&id).map(|m| {
                     let p = if m.potential.is_finite() { m.potential } else { 0.0 };
-                    (id, 1.0 / (1.0 + (-p.clamp(-10.0, 10.0)).exp()))
+                    (id, 1.0 / (1.0 + (-p.clamp(-10.0, 10.0)).exp()) - 0.5)
                 })
             })
             .collect();
 
-        // Delta rule on readout weights + L2 weight decay
+        // Delta rule on readout weights (no L2 decay — it was erasing the
+        // discriminative signal that the supervised gradient builds)
         for j in 0..n_out {
             if errors[j].abs() < 0.0001 { continue; }
+            // Update bias
+            if let Some(b) = self.readout_bias.get_mut(j) {
+                let bias_delta = learning_rate * errors[j];
+                if bias_delta.is_finite() {
+                    *b = (*b + bias_delta).clamp(-5.0, 5.0);
+                }
+            }
+            // Update weights
             for (&id, w) in self.readout_weights[j].iter_mut() {
                 let act = activities.get(&id).copied().unwrap_or(0.0);
-                let weight_decay = 0.001 * *w;
-                let delta = learning_rate * act * errors[j] - weight_decay;
+                let delta = learning_rate * act * errors[j];
                 if delta.is_finite() {
                     *w = (*w + delta).clamp(-5.0, 5.0);
                 }
@@ -1342,6 +1376,60 @@ impl System {
         }
     }
 
+    /// Report episode end and trigger performance-relative capture.
+    ///
+    /// If this episode was better than the running average, consolidate tagged synapses
+    /// proportional to how much better it was. If worse, decay tags instead.
+    /// This replaces per-tick `modulation.reward > threshold` capture, which is broken
+    /// for RL because the reward level stays saturated during any alive episode.
+    pub fn report_episode_end(&mut self, episode_steps: f64) {
+        let delta = episode_steps - self.running_avg_steps;
+        self.running_avg_steps = 0.95 * self.running_avg_steps + 0.05 * episode_steps;
+
+        if delta > 0.0 {
+            // Above average — consolidate tagged synapses
+            let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
+            self.capture_tagged_synapses(strength);
+        } else {
+            // Below average — decay tags, don't consolidate
+            self.decay_all_tags(0.5);
+        }
+    }
+
+    /// Consolidate synapses with active tags. `strength` (0-1) controls how much
+    /// consolidation_level increases. Only tags above threshold are captured.
+    fn capture_tagged_synapses(&mut self, strength: f64) {
+        let mut captures = 0_u64;
+        for ei in self.topology.graph.edge_indices() {
+            if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
+                    // Increase consolidation level proportional to tag strength and episode quality
+                    let delta_level = strength * syn.tag_strength.min(1.0) * 0.3;
+                    syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
+                    if syn.consolidation_level > 0.5 {
+                        syn.consolidated = true; // binary flag for pruning protection
+                    }
+                    syn.tag *= 0.5; // partially consume the tag
+                    captures += 1;
+                }
+            }
+        }
+        self.diag.captures_this_step = captures;
+        self.diag.total_captures += captures;
+    }
+
+    /// Decay all active tags after a below-average episode.
+    fn decay_all_tags(&mut self, factor: f64) {
+        for ei in self.topology.graph.edge_indices() {
+            if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                if syn.tag > 0.01 {
+                    syn.tag *= factor;
+                    syn.tag_strength *= factor;
+                }
+            }
+        }
+    }
+
     /// Deconsolidate the weakest fraction of consolidated synapses.
     /// "Metabolic Melting" — restores plasticity where the system is underperforming.
     /// Deconsolidated synapses can be re-learned and re-captured.
@@ -1365,6 +1453,7 @@ impl System {
         for &(ei, _) in &consolidated[..n_to_melt.min(consolidated.len())] {
             if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
                 syn.consolidated = false;
+                syn.consolidation_level = 0.0;
                 syn.tag = 0.0; // reset tag for fresh accumulation
             }
         }
