@@ -167,11 +167,8 @@ fn main() {
             let input = make_sample(label, &mut rng);
             let pred = classify(&mut system, &input);
 
-            // Direct supervised learning (delta rule) — proven to work in learn_compare
-            system.teach_supervised(label, 0.01);
-            // Also try three-factor teaching for comparison
-            system.teach_hidden(label, 0.5);
-            system.inject_novelty(0.3);
+            // Pure supervised delta rule — stronger learning rate
+            system.teach_supervised(label, 0.05);
             system.step();
 
             if pred == label { correct += 1; }
