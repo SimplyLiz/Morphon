@@ -172,7 +172,7 @@ function initScene() {
   // Renderer
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  const sceneH = window.innerHeight - 160; // account for raster panel
+  const sceneH = window.innerHeight - (document.getElementById('bottom-panel')?.offsetHeight || 160);
   renderer.setSize(window.innerWidth, sceneH);
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.0;
@@ -315,7 +315,8 @@ function initScene() {
 }
 
 function onResize() {
-  const rasterH = 160; // matches CSS #raster-panel height
+  const bottomPanel = document.getElementById('bottom-panel');
+  const rasterH = bottomPanel ? bottomPanel.offsetHeight : 160;
   const w = window.innerWidth, h = window.innerHeight - rasterH;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -843,17 +844,38 @@ function setupControls() {
   document.getElementById('feed-wave').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('wave'); });
   document.getElementById('feed-noise').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('noise'); });
 
-  document.getElementById('btn-clear-log').addEventListener('click', () => {
-    document.getElementById('events').innerHTML = '';
-  });
+  // btn-clear-log removed — now handled by unified btn-panel-clear
 
-  // LOG toggle and raster clear
-  document.getElementById('btn-toggle-log')?.addEventListener('click', () => {
-    document.getElementById('event-log')?.classList.toggle('visible');
+  // Bottom panel tabs
+  document.querySelectorAll('#bottom-panel .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#bottom-panel .tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#bottom-panel .tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab)?.classList.add('active');
+      resizeRasterCanvas(); // re-measure after layout change
+    });
   });
-  document.getElementById('btn-raster-clear')?.addEventListener('click', () => {
-    rasterScrollX = 0;
-    rasterHistory.fill(null);
+  // Maximize / restore
+  document.getElementById('btn-panel-maximize')?.addEventListener('click', () => {
+    const panel = document.getElementById('bottom-panel');
+    panel.classList.toggle('maximized');
+    const isMax = panel.classList.contains('maximized');
+    document.getElementById('btn-panel-maximize').textContent = isMax ? '\u25BD' : '\u25A1';
+    // Update scene container bottom to match
+    document.getElementById('scene-container').style.bottom = isMax ? '45vh' : '160px';
+    setTimeout(() => { onResize(); }, 260); // after CSS transition
+  });
+  // Clear: context-dependent (raster or log)
+  document.getElementById('btn-panel-clear')?.addEventListener('click', () => {
+    const activeTab = document.querySelector('#bottom-panel .tab-btn.active')?.dataset.tab;
+    if (activeTab === 'tab-raster') {
+      rasterScrollX = 0;
+      rasterHistory.fill(null);
+      groupRateHistory.forEach(arr => arr.fill(0));
+    } else if (activeTab === 'tab-log') {
+      document.getElementById('events').innerHTML = '';
+    }
   });
 
   // Save/Load

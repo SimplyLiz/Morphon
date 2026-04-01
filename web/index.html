@@ -46,6 +46,7 @@
     top: 0; left: 0; right: 0;
     bottom: 160px;
     z-index: 0;
+    transition: bottom 0.25s ease;
   }
 
   /* === OVERLAY PANELS === */
@@ -352,19 +353,13 @@
     transition: width 0.15s;
   }
 
-  /* === BOTTOM EVENT LOG === */
-  #event-log {
-    bottom: 16px; left: 16px; right: 16px;
-    max-height: 100px;
-    display: none; /* hidden by default, toggle via LOG button */
-  }
-  #event-log.visible { display: block; }
+  /* === BOTTOM EVENT LOG (inside tabbed panel) === */
   #event-log .panel {
-    padding: 10px 14px;
+    padding: 0;
   }
 
-  /* === RASTER PANEL === */
-  #raster-panel {
+  /* === BOTTOM TABBED PANEL === */
+  #bottom-panel {
     position: fixed;
     bottom: 0; left: 0; right: 0;
     height: 160px;
@@ -374,16 +369,53 @@
     backdrop-filter: blur(20px);
     display: flex;
     flex-direction: column;
-    padding: 6px 12px 4px;
+    transition: height 0.25s ease;
   }
-  #raster-panel .raster-header {
+  #bottom-panel.maximized { height: 45vh; }
+  #bottom-panel .tab-bar {
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    margin-bottom: 4px;
     flex-shrink: 0;
+    padding: 0 8px;
+    height: 26px;
+    gap: 2px;
+    border-bottom: 1px solid var(--panel-border);
   }
-  #raster-panel .raster-header .section-title { margin-bottom: 0; }
+  #bottom-panel .tab-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    padding: 3px 10px;
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+  #bottom-panel .tab-btn:hover { color: var(--text); }
+  #bottom-panel .tab-btn.active {
+    color: var(--text-bright);
+    border-bottom-color: var(--accent);
+  }
+  #bottom-panel .tab-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  #bottom-panel .tab-actions button {
+    font-size: 9px;
+    padding: 2px 6px;
+  }
+  .tab-content {
+    flex: 1;
+    overflow: hidden;
+    display: none;
+  }
+  .tab-content.active { display: flex; flex-direction: column; }
+  #tab-raster {
+    padding: 4px 8px;
+  }
   #raster-canvas-wrap {
     flex: 1;
     position: relative;
@@ -392,10 +424,16 @@
   #raster-canvas {
     width: 100%;
     height: 100%;
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
   }
-  /* labels drawn on canvas directly */
+  #tab-log {
+    padding: 8px 12px;
+    overflow: hidden;
+  }
+  #tab-log .events-scroll {
+    max-height: none;
+    flex: 1;
+    overflow-y: auto;
+  }
   .events-scroll {
     max-height: 70px;
     overflow-y: auto;
@@ -696,28 +734,23 @@
   </div>
 </div>
 
-<!-- EVENT LOG -->
-<div id="event-log" class="overlay">
-  <div class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-      <div class="section-title" style="margin-bottom:0">Morphogenesis Events</div>
-      <button id="btn-clear-log" style="font-size:9px;padding:2px 8px;">CLEAR</button>
+<!-- BOTTOM TABBED PANEL -->
+<div id="bottom-panel">
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="tab-raster">RASTER</button>
+    <button class="tab-btn" data-tab="tab-log">LOG</button>
+    <div class="tab-actions">
+      <button id="btn-panel-clear" title="Clear">CLEAR</button>
+      <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
     </div>
+  </div>
+  <div id="tab-raster" class="tab-content active">
+    <div id="raster-canvas-wrap">
+      <canvas id="raster-canvas"></canvas>
+    </div>
+  </div>
+  <div id="tab-log" class="tab-content">
     <div class="events-scroll" id="events"></div>
-  </div>
-</div>
-
-<!-- RASTER PLOT -->
-<div id="raster-panel">
-  <div class="raster-header">
-    <div class="section-title">Spike Raster</div>
-    <div style="display:flex;gap:6px;align-items:center;">
-      <button id="btn-toggle-log" style="font-size:9px;padding:2px 8px;">LOG</button>
-      <button id="btn-raster-clear" style="font-size:9px;padding:2px 8px;">CLEAR</button>
-    </div>
-  </div>
-  <div id="raster-canvas-wrap">
-    <canvas id="raster-canvas"></canvas>
   </div>
 </div>
 

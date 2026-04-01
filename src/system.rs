@@ -885,23 +885,33 @@ impl System {
         self.use_analog_readout = true;
     }
 
-    /// Train the analog readout weights using the delta rule.
+    /// Train the analog readout weights using softmax cross-entropy.
     ///
-    /// Δw_ji = learning_rate × sigmoid(P_i) × (target_j - output_j)
+    /// error_j = target_j - softmax(outputs)_j
     ///
-    /// Also backprojects the output error to hidden morphons via feedback_signal,
-    /// creating a "dendritic injection" that the three-factor rule can use.
-    /// This is the "Hyphal Lead" — the output layer pulls the hidden layer forward.
+    /// Softmax normalizes outputs to sum to 1, preventing mode collapse:
+    /// when one class dominates (softmax→0.99), its gradient shrinks to 0.01,
+    /// breaking the positive feedback loop that per-output sigmoid creates.
+    ///
+    /// Also backprojects the output error to hidden morphons via feedback_signal.
     pub fn train_readout(&mut self, correct_index: usize, learning_rate: f64) {
         if !self.use_analog_readout || correct_index >= self.output_ports.len() { return; }
 
         let n_out = self.readout_weights.len();
-        let targets: Vec<f64> = (0..n_out).map(|i| if i == correct_index { 1.0 } else { 0.0 }).collect();
         let outputs = self.read_output_analog();
         if outputs.len() != n_out { return; }
 
-        // Compute output errors
-        let errors: Vec<f64> = (0..n_out).map(|j| targets[j] - 1.0 / (1.0 + (-outputs[j]).exp())).collect();
+        // Softmax: exp(x_j) / Σ_k exp(x_k), with numerical stability (subtract max)
+        let max_out = outputs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let exps: Vec<f64> = outputs.iter().map(|&x| (x - max_out).exp()).collect();
+        let sum_exp: f64 = exps.iter().sum();
+        let softmax: Vec<f64> = exps.iter().map(|e| e / sum_exp.max(1e-10)).collect();
+
+        // Cross-entropy gradient: error_j = target_j - softmax_j
+        let errors: Vec<f64> = (0..n_out).map(|j| {
+            let target = if j == correct_index { 1.0 } else { 0.0 };
+            target - softmax[j]
+        }).collect();
 
         // Collect pre-synaptic activities (sigmoid of morphon potentials)
         let activities: HashMap<MorphonId, f64> = self.readout_weights[0].keys()

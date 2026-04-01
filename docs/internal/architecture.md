@@ -210,17 +210,17 @@ Morphon energy is governed by a metabolic budget system (`MetabolicConfig` in `m
 
 Each step, a morphon pays:
 - `base_cost` (0.001) — the cost of being alive
-- `synapse_cost × degree` (0.0005 per connection) — maintaining connections is expensive
-- `firing_cost` (0.004) — extra cost when the morphon spikes
+- `synapse_cost × degree` (0.0001 per connection) — maintaining connections is expensive
+- `firing_cost` (0.002) — extra cost when the morphon spikes
 
 And earns:
 - `utility_reward × PE_reduction` (0.02 per unit) — reducing prediction error earns energy
-- `basal_regen` (0.001) — a small unconditional trickle prevents total starvation of quiet morphons
+- `basal_regen` (0.003) — a small unconditional trickle prevents total starvation of quiet morphons
 
 **Economics of a typical morphon** (10 synapses):
-- Outflow: `0.001 + 10×0.0005 = 0.006/step` (plus 0.004 per spike)
-- Inflow: `0.001 + utility`
-- Net: must earn `0.005/step` through PE reduction to stay alive
+- Outflow: `0.001 + 10×0.0001 = 0.002/step` (plus 0.002 per spike)
+- Inflow: `0.003 + utility`
+- Net: quiet morphons with few connections break even on basal regen; heavily connected or frequently firing morphons need PE reduction to stay solvent
 
 This creates selection pressure: morphons that don't contribute to reducing prediction error drain to zero energy and become apoptosis candidates (energy < 0.1). Morphons with many connections pay proportionally more, preventing topological bloat. The result is a system that self-organizes toward minimal topology at maximal performance — ideal for edge hardware.
 

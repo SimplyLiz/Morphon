@@ -126,10 +126,10 @@ V3 Metabolic Budget — controls how morphons earn and spend energy.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `base_cost` | 0.001 | Energy cost per step for being alive |
-| `synapse_cost` | 0.0005 | Additional cost per connection per step |
+| `synapse_cost` | 0.0001 | Additional cost per connection per step |
 | `utility_reward` | 0.02 | Energy earned per unit of prediction error reduction |
-| `basal_regen` | 0.001 | Small unconditional regen (prevents total starvation) |
-| `firing_cost` | 0.004 | Extra cost when the morphon spikes |
+| `basal_regen` | 0.003 | Small unconditional regen (prevents total starvation) |
+| `firing_cost` | 0.002 | Extra cost when the morphon spikes |
 
 Part of `SystemConfig`. All fields are tunable at system construction time.
 
