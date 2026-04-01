@@ -23,6 +23,10 @@ pub struct Synapse {
     pub tag_strength: f64,
     /// Whether this synapse has been captured (tag converted to permanent weight change).
     pub consolidated: bool,
+    /// Continuous consolidation level (0.0 = fully plastic, 1.0 = fully consolidated).
+    /// Weight updates are scaled by `(1.0 - consolidation_level * 0.9)`.
+    #[serde(default)]
+    pub consolidation_level: f64,
     /// Age in simulation steps.
     pub age: u64,
     /// How often this synapse has been activated.
@@ -48,6 +52,7 @@ impl Synapse {
             tag: 0.0,
             tag_strength: 0.0,
             consolidated: false,
+            consolidation_level: 0.0,
             age: 0,
             usage_count: 0,
             pre_trace: 0.0,
@@ -307,7 +312,13 @@ impl Morphon {
         // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
         // Other types get standard noise (0.1) for baseline activity.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise_scale = if self.cell_type == CellType::Motor { 0.0 } else { 0.1 * self.frustration.noise_amplitude };
+        let noise_scale = match self.cell_type {
+            CellType::Motor => 0.0,
+            // Reduced noise for Associative morphons — preserves pattern stability
+            // for readout learning while frustration scaling still drives exploration.
+            CellType::Associative => 0.02 * self.frustration.noise_amplitude,
+            _ => 0.1 * self.frustration.noise_amplitude,
+        };
         let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;

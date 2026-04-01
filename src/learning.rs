@@ -193,25 +193,17 @@ pub fn apply_weight_update(
     let m = r + n + a + h;
 
     // Standard three-factor: fast eligibility × receptor-gated modulation
-    let delta_w = synapse.eligibility * m * plasticity_rate;
+    // Consolidated synapses get reduced updates (10% residual plasticity at level=1.0)
+    let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
+    let delta_w = synapse.eligibility * m * plasticity_rate * consolidation_scale;
     if delta_w.is_finite() {
         synapse.weight += delta_w;
     }
 
-    // Tag-and-Capture: only if morphon has Reward receptor
-    let captured = post_receptors.contains(&ModulatorType::Reward)
-        && synapse.tag > 0.1
-        && modulation.reward > params.capture_threshold
-        && !synapse.consolidated;
-
-    if captured {
-        let cap_delta = params.capture_rate * synapse.tag_strength * modulation.reward;
-        if cap_delta.is_finite() {
-            synapse.weight += cap_delta;
-        }
-        synapse.consolidated = true;
-        synapse.tag = 0.0;
-    }
+    // Tag-and-Capture: per-tick capture is disabled.
+    // Capture is now episode-gated via System::report_episode_end().
+    // Tags still accumulate here (via update_eligibility) for later capture.
+    let captured = false;
 
     synapse.weight = if synapse.weight.is_finite() {
         synapse.weight.clamp(-params.weight_max, params.weight_max)
@@ -401,37 +393,51 @@ mod tests {
     }
 
     #[test]
-    fn tag_and_capture_consolidates() {
+    fn per_tick_capture_disabled() {
+        // Per-tick capture is now disabled — capture happens at episode end
+        // via System::report_episode_end(). Tags still accumulate.
         let params = LearningParams::default();
         let mut syn = Synapse::new(0.3);
         syn.tag = 0.5;
         syn.tag_strength = 0.4;
 
         let mut modulation = Neuromodulation::default();
-        modulation.inject_reward(0.8); // above capture_threshold (0.5)
+        modulation.inject_reward(0.8);
 
         let motor_receptors = default_receptors(CellType::Motor);
         let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
 
-        assert!(captured, "tag should be captured with high reward");
-        assert!(syn.consolidated, "synapse should be consolidated");
-        assert_eq!(syn.tag, 0.0, "tag should be cleared after capture");
+        assert!(!captured, "per-tick capture should be disabled");
+        assert!(!syn.consolidated, "synapse should not be consolidated per-tick");
     }
 
     #[test]
-    fn consolidated_synapse_not_captured_again() {
+    fn consolidation_level_scales_weight_updates() {
         let params = LearningParams::default();
-        let mut syn = Synapse::new(0.3);
-        syn.tag = 0.5;
-        syn.tag_strength = 0.4;
-        syn.consolidated = true; // already consolidated
+        let mut syn_plastic = Synapse::new(0.3);
+        syn_plastic.eligibility = 0.5;
 
+        let mut syn_consolidated = Synapse::new(0.3);
+        syn_consolidated.eligibility = 0.5;
+        syn_consolidated.consolidation_level = 1.0;
+
+        // Create a positive reward delta: inject 0 first (sets prev), then 0.8
         let mut modulation = Neuromodulation::default();
-        modulation.inject_reward(0.9);
+        modulation.inject_reward(0.0); // sets prev_reward = 0
+        modulation.inject_reward(0.8); // reward_delta = 0.8 - 0 = 0.8
 
-        let motor_receptors = default_receptors(CellType::Motor);
-        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
-        assert!(!captured, "consolidated synapse should not be re-captured");
+        // Use Associative receptors (Reward + Novelty) — reward delta drives update
+        let receptors = default_receptors(CellType::Associative);
+        apply_weight_update(&mut syn_plastic, &modulation, &params, 0.1, &receptors, [1.0; 4]);
+        apply_weight_update(&mut syn_consolidated, &modulation, &params, 0.1, &receptors, [1.0; 4]);
+
+        let delta_plastic = (syn_plastic.weight - 0.3).abs();
+        let delta_consolidated = (syn_consolidated.weight - 0.3).abs();
+        assert!(delta_plastic > 0.0001, "plastic synapse should get an update, got {:.6}", delta_plastic);
+        // Consolidated should get ~10% of the update
+        assert!(delta_consolidated < delta_plastic * 0.5,
+            "consolidated ({:.6}) should get much less update than plastic ({:.6})",
+            delta_consolidated, delta_plastic);
     }
 
     #[test]

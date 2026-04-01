@@ -113,10 +113,12 @@ impl System {
             total_transdifferentiations: 0,
             feedback_weights: std::collections::HashMap::new(),
             readout_weights: Vec::new(),
+            readout_bias: Vec::new(),
             use_analog_readout: false,
             consolidation_gate: 30.0,
             recent_performance: 0.0,
             peak_performance: 0.0,
+            running_avg_steps: 9.0,
             field: None, // field is ephemeral, not persisted in snapshots
             endo: snapshot.endo,
         }

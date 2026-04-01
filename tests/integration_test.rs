@@ -273,20 +273,15 @@ fn test_tag_and_capture_delayed_reward() {
     // Tag decays much slower
     // (tau_tag = 6000, so after 100 steps: tag * exp(-100/6000) ≈ 0.98 * tag)
 
-    // Now deliver delayed reward → should capture the tag
+    // Per-tick capture is now disabled (episode-gated).
+    // Verify that tags still accumulate but don't auto-capture.
     let mut modulation = Neuromodulation::default();
     modulation.inject_reward(0.8);
 
-    let weight_before = syn.weight;
-    let motor_receptors = default_receptors(CellType::Motor); // Reward + Arousal
-    apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
-
-    if syn.consolidated {
-        assert!(
-            syn.weight != weight_before,
-            "Captured tag should change weight"
-        );
-    }
+    let motor_receptors = default_receptors(CellType::Motor);
+    let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
+    assert!(!captured, "per-tick capture should be disabled");
+    assert!(syn.tag > 0.0, "tag should still exist for episode-end capture");
 }
 
 #[test]
