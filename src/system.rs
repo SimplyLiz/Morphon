@@ -269,10 +269,14 @@ impl System {
                 let (post_activity, post_receptors) = self.morphons.get(&id)
                     .map(|m| {
                         // Motor morphons use potential-based readout (non-spiking).
-                        // Other types use binary spike signal.
+                        // Activity = sigmoid(potential) - 0.5, centered at zero.
+                        // Above-average potential → positive activity → LTP eligible.
+                        // Below-average potential → negative/zero → no LTP.
+                        // This provides discrimination: only inputs that push the
+                        // motor above its resting state generate positive eligibility.
                         let activity = if m.cell_type == CellType::Motor {
-                            // Sigmoid-normalize potential to [0, 1] for graded signal
-                            1.0 / (1.0 + (-m.potential).exp())
+                            let sig = 1.0 / (1.0 + (-m.potential).exp());
+                            (sig - 0.5) * 2.0 // map [0,1] → [-1,1], centered at 0
                         } else {
                             if m.fired { 1.0 } else { 0.0 }
                         };

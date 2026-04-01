@@ -117,6 +117,8 @@ Methods: `new(capacity)`, `push(value)`, `mean()`, `variance()`, `max()`, `len()
 | `weight` | `f64` | (param) | Connection weight |
 | `delay` | `f64` | 1.0 | Signal delay (learnable) |
 | `eligibility` | `f64` | 0.0 | Fast eligibility trace (τ ~ 20 steps) |
+| `pre_trace` | `f64` | 0.0 | Pre-synaptic spike trace for STDP (τ ~ 10 steps) |
+| `post_trace` | `f64` | 0.0 | Post-synaptic spike trace for STDP (τ ~ 10 steps) |
 | `tag` | `f64` | 0.0 | Slow synaptic tag (τ ~ 6000 steps) |
 | `tag_strength` | `f64` | 0.0 | Hebbian strength at tagging time |
 | `consolidated` | `bool` | false | Whether tag has been captured |
@@ -175,6 +177,7 @@ Methods:
 | `novelty` | 0.0 | 0.90 |
 | `arousal` | 0.0 | 0.85 |
 | `homeostasis` | 0.5 | 0.99 (towards 0.5 baseline) |
+| `reward_baseline` | 0.0 | EMA of reward (α=0.01) — used for advantage computation |
 
 Methods:
 - `inject_reward(strength)`, `inject_novelty(strength)`, `inject_arousal(strength)`, `inject_homeostasis(strength)` — inject signal (clamped to 0.0..1.0)

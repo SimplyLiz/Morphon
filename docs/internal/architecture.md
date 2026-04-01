@@ -22,18 +22,31 @@ morphon-core/
 │   ├── scheduler.rs        # Dual-clock architecture (fast/medium/slow/glacial)
 │   ├── developmental.rs    # Bootstrapping programs with I/O pathway guarantees
 │   ├── lineage.rs          # Lineage tree export for visualization
+│   ├── diagnostics.rs      # Learning pipeline observability (weights, eligibility, firing, captures)
 │   ├── snapshot.rs         # Serde serialization (save/load JSON)
 │   ├── system.rs           # Top-level System orchestrating everything
-│   └── python.rs           # PyO3 bindings (behind `python` feature flag)
+│   ├── python.rs           # PyO3 bindings (behind `python` feature flag)
+│   └── wasm.rs             # wasm-bindgen bindings (behind `wasm` feature flag)
 ├── tests/
 │   └── integration_test.rs # 18 integration tests
 ├── examples/
-│   └── cartpole.rs         # CartPole benchmark (RL control task)
+│   ├── cartpole.rs         # CartPole RL control task
+│   ├── anomaly.rs          # Sensor anomaly detection benchmark
+│   ├── mnist.rs            # MNIST digit classification (full 784px)
+│   └── classify_tiny.rs    # Minimal classification sanity check
 ├── benches/
 │   └── benchmarks.rs       # Criterion benchmarks
 ├── pyproject.toml          # Maturin config for Python wheel builds
 └── Cargo.toml              # Dependencies: petgraph, rayon, rand, serde, pyo3 (optional)
 ```
+
+## Spontaneous Developmental Activity (Warm-Up)
+
+On construction, `System::new()` runs 100 warm-up steps before the system is exposed to the caller. Analogous to retinal waves and cortical spontaneous bursting in utero:
+- Random noise input is fed to sensory ports each step
+- Neuromodulation (reward/novelty/arousal at 0.3) is injected each step
+- All lifecycle events (division, differentiation, fusion, apoptosis, migration) are **disabled** during warm-up — only learning correlations, not structural changes
+- After warm-up, modulation is reset to default, step counter is zeroed, and spike queue is cleared
 
 ## Data Flow Per Step
 
@@ -92,6 +105,12 @@ All Morphon positions live in a hyperbolic space rather than Euclidean. Points n
 
 The scheduler separates processes into four temporal scales to prevent structural changes from destabilizing fast inference. All periods are configurable via `SchedulerConfig`.
 
+### Trace-Based STDP + Advantage Modulation
+
+Learning uses trace-based STDP (Frémaux & Gerstner 2016) instead of binary coincidence detection. Each synapse carries `pre_trace` and `post_trace` — decaying memory of recent spikes (τ=10). When pre fires, `post_trace` determines LTD; when post fires, `pre_trace` determines LTP. This widens the effective STDP window from 1 timestep to ~10 steps, solving the co-firing problem caused by refractory periods and spike delays.
+
+The reward channel uses **advantage modulation** (reward - baseline EMA) instead of raw reward. This eliminates the unsupervised bias where `mean(reward) × mean(eligibility)` causes systematic weight drift (Frémaux et al. 2010). Advantage is clamped to non-negative: absence of reward is sufficient signal, active depression from negative advantage kills activity in sparse-reward environments.
+
 ### Three-Factor Learning + Tag-and-Capture
 
 Two-timescale learning: fast eligibility traces (tau=20) for immediate credit assignment, slow synaptic tags (tau=6000) for delayed reward. Tags are "captured" into permanent weight changes when strong reward arrives, solving the credit assignment problem without backpropagation. Consolidated synapses are protected from pruning.
@@ -114,6 +133,14 @@ Rayon is used for:
 - Morphon state updates (`par_iter_mut` on the HashMap)
 - Spike generation in resonance (`par_iter` over firing morphons)
 - Curvature learning (`par_iter_mut`)
+
+### Contrastive Reward (Two-Hop Credit Assignment)
+
+`reward_contrastive(correct_index, reward_strength, inhibit_strength)` provides output-specific credit assignment for classification tasks:
+- **Correct output**: `inject_reward_at()` boosts eligibility on the motor morphon's incoming synapses (hop 0), then propagates backward to the associative layer (hop 1, attenuated by 0.5 × |weight|). A weak global reward (10%) covers deeper paths.
+- **Incorrect outputs**: `inject_inhibition_at()` decays eligibility toward zero (doesn't drive negative). Two-hop backward propagation with the same structure.
+
+This is the key mechanism for breaking mode collapse in classification tasks — without it, all motor morphons converge to the same output.
 
 ### Stable I/O Ports
 
