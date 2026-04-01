@@ -257,7 +257,7 @@ fn test_tag_and_capture_delayed_reward() {
 
     // Strong Hebbian coincidence → should set a tag
     for _ in 0..5 {
-        update_eligibility(&mut syn, true, true, &params, 1.0);
+        update_eligibility(&mut syn, true, 1.0, &params, 1.0);
     }
     assert!(
         syn.tag > 0.0 || syn.eligibility > 0.5,
@@ -266,7 +266,7 @@ fn test_tag_and_capture_delayed_reward() {
 
     // Let eligibility decay but tag should persist
     for _ in 0..100 {
-        update_eligibility(&mut syn, false, false, &params, 1.0);
+        update_eligibility(&mut syn, false, 0.0, &params, 1.0);
     }
     // Fast eligibility should have mostly decayed
     assert!(syn.eligibility.abs() < 0.1, "Fast eligibility should decay");

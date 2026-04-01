@@ -266,8 +266,18 @@ impl System {
         if tick.medium {
             // Update eligibility traces and apply receptor-gated weight changes
             for &id in &morphon_ids {
-                let (post_fired, post_receptors) = self.morphons.get(&id)
-                    .map(|m| (m.fired, m.receptors.clone()))
+                let (post_activity, post_receptors) = self.morphons.get(&id)
+                    .map(|m| {
+                        // Motor morphons use potential-based readout (non-spiking).
+                        // Other types use binary spike signal.
+                        let activity = if m.cell_type == CellType::Motor {
+                            // Sigmoid-normalize potential to [0, 1] for graded signal
+                            1.0 / (1.0 + (-m.potential).exp())
+                        } else {
+                            if m.fired { 1.0 } else { 0.0 }
+                        };
+                        (activity, m.receptors.clone())
+                    })
                     .unwrap_or_default();
                 let incoming = self.topology.incoming_synapses_mut(id);
 
@@ -278,7 +288,7 @@ impl System {
                         learning::update_eligibility(
                             synapse,
                             pre_fired,
-                            post_fired,
+                            post_activity,
                             &self.config.learning,
                             dt,
                         );

@@ -76,10 +76,16 @@ impl Default for LearningParams {
 ///
 /// The eligibility trace accumulates these STDP contributions and decays slowly,
 /// serving as the "tag" that the three-factor modulation signal acts on.
+/// `post_activity`: continuous postsynaptic activity signal.
+/// For spiking morphons: 1.0 when fired, 0.0 otherwise.
+/// For Motor morphons (non-spiking readout): normalized membrane potential,
+/// so the learning rule responds to graded output even when the morphon
+/// doesn't spike. This matches the DSQN/SpikeGym pattern where output
+/// neurons are non-spiking leaky integrators.
 pub fn update_eligibility(
     synapse: &mut Synapse,
     pre_fired: bool,
-    post_fired: bool,
+    post_activity: f64,
     params: &LearningParams,
     dt: f64,
 ) {
@@ -91,14 +97,14 @@ pub fn update_eligibility(
     // STDP: event-driven eligibility updates
     let mut stdp = 0.0;
     if pre_fired {
-        // Pre-before-post: LTD proportional to how recently post fired
+        // Pre-before-post: LTD proportional to how recently post was active
         stdp += params.a_minus * synapse.post_trace;
         synapse.pre_trace += 1.0;
     }
-    if post_fired {
-        // Post-after-pre: LTP proportional to how recently pre fired
-        stdp += params.a_plus * synapse.pre_trace;
-        synapse.post_trace += 1.0;
+    if post_activity > 0.01 {
+        // Post active (spiking or graded): LTP proportional to pre trace × activity level
+        stdp += params.a_plus * synapse.pre_trace * post_activity;
+        synapse.post_trace += post_activity;
     }
 
     // Eligibility trace: exponential decay + STDP contributions
