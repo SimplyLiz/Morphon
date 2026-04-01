@@ -1201,7 +1201,16 @@ function setupControls() {
   // Menu toggle
   document.getElementById('btn-log-menu')?.addEventListener('click', (e) => {
     e.stopPropagation();
-    document.getElementById('log-menu')?.classList.toggle('hidden');
+    const menu = document.getElementById('log-menu');
+    const btn = e.currentTarget;
+    if (menu) {
+      menu.classList.toggle('hidden');
+      if (!menu.classList.contains('hidden')) {
+        const r = btn.getBoundingClientRect();
+        menu.style.top = (r.bottom + 4) + 'px';
+        menu.style.right = (window.innerWidth - r.right) + 'px';
+      }
+    }
   });
   document.addEventListener('click', () => {
     document.getElementById('log-menu')?.classList.add('hidden');

@@ -108,8 +108,8 @@
     font-size: 13px;
   }
   .header-stat { display: flex; gap: 6px; align-items: baseline; }
-  .header-stat .label { color: var(--text-dim); font-size: 10px; letter-spacing: 0.5px; }
-  .header-stat .value { color: var(--text-bright); font-weight: 600; font-size: 14px; }
+  .header-stat .label { color: #8899bb; font-size: 10px; letter-spacing: 0.5px; }
+  .header-stat .value { color: #ffffff; font-weight: 600; font-size: 14px; }
 
   .header-controls {
     display: flex;
@@ -477,7 +477,7 @@
   #tab-log {
     padding: 4px 10px 6px;
     flex-direction: column;
-    overflow: visible;
+    overflow: hidden;
   }
   #tab-log .events-scroll {
     max-height: none;
@@ -538,9 +538,7 @@
     letter-spacing: 2px;
   }
   .log-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
+    position: fixed;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     border-radius: 6px;
