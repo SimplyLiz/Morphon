@@ -461,12 +461,15 @@ impl System {
                             );
 
                             if is_assoc && feedback_sig.abs() > 0.001 {
-                                // DFA: Δw = eligibility × feedback_signal × dfa_plasticity
-                                // Eligibility gate provides temporal specificity — only recently
-                                // active synapses get updated. Tested: removing the gate (using
-                                // pre_fired directly) dropped avg from 17.6 to 9.7.
-                                let dfa_plasticity = 0.05;
-                                let delta_w = synapse.eligibility * feedback_sig * dfa_plasticity;
+                                // DFA climbing-fiber rule: Δw = pre_trace × feedback_signal × lr
+                                // Uses pre_trace (decaying memory of recent pre-synaptic firing)
+                                // NOT eligibility (which is STDP-gated and attenuates the signal).
+                                // NOT binary pre_fired (too sparse at 5% firing rate).
+                                // pre_trace persists ~10 steps after firing — "is this synapse
+                                // carrying signal?" — the right gate for targeted DFA updates.
+                                // Biologically: climbing fibers override STDP timing requirements.
+                                let dfa_lr = 0.02;
+                                let delta_w = synapse.pre_trace * feedback_sig * dfa_lr;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
                                 synapse.age += 1;
                                 if synapse.eligibility.abs() > 0.1 {
