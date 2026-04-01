@@ -43,6 +43,14 @@ pub struct LearningParams {
     pub alpha_novelty: f64,
     pub alpha_arousal: f64,
     pub alpha_homeostasis: f64,
+    /// Transmitter-induced potentiation rate — prevents silent death.
+    /// When pre fires but post rate is low, apply this as a floor on dw.
+    /// Zenke et al. 2015: must operate on SAME timescale as STDP.
+    pub transmitter_potentiation: f64,
+    /// Heterosynaptic depression rate — prevents runaway excitation.
+    /// When post fires, ALL incoming synapses get depressed by this fraction.
+    /// Independent of pre-synaptic activity.
+    pub heterosynaptic_depression: f64,
 }
 
 impl Default for LearningParams {
@@ -62,6 +70,8 @@ impl Default for LearningParams {
             alpha_novelty: 0.5,
             alpha_arousal: 0.3,
             alpha_homeostasis: 0.1,
+            transmitter_potentiation: 0.001,  // small floor — prevents silent death
+            heterosynaptic_depression: 0.002, // slight depression on all inputs when post fires
         }
     }
 }

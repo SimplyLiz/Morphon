@@ -119,30 +119,40 @@ This prevents catastrophic early consolidation where random early patterns get p
 
 ## CartPole Strategy
 
-The CartPole example combines all learning paths with an external linear TD critic.
+The CartPole example uses both internal and external TD critics with population-coded observations.
 
 ### Architecture
-- 8 sensory inputs (4 state dimensions split into pos/neg channels, amplitude 5.0)
+- 32 sensory inputs (4 state dimensions x 8 Gaussian tiles, population coding)
 - 2 motor outputs (left/right action)
-- 8 internal steps per action decision
-- External linear critic with 8 features (raw + squared state)
+- 4 internal steps per action decision
+- Internal MI critic (~8-10 Associative morphons, td_lr=0.03)
+- External linear critic with 8 features (raw + squared state, lr=0.02)
 
 ### Training Loop
-1. Encode state as 8D sparse pos/neg vector
-2. `process_steps(obs, 8)` — 8 internal MI steps to settle
+1. Encode state as 32D population-coded vector (Gaussian tuning curves, width=0.3, amp=4.0)
+2. `process_steps(obs, 4)` — 4 internal MI steps to settle
 3. Epsilon-greedy action: epsilon decays from 0.5 to 0.05 over training
-4. Reward shaping: `R = 1.0 + 0.5 * (1 - |theta|/threshold)` if alive, else 0
-5. External critic computes TD error: `delta = R + 0.99 * V(s') - V(s)`
-6. TD error drives:
-   - **Readout training**: `train_readout(action, min(|delta|, 1.0) * 0.2)` (positive delta trains correct action; negative delta trains the other action at 0.5x rate)
-   - **Neuromodulation**: `inject_reward((delta * 0.3 + 0.5).clamp(0, 1))`
+4. Reward shaping: `R = 1.0 + 0.5 * (1 - |theta|/threshold)` if alive, else `-1.0`
+5. Internal TD critic: `system.inject_td_error(reward, 0.99)` — sets `last_td_error` (enables DFA) + injects reward
+6. External TD critic drives readout training:
+   - **Readout training**: `train_readout(action, min(|delta|, 1.0) * 0.15)` (positive delta trains correct action; negative delta trains the other action at 0.5x rate)
    - **Arousal on failure**: `inject_arousal(0.8)` on episode end
+   - **Novelty on danger**: `inject_novelty()` when pole angle > 50% of threshold
 
-### Current Results (quick profile, 200 episodes)
-- Best: ~60 steps
-- Average (last 100): ~12-16 steps
-- Tag-and-capture: ~270 consolidations
+### Key Fixes (2026-04-01)
+- **DFA activated**: `inject_td_error()` sets `last_td_error` — was dead before (zero for entire run)
+- **Reward signal fixed**: Only inject on positive TD, let decay create directional signal. Old scaling `(td * 0.3 + 0.5)` saturated channel at 1.0
+- **Population coding**: 32 Gaussian channels (was 8 binary pos/neg). Each state region produces distinct activation pattern
+- **Consolidation disabled**: `capture_threshold=10.0` — prevents premature locking of random early weights
+
+### Current Results (standard profile, 1000 episodes)
+- Best: 106 steps (up from 59)
+- Average (last 100): ~15-18 at peak, declining to ~12 by ep 1000
+- Representational drift causes degradation — see `docs/research/cartpole-representational-drift.md`
 - Not solved (threshold: avg >= 195)
+
+### Open Research: Representational Drift
+The hidden layer's representations shift under STDP + DFA, degrading the readout's learned mapping. Even with frozen three-factor learning (alpha=0), drift occurs through DFA weight updates and homeostatic threshold regulation. Primary hypothesis: **Anchor & Sail heterogeneous plasticity** (20% stable anchors + 80% plastic sails). See `docs/research/anchor-sail-design.md`.
 
 ---
 
@@ -189,9 +199,9 @@ Zero-bias: `(pixel / 255) * 3.0` maps to [0, 3]. No sigmoid bias — full dynami
 - Motor drift prevention (full leak + zero noise) keeps motors responsive
 
 ### Current Gaps
-- **CartPole**: avg ~15, needs ~195. The TD error signal is weak and the readout needs more training time. Reward shaping helps but isn't sufficient.
-- **MNIST**: mode collapse persists in readout. Phase 1 self-organization produces some feature detectors, but Phase 2 readout training collapses to one class. The readout initialization or learning rate schedule needs work.
-- **Performance gate**: set at 30.0 for CartPole — until the system regularly exceeds this, consolidation is blocked, creating a chicken-and-egg problem for early learning.
+- **CartPole**: best=106, avg peaks ~18 then declines. **Representational drift** — the hidden layer drifts while the readout tries to learn. DFA and reward signal are now working (fixed 2026-04-01). Next step: heterogeneous plasticity (Anchor & Sail).
+- **MNIST**: mode collapse persists in readout. Phase 1 self-organization produces some feature detectors, but Phase 2 readout training collapses to one class.
+- **Consolidation catch-22**: Consolidate early → locks in random weights. Never consolidate → nothing stable. Need readout-coupled consolidation (stabilize what the readout finds useful).
 
 ### Key Lessons Learned
 1. **Global modulation can't do classification**: Three-factor STDP alone applies the same reward scalar to all synapses — it can't express "this output right, that one wrong". DFA + analog readout were needed.
@@ -199,6 +209,10 @@ Zero-bias: `(pixel / 255) * 3.0` maps to [0, 3]. No sigmoid bias — full dynami
 3. **Motor morphons need special treatment**: Full leak (memoryless), zero noise, and potential clamping are essential to prevent saturation drift.
 4. **Spike propagation adds noise**: The MI propagation pipeline (multi-step, delays, noise) distorts the forward pass. The analog readout bypass was necessary to get clean classification gradients.
 5. **Two-phase learning is biologically valid**: Cortex self-organizes first (sleep/development), then supervised pathways refine (cerebellum). Trying to do both simultaneously destabilizes both.
+6. **Dead signal pathways are silent killers**: The DFA and reward channel bugs (2026-04-01) went undetected because the system still "ran" — it just couldn't learn. Always verify that learning signals are actually nonzero.
+7. **Population coding is critical**: Binary pos/neg encoding (8 channels) produced indistinguishable hidden layer activations for similar states. Gaussian population coding (32 channels) gave the readout actual features to discriminate on. Best episode jumped 59→106.
+8. **Representational drift is the real challenge**: Once signal pathways work, the bottleneck shifts from "can the system learn?" to "can it retain what it learned?" Heterogeneous plasticity (stable anchors + plastic explorers) is the biological solution.
+9. **Consolidation must be earned, not given**: Early consolidation locks in random associations. Readout-coupled consolidation (stabilize features the readout uses) is more principled than performance-gated consolidation.
 
 ---
 
@@ -210,7 +224,7 @@ Zero-bias: `(pixel / 255) * 3.0` maps to [0, 3]. No sigmoid bias — full dynami
 |------|-----------|-------|-------|
 | Three-factor STDP | plasticity_rate | 0.01-0.10 | Novelty-modulated |
 | DFA climbing-fiber | lr | 0.02 | Fixed |
-| TD-LTP (critic) | lr | 0.01 | Fixed |
+| TD-LTP (critic) | lr | 0.03 | Fixed (was 0.01, bumped 2026-04-01) |
 | Analog readout | lr | 0.1-0.2 | Passed by caller |
 | L2 decay (three-factor) | lambda | 0.0005 | Per step |
 | L2 decay (DFA) | lambda | 0.001 | 2x stronger |
@@ -231,9 +245,9 @@ Zero-bias: `(pixel / 255) * 3.0` maps to [0, 3]. No sigmoid bias — full dynami
 | Tag formation | eligibility > 0.3 | Set slow synaptic tag |
 | DFA tag | \|pre_trace * feedback\| > 0.1 | Tag on DFA path |
 | Capture (three-factor) | reward > 0.5 | Consolidate tagged synapse |
-| Capture (DFA) | reward > 0.3 | Consolidate tagged synapse |
-| Performance gate | recent_perf > 30.0 | Allow captures |
-| k-WTA | top 5% | Sparse activation |
+| Capture (DFA) | reward > capture_threshold | Consolidate tagged synapse (was hardcoded 0.3, now configurable) |
+| Performance gate | recent_perf > 10.0 | Allow captures (was 15.0, lowered 2026-04-01) |
+| k-WTA | top 15% | Sparse activation |
 
 ### Metabolic Budget (V3)
 

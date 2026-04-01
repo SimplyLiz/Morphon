@@ -646,6 +646,47 @@ impl System {
             }
         }
 
+        // === FAST NON-HEBBIAN COMPENSATORY PLASTICITY (Zenke et al. 2015) ===
+        // Two mechanisms that must operate on the SAME timescale as STDP:
+        // (a) Transmitter-induced potentiation: prevents silent death
+        // (b) Heterosynaptic depression: prevents runaway excitation
+        if tick.medium {
+            let tip_rate = self.config.learning.transmitter_potentiation;
+            let hsd_rate = self.config.learning.heterosynaptic_depression;
+            let wmax = self.config.learning.weight_max;
+
+            let morphon_states: Vec<(MorphonId, bool, f64)> = self.morphons.values()
+                .map(|m| (m.id, m.fired, m.activity_history.mean()))
+                .collect();
+
+            for &(id, fired, post_rate) in &morphon_states {
+                let incoming = self.topology.incoming_synapses_mut(id);
+
+                for (pre_id, edge_idx) in incoming {
+                    let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
+
+                    if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                        // (a) Transmitter-induced potentiation:
+                        // Pre fired but post is chronically quiet → small positive dw.
+                        // Prevents morphons from going permanently silent.
+                        if pre_fired && post_rate < 0.05 {
+                            synapse.weight += tip_rate;
+                            synapse.weight = synapse.weight.min(wmax);
+                        }
+
+                        // (b) Heterosynaptic depression:
+                        // Post fired → depress ALL incoming synapses slightly,
+                        // regardless of pre activity. Normalizes total input,
+                        // prevents winner-take-all collapse.
+                        if fired {
+                            synapse.weight -= hsd_rate * synapse.weight.abs();
+                            synapse.weight = synapse.weight.max(-wmax);
+                        }
+                    }
+                }
+            }
+        }
+
         // === SLOW PATH ===
         if tick.slow {
             let slow_report = morphogenesis::step_slow(

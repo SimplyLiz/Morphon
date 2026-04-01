@@ -204,7 +204,7 @@ function initScene() {
   composer.addPass(new RenderPass(scene, camera));
   bloomPass = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.25,  // strength — halved
+    0.28,  // strength — soft glow
     0.3,   // radius — tight halos
     0.85   // threshold
   );
@@ -484,8 +484,8 @@ function updateScene() {
       tempColor.copy(color).multiplyScalar(2.5);
       nodesMesh.setColorAt(i, tempColor);
     } else {
-      // Resting: dim. Firing: glow (25% less than before). Only active nodes bloom.
-      const intensity = bright * (0.5 + glow * 0.9);
+      // Resting: dim. Firing: soft glow that clears bloom threshold.
+      const intensity = bright * (0.45 + glow * 0.95);
       tempColor.copy(color).multiplyScalar(intensity);
       nodesMesh.setColorAt(i, tempColor);
     }
@@ -1450,7 +1450,7 @@ function animate() {
   // Dynamic bloom
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
-    bloomPass.strength = 0.2 + activity * 0.15;
+    bloomPass.strength = 0.23 + activity * 0.15;
   }
 
   controls.update();

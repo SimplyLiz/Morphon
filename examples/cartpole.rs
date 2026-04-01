@@ -158,6 +158,8 @@ fn create_system() -> System {
             alpha_novelty: 0.5,
             alpha_arousal: 0.5,
             alpha_homeostasis: 0.1,
+            transmitter_potentiation: 0.002, // anti-silence: floor on dw when pre fires but post quiet
+            heterosynaptic_depression: 0.003, // anti-runaway: depress all inputs when post fires
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,

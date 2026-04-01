@@ -195,8 +195,11 @@ How the concept documents (MORPHON-product-concept.md, morphogenic-intelligence-
 
 | Feature | Concept Section | Priority | Notes |
 |---------|----------------|----------|-------|
-| CartPole convergence | 6.2 | High | best=117 (post-DFA), avg~16. DFA + analog readout + tag-and-capture active. Needs tuning. |
+| CartPole convergence | 6.2 | High | best=106, avg~18 peak. DFA + reward signal fixed (2026-04-01). Representational drift causes degradation over 1000 eps. See `docs/research/cartpole-representational-drift.md`. |
+| Anchor & Sail heterogeneous plasticity | New | High | 20% stable "anchor" morphons + 80% plastic "sail" morphons. Addresses representational drift. See `docs/research/anchor-sail-design.md`. |
 | MNIST convergence | 6.2 | High | 10.6% test, 3 classes learned (43.5% best per-class). Analog readout active. Needs deeper credit assignment or architectural changes. |
+| Heterogeneous tau_membrane | New | Medium | Per-morphon membrane time constant (Gamma distribution). Perez-Nieves 2021: 5-15% accuracy gain. See `docs/paper/references-representational-drift.md` #3. |
+| Readout-coupled consolidation | New | Medium | Readout weight magnitude gates hidden layer consolidation. iTDS (Pilzak 2026). See Anchor & Sail design doc H2. |
 | V3 SynapticJustification Records | V3 (1.2) | Medium | Every synapse tracks FormationCause + premises + dependents. Foundation for truth maintenance. |
 | V3 4-State Epistemic Model | V3 (1.3) | Medium | Cluster-level epistemic states: Supported/Outdated/Contested/Hypothesis. Depends on justification records. |
 | V3 Epistemic Scarring | V3 (7.1) | Low | Clusters that were repeatedly wrong get higher skepticism thresholds. |
