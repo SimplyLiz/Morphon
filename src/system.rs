@@ -107,6 +107,8 @@ impl Default for SystemConfig {
 /// Inspection results for the system state.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SystemStats {
+    /// Effective morphon cap (auto-derived or explicitly set).
+    pub max_morphons: usize,
     pub total_morphons: usize,
     pub total_synapses: usize,
     pub fused_clusters: usize,
@@ -222,12 +224,21 @@ pub struct System {
 
     /// Endoquilibrium: predictive neuroendocrine regulation engine.
     pub endo: crate::endoquilibrium::Endoquilibrium,
+
+    /// Resolved morphon cap (from config or auto-derived from I/O dimensions).
+    pub(crate) effective_max_morphons: usize,
 }
 
 impl System {
     /// Create a new MI System by running its developmental program.
     pub fn new(config: SystemConfig) -> Self {
         let mut rng = rand::rng();
+
+        // Resolve effective morphon cap before anything else.
+        let effective_max_morphons = config.morphogenesis.resolve_max_morphons(
+            config.developmental.target_input_size,
+            config.developmental.target_output_size,
+        );
 
         let (mut morphons, topology, next_id) =
             developmental::develop(&config.developmental, &mut rng);
@@ -326,6 +337,7 @@ impl System {
             running_avg_steps: 9.0, // initialize to random baseline
             field: None, // initialized below
             endo,
+            effective_max_morphons,
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -659,6 +671,14 @@ impl System {
         // This breaks the circular dependency where critic and actor share learning rules.
         let mut captures_this_step = 0_u64;
         if tick.medium {
+            // Endo-aware tag rate: aggressive in early/stressed stages, conservative when mature.
+            let endo_tag_factor = match self.endo.stage() {
+                crate::endoquilibrium::DevelopmentalStage::Stressed
+                | crate::endoquilibrium::DevelopmentalStage::Proliferating => 3.0,
+                crate::endoquilibrium::DevelopmentalStage::Differentiating => 2.0,
+                crate::endoquilibrium::DevelopmentalStage::Consolidating
+                | crate::endoquilibrium::DevelopmentalStage::Mature => 1.0,
+            };
             let critic_set: std::collections::HashSet<MorphonId> =
                 self.critic_ports.iter().copied().collect();
             let td_err = self.last_td_error;
@@ -745,7 +765,7 @@ impl System {
                                 // episode end where performance-relative decisions are made.
                                 let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
                                 if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
-                                    synapse.tag = (synapse.tag + dfa_strength * 0.05).min(1.0);
+                                    synapse.tag = (synapse.tag + dfa_strength * self.config.learning.tag_accumulation_rate * endo_tag_factor).min(1.0);
                                     synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
                                 }
                                 synapse.age += 1;
@@ -1003,6 +1023,7 @@ impl System {
                 &mut self.next_morphon_id,
                 &mut self.next_cluster_id,
                 &self.config.morphogenesis,
+                self.effective_max_morphons,
                 self.modulation.arousal,
                 &self.config.lifecycle,
                 &mut rng,
@@ -1060,7 +1081,7 @@ impl System {
                         &mut self.morphons,
                         &mut self.topology,
                         &mut self.next_morphon_id,
-                        self.config.morphogenesis.max_morphons,
+                        self.effective_max_morphons,
                     );
                 }
             }
@@ -1546,8 +1567,8 @@ impl System {
         let delta = episode_steps - self.running_avg_steps;
         self.running_avg_steps = 0.95 * self.running_avg_steps + 0.05 * episode_steps;
 
-        if delta > 0.0 && self.recent_performance > self.consolidation_gate {
-            // Above average AND above performance gate — increase consolidation_level
+        if delta > 0.0 {
+            // Above average — increase consolidation_level
             // (gradual, not binary). Only the DFA path sets consolidated=true.
             let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
             for ei in self.topology.graph.edge_indices() {
@@ -2179,6 +2200,7 @@ impl System {
         let n = self.morphons.len().max(1) as f64;
 
         SystemStats {
+            max_morphons: self.effective_max_morphons,
             total_morphons: self.morphons.len(),
             total_synapses: self.topology.synapse_count(),
             fused_clusters: self.clusters.len(),
@@ -2213,6 +2235,11 @@ impl System {
     /// (e.g. arXiv paper figures).
     pub fn lineage_tree(&self) -> LineageTree {
         lineage::build_lineage_tree(&self.morphons)
+    }
+
+    /// Get the effective morphon cap (auto-derived or explicitly set).
+    pub fn max_morphons(&self) -> usize {
+        self.effective_max_morphons
     }
 
     /// Get the current simulation step.

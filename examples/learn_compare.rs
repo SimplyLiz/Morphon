@@ -69,10 +69,10 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
             alpha_arousal: 0.0,
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.001,
-            heterosynaptic_depression: 0.002,
+            heterosynaptic_depression: 0.002, tag_accumulation_rate: 0.3,
         },
         morphogenesis: MorphogenesisParams {
-            max_morphons: 60,
+            max_morphons: Some(60),
             ..Default::default()
         },
         homeostasis: Default::default(),
@@ -181,7 +181,7 @@ fn run_option_c(rng: &mut impl Rng) -> Vec<f64> {
         },
         learning: LearningParams::default(),
         morphogenesis: MorphogenesisParams {
-            max_morphons: 20,
+            max_morphons: Some(20),
             ..Default::default()
         },
         homeostasis: Default::default(),
@@ -252,7 +252,7 @@ fn main() {
         },
         scheduler: SchedulerConfig { medium_period: 1, slow_period: 1000, glacial_period: 10000, homeostasis_period: 1000, memory_period: 10000 },
         learning: LearningParams::default(),
-        morphogenesis: MorphogenesisParams { max_morphons: 20, ..Default::default() },
+        morphogenesis: MorphogenesisParams { max_morphons: Some(20), ..Default::default() },
         homeostasis: Default::default(),
         lifecycle: LifecycleConfig { division: false, fusion: false, apoptosis: false, differentiation: false, migration: false },
         metabolic: MetabolicConfig::default(),

@@ -328,12 +328,12 @@ Seven mechanisms operating at different timescales:
 | `pruning_min_age` | 100 | Min synapse age for pruning |
 | `division_threshold` | 1.0 | Division pressure trigger |
 | `division_min_energy` | 0.3 | Min energy to divide |
-| `fusion_correlation_threshold` | 0.95 | Pearson r for fusion |
+| `fusion_correlation_threshold` | 0.75 | Pearson r for fusion |
 | `fusion_min_size` | 3 | Min group size for fusion |
 | `migration_rate` | 0.05 | Migration step size |
 | `apoptosis_min_age` | 1000 | Min age for death eligibility |
 | `apoptosis_energy_threshold` | 0.1 | Energy threshold for death |
-| `max_morphons` | 10,000 | Hard cap on growth |
+| `max_morphons` | `None` (auto-derive) | Hard cap on growth. `None` = `max(500, I/O × 3)` |
 | `min_morphons` | 10 | V3 Governor: apoptosis stops below this |
 | `min_sensory_fraction` | 0.05 | V3 Governor: min Sensory fraction |
 | `min_motor_fraction` | 0.02 | V3 Governor: min Motor fraction |

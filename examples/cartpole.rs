@@ -161,10 +161,11 @@ fn create_system() -> System {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.002, // anti-silence: floor on dw when pre fires but post quiet
             heterosynaptic_depression: 0.003, // anti-runaway: depress all inputs when post fires
+            tag_accumulation_rate: 0.3,       // moderate — between instant (1.0) and v2.0.0's 0.05
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,
-            max_morphons: 300,
+            max_morphons: Some(300),
             division_threshold: 1.0,
             fusion_min_size: 2,
             apoptosis_min_age: 500,

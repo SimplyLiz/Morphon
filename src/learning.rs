@@ -51,6 +51,10 @@ pub struct LearningParams {
     /// When post fires, ALL incoming synapses get depressed by this fraction.
     /// Independent of pre-synaptic activity.
     pub heterosynaptic_depression: f64,
+    /// Rate at which DFA-driven tags accumulate per tick.
+    /// v0.5.0 used instant tagging (tag=1.0). v2.0.0 switched to gradual (0.05).
+    /// Higher = faster credit assignment, lower = more selective consolidation.
+    pub tag_accumulation_rate: f64,
 }
 
 impl Default for LearningParams {
@@ -72,6 +76,7 @@ impl Default for LearningParams {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.001,  // small floor — prevents silent death
             heterosynaptic_depression: 0.002, // slight depression on all inputs when post fires
+            tag_accumulation_rate: 0.3,       // moderate — between instant (1.0) and v2.0.0's sluggish (0.05)
         }
     }
 }

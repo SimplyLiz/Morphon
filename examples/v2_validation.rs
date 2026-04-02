@@ -146,11 +146,11 @@ fn base_config() -> SystemConfig {
             alpha_arousal: 0.5,
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.002,
-            heterosynaptic_depression: 0.003,
+            heterosynaptic_depression: 0.003, tag_accumulation_rate: 0.3,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,
-            max_morphons: 300,
+            max_morphons: Some(300),
             division_threshold: 0.5,
             fusion_min_size: 2,
             apoptosis_min_age: 500,

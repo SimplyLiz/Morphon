@@ -68,7 +68,7 @@ fn base_learning_params() -> LearningParams {
         alpha_arousal: 0.0,
         alpha_homeostasis: 0.1,
         transmitter_potentiation: 0.0005,
-        heterosynaptic_depression: 0.001,
+        heterosynaptic_depression: 0.001, tag_accumulation_rate: 0.3,
     }
 }
 
@@ -94,7 +94,7 @@ fn frozen_lifecycle() -> LifecycleConfig {
     }
 }
 
-fn create_baseline() -> System {
+fn create_baseline(kwta_fraction: f64) -> System {
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
             seed_size: 200,
@@ -109,7 +109,7 @@ fn create_baseline() -> System {
         learning: base_learning_params(),
         morphogenesis: MorphogenesisParams::default(),
         homeostasis: HomeostasisParams {
-            kwta_fraction: 0.05,
+            kwta_fraction,
             ..Default::default()
         },
         lifecycle: frozen_lifecycle(),
@@ -124,7 +124,7 @@ fn create_baseline() -> System {
     sys
 }
 
-fn create_v2() -> System {
+fn create_v2(kwta_fraction: f64) -> System {
     let mut tm = morphon_core::TargetMorphology::cortical(6);
     tm.regions[0].target_density = 50;
     tm.regions[1].target_density = 150;
@@ -156,7 +156,7 @@ fn create_v2() -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            kwta_fraction: 0.05,
+            kwta_fraction,
             ..Default::default()
         },
         // Frozen during training — V2 features active during development only
@@ -267,54 +267,54 @@ fn main() {
     eprintln!("Train: {}, Test: {}, using: {}\n", train_images.len(), test_images.len(), n_train);
 
     let seed = 42u64;
+    let no_kwta = args.iter().any(|a| a == "--no-kwta");
+    if no_kwta { eprintln!("*** k-WTA DISABLED ***\n"); }
 
-    // === DIAGNOSTIC: are features discriminative? ===
-    eprintln!("━━━ DIAGNOSTIC: feature diversity ━━━");
-    let mut diag_sys = create_baseline();
-    // Present one image per digit class, record sensory + assoc potentials
-    let mut digit_patterns: Vec<(usize, Vec<f64>)> = Vec::new();
+    // === DIAGNOSTIC: is the hidden layer discriminative? ===
+    eprintln!("━━━ DIAGNOSTIC ━━━");
+    let kwta = if no_kwta { 1.0 } else { 0.05 };
+    let mut diag_sys = create_baseline(kwta);
+
+    // Collect assoc IDs in stable order
+    let mut assoc_ids: Vec<MorphonId> = diag_sys.morphons.values()
+        .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+        .map(|m| m.id).collect();
+    assoc_ids.sort();
+
+    // Present one image per digit, record which assoc morphons fired
+    let mut digit_firing: Vec<Vec<bool>> = Vec::new(); // [digit][assoc_idx] = fired
     for digit in 0..10 {
         let idx = train_labels.iter().position(|&l| l == digit).unwrap();
         present_image(&mut diag_sys, &train_images[idx]);
-        let pots: Vec<f64> = diag_sys.morphons.values()
-            .filter(|m| m.cell_type == CellType::Sensory || m.cell_type == CellType::Associative)
-            .map(|m| m.potential)
-            .collect();
-        digit_patterns.push((digit, pots));
+        let fired: Vec<bool> = assoc_ids.iter().map(|&id| {
+            diag_sys.morphons.get(&id).map_or(false, |m| m.fired || m.potential > 0.3)
+        }).collect();
+        let n_fired = fired.iter().filter(|&&f| f).count();
+        eprintln!("  digit {}: {}/{} assoc active", digit, n_fired, assoc_ids.len());
+        digit_firing.push(fired);
     }
-    // Compute pairwise cosine similarity between digit patterns
-    eprintln!("  Pairwise cosine similarity (sensory+assoc potentials):");
+
+    // Jaccard similarity between digit pairs (on assoc firing patterns)
+    eprintln!("\n  Jaccard similarity (assoc firing):");
     for i in 0..10 {
         let mut sims = String::new();
         for j in 0..10 {
-            let (ref a, ref b) = (digit_patterns[i].1.as_slice(), digit_patterns[j].1.as_slice());
-            let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-            let na: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let nb: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let cos = if na > 0.0 && nb > 0.0 { dot / (na * nb) } else { 0.0 };
-            sims.push_str(&format!("{:.2} ", cos));
+            let both: usize = digit_firing[i].iter().zip(&digit_firing[j])
+                .filter(|(a, b)| **a && **b).count();
+            let either: usize = digit_firing[i].iter().zip(&digit_firing[j])
+                .filter(|(a, b)| **a || **b).count();
+            let jac = if either > 0 { both as f64 / either as f64 } else { 0.0 };
+            sims.push_str(&format!("{:.2} ", jac));
         }
-        eprintln!("  digit {}: {}", i, sims);
+        eprintln!("  {}: {}", i, sims);
     }
-    // Also check: how many sensory morphons have non-zero potential?
-    let sensory_active: Vec<f64> = diag_sys.morphons.values()
-        .filter(|m| m.cell_type == CellType::Sensory)
-        .map(|m| m.potential.abs())
-        .collect();
-    let n_active = sensory_active.iter().filter(|&&p| p > 0.1).count();
-    eprintln!("  Sensory morphons with |potential|>0.1: {}/{}", n_active, sensory_active.len());
-    let assoc_active: Vec<f64> = diag_sys.morphons.values()
-        .filter(|m| m.cell_type == CellType::Associative)
-        .map(|m| m.potential.abs())
-        .collect();
-    let n_assoc_active = assoc_active.iter().filter(|&&p| p > 0.1).count();
-    eprintln!("  Assoc morphons with |potential|>0.1: {}/{}\n", n_assoc_active, assoc_active.len());
+    eprintln!();
     drop(diag_sys);
 
     // === BASELINE ===
     eprintln!("━━━ BASELINE ━━━");
     let t0 = Instant::now();
-    let mut base = create_baseline();
+    let mut base = create_baseline(kwta);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         base.inspect().total_morphons, base.inspect().total_synapses, t0.elapsed().as_secs_f64());
     let mut rng_b = rand::rngs::StdRng::seed_from_u64(seed);
@@ -325,7 +325,7 @@ fn main() {
     // === V2 ===
     eprintln!("━━━ V2 ━━━");
     let t1 = Instant::now();
-    let mut v2 = create_v2();
+    let mut v2 = create_v2(kwta);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v2.inspect().total_morphons, v2.inspect().total_synapses, t1.elapsed().as_secs_f64());
     let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);

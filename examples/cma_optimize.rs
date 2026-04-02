@@ -128,10 +128,10 @@ fn evaluate(x: &DVector<f64>) -> f64 {
             alpha_arousal: p.alpha_arousal,
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.001,
-            heterosynaptic_depression: 0.002,
+            heterosynaptic_depression: 0.002, tag_accumulation_rate: 0.3,
         },
         morphogenesis: MorphogenesisParams {
-            max_morphons: 100,
+            max_morphons: Some(100),
             ..Default::default()
         },
         homeostasis: Default::default(),

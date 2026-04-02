@@ -45,7 +45,9 @@ pub struct MorphogenesisParams {
     /// Transdifferentiation — minimum age before a morphon is eligible.
     pub transdifferentiation_min_age: u64,
     /// Maximum number of morphons (prevent unbounded growth).
-    pub max_morphons: usize,
+    /// `None` = auto-derive from I/O dimensions: `max(500, (input + output) * 3)`.
+    /// `Some(n)` = explicit override.
+    pub max_morphons: Option<usize>,
     /// V3 Governor: minimum morphon count — apoptosis stops below this.
     pub min_morphons: usize,
     /// V3 Governor: minimum fraction of Sensory morphons (prevent I/O starvation).
@@ -74,12 +76,31 @@ impl Default for MorphogenesisParams {
             apoptosis_energy_threshold: 0.1,
             transdifferentiation_desire_threshold: 0.5,
             transdifferentiation_min_age: 500,
-            max_morphons: 500,  // sane default — web demo runs at this scale
+            max_morphons: None,  // auto-derive from I/O dimensions
             min_morphons: 10,
             min_sensory_fraction: 0.05,
             min_motor_fraction: 0.02,
             max_single_type_fraction: 0.80,
             frustration: FrustrationConfig::default(),
+        }
+    }
+}
+
+/// Default morphon cap when no I/O dimensions are available.
+pub const DEFAULT_MAX_MORPHONS: usize = 500;
+
+impl MorphogenesisParams {
+    /// Resolve the effective morphon cap from I/O dimensions.
+    /// Called once during `System::new()`.
+    pub fn resolve_max_morphons(&self, target_input: Option<usize>, target_output: Option<usize>) -> usize {
+        if let Some(explicit) = self.max_morphons {
+            return explicit;
+        }
+        let io_total = target_input.unwrap_or(0) + target_output.unwrap_or(0);
+        if io_total > 0 {
+            DEFAULT_MAX_MORPHONS.max(io_total * 3)
+        } else {
+            DEFAULT_MAX_MORPHONS
         }
     }
 }
@@ -215,10 +236,11 @@ pub fn division(
     topology: &mut Topology,
     next_id: &mut MorphonId,
     params: &MorphogenesisParams,
+    effective_max_morphons: usize,
     rng: &mut impl Rng,
     step_count: u64,
 ) -> usize {
-    if morphons.len() >= params.max_morphons {
+    if morphons.len() >= effective_max_morphons {
         return 0;
     }
 
@@ -249,7 +271,7 @@ pub fn division(
     // 654 births at once → 19K new synapses. Cap at 10% of current population.
     let max_births_per_tick = (morphons.len() / 10).max(5);
     for parent_id in candidates {
-        if morphons.len() >= params.max_morphons || born >= max_births_per_tick {
+        if morphons.len() >= effective_max_morphons || born >= max_births_per_tick {
             break;
         }
 
@@ -515,6 +537,7 @@ pub fn fusion(
     next_morphon_id: &mut MorphonId,
     topology: &mut Topology,
     params: &MorphogenesisParams,
+    effective_max_morphons: usize,
 ) -> usize {
     // Find groups of tightly connected, correlated morphons
     // Simple heuristic: look at groups of neighbors that all fire together
@@ -617,7 +640,7 @@ pub fn fusion(
                 clusters,
                 topology,
                 next_morphon_id,
-                params.max_morphons,
+                effective_max_morphons,
             );
 
             clusters.insert(
@@ -1077,6 +1100,7 @@ pub fn step_glacial(
     next_morphon_id: &mut MorphonId,
     next_cluster_id: &mut ClusterId,
     params: &MorphogenesisParams,
+    effective_max_morphons: usize,
     arousal_level: f64,
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
@@ -1086,7 +1110,7 @@ pub fn step_glacial(
     let mut report = MorphogenesisReport::default();
 
     if lifecycle.division {
-        report.morphons_born = division(morphons, topology, next_morphon_id, params, rng, step_count);
+        report.morphons_born = division(morphons, topology, next_morphon_id, params, effective_max_morphons, rng, step_count);
     }
 
     if lifecycle.differentiation {
@@ -1096,7 +1120,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.fusion {
-        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params);
+        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons);
         report.defusions = defusion(morphons, clusters, topology);
     }
 
@@ -1120,6 +1144,26 @@ mod tests {
         m
     }
 
+
+    // === Auto-derivation of max_morphons ===
+
+    #[test]
+    fn resolve_max_morphons_auto_derives_from_io() {
+        let params = MorphogenesisParams::default();
+        // No I/O → fallback to DEFAULT_MAX_MORPHONS
+        assert_eq!(params.resolve_max_morphons(None, None), 500);
+        // Small I/O → still 500 (floor)
+        assert_eq!(params.resolve_max_morphons(Some(4), Some(2)), 500);
+        // Large I/O → 3× total
+        assert_eq!(params.resolve_max_morphons(Some(784), Some(10)), 2382);
+    }
+
+    #[test]
+    fn resolve_max_morphons_explicit_overrides() {
+        let params = MorphogenesisParams { max_morphons: Some(42), ..Default::default() };
+        // Explicit always wins, even if smaller than I/O
+        assert_eq!(params.resolve_max_morphons(Some(784), Some(10)), 42);
+    }
 
     // === Synaptogenesis ===
 
@@ -1259,7 +1303,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, DEFAULT_MAX_MORPHONS, &mut rng, 0);
 
         assert_eq!(born, 1);
         assert_eq!(morphons.len(), 2);
@@ -1288,9 +1332,10 @@ mod tests {
         let mut topo = Topology::new();
         for i in 0..10 { topo.add_morphon(i); }
 
-        let params = MorphogenesisParams { max_morphons: 12, ..Default::default() };
+        let params = MorphogenesisParams::default();
+        let effective_max = 12;
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, effective_max, &mut rng, 0);
 
         assert!(born <= 2, "should not exceed max_morphons");
         assert!(morphons.len() <= 12);
@@ -1310,7 +1355,7 @@ mod tests {
 
         let params = MorphogenesisParams::default();
         let mut next_id = 100;
-        let born = division(&mut morphons, &mut topo, &mut next_id, &params, &mut rng, 0);
+        let born = division(&mut morphons, &mut topo, &mut next_id, &params, DEFAULT_MAX_MORPHONS, &mut rng, 0);
 
         assert_eq!(born, 0);
     }
@@ -1496,7 +1541,7 @@ mod tests {
 
         let fused = fusion(
             &mut morphons, &mut clusters, &mut next_cluster_id,
-            &mut next_morphon_id, &mut topo, &params,
+            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS,
         );
 
         assert_eq!(fused, 1, "should form one cluster");
@@ -1706,7 +1751,7 @@ mod tests {
         let lifecycle = LifecycleConfig { division: false, ..Default::default() };
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
-            &mut next_mid, &mut next_cid, &params, 0.0, &lifecycle, &mut rng, None, 0,
+            &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.0, &lifecycle, &mut rng, None, 0,
         );
         assert_eq!(report.morphons_born, 0);
     }
@@ -1820,7 +1865,7 @@ mod tests {
         let mut clusters = HashMap::new();
         let fused = fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS,
         );
 
         if fused > 0 {
@@ -1852,7 +1897,7 @@ mod tests {
         let mut clusters = HashMap::new();
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS,
         );
 
         if !clusters.is_empty() {

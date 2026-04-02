@@ -52,7 +52,7 @@ fn main() {
             memory_period: 99999,
         },
         learning: LearningParams::default(),
-        morphogenesis: MorphogenesisParams { max_morphons: 60, ..Default::default() },
+        morphogenesis: MorphogenesisParams { max_morphons: Some(60), ..Default::default() },
         homeostasis: Default::default(),
         lifecycle: LifecycleConfig {
             division: false, fusion: false, apoptosis: false,

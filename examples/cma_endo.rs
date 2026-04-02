@@ -134,10 +134,10 @@ fn evaluate(x: &DVector<f64>) -> f64 {
             capture_threshold, capture_rate: 0.2,
             weight_max: 3.0, weight_min: 0.01,
             alpha_reward, alpha_novelty: 0.5, alpha_arousal: 0.5, alpha_homeostasis: 0.1,
-            transmitter_potentiation: 0.002, heterosynaptic_depression: 0.003,
+            transmitter_potentiation: 0.002, heterosynaptic_depression: 0.003, tag_accumulation_rate: 0.3,
         },
         morphogenesis: MorphogenesisParams {
-            max_morphons: 300, division_threshold: 1.0, fusion_min_size: 2,
+            max_morphons: Some(300), division_threshold: 1.0, fusion_min_size: 2,
             apoptosis_min_age: 500, migration_rate: 0.08, ..Default::default()
         },
         homeostasis: HomeostasisParams { migration_cooldown_duration: 5.0, ..Default::default() },

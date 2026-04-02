@@ -87,6 +87,11 @@ impl System {
             topology.add_synapse(from, to, synapse);
         }
 
+        let effective_max_morphons = snapshot.config.morphogenesis.resolve_max_morphons(
+            snapshot.config.developmental.target_input_size,
+            snapshot.config.developmental.target_output_size,
+        );
+
         System {
             morphons: snapshot.morphons,
             topology,
@@ -121,6 +126,7 @@ impl System {
             running_avg_steps: 9.0,
             field: None, // field is ephemeral, not persisted in snapshots
             endo: snapshot.endo,
+            effective_max_morphons,
         }
     }
 

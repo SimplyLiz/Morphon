@@ -66,11 +66,44 @@ Query the active mode at runtime via `system.readout_training_mode()`.
 | `morphogenesis.migration_rate` | `f64` | `0.05` | Step size for migration in hyperbolic space |
 | `morphogenesis.apoptosis_min_age` | `u64` | `1000` | Minimum age before apoptosis eligibility |
 | `morphogenesis.apoptosis_energy_threshold` | `f64` | `0.1` | Energy below which death is possible |
-| `morphogenesis.max_morphons` | `usize` | `500` | Hard cap on morphon count |
+| `morphogenesis.max_morphons` | `Option<usize>` | `None` | Hard cap on morphon count. `None` = auto-derive (see below) |
 | `morphogenesis.min_morphons` | `usize` | `10` | V3 Governor: apoptosis stops below this |
 | `morphogenesis.min_sensory_fraction` | `f64` | `0.05` | V3 Governor: protect Sensory morphons |
 | `morphogenesis.min_motor_fraction` | `f64` | `0.02` | V3 Governor: protect Motor morphons |
 | `morphogenesis.max_single_type_fraction` | `f64` | `0.80` | V3 Governor: prevent any cell type from dominating |
+
+### Sizing `max_morphons`
+
+The morphon cap controls how large the system can grow. When set to `None` (the default), the cap is **auto-derived** from the I/O dimensions at `System::new()` time:
+
+```
+effective_max = max(500, (target_input_size + target_output_size) * 3)
+```
+
+This ensures the system always has enough headroom for associative (hidden) morphons on top of the I/O layer. For example, MNIST (784 inputs + 10 outputs) auto-derives to `max(500, 794 * 3) = 2382`.
+
+If no `target_input_size` / `target_output_size` are set, the fallback is 500.
+
+**Query the resolved value** at runtime via `system.max_morphons()` or `system.inspect().max_morphons`.
+
+**Manual override:** Set `max_morphons: Some(n)` to use an explicit cap. This takes priority over auto-derivation.
+
+| Task profile | I/O size | Auto-derived cap | Manual override examples |
+|---|---|---|---|
+| Simple control (few inputs, 2-3 actions) | ~10 | 500 | CartPole uses `Some(300)` |
+| Multi-class classification, small input | ~20-70 | 500 | 3-class classifier uses `Some(60)` |
+| High-dimensional input | 500+ | I/O × 3 | MNIST uses `Some(2000)`, or just `None` (auto = 2382) |
+
+**When to override with a lower value:**
+- Fixed-topology runs where `lifecycle.division` is disabled — the cap is never reached anyway, a lower value saves memory.
+- Real-time or WASM contexts where per-step latency matters. Spike propagation is O(k·N), so morphon count directly impacts fast-tick cost.
+
+**When to override with a higher value:**
+- The system consistently grows to the cap (check `system.inspect()`) — it needs more room.
+- The task requires composing multi-level features (edges → shapes → objects), which demands deeper associative layers.
+- Classification with many similar classes that need fine-grained discrimination.
+
+**How to tell if your cap is wrong:** Run a training session and check `system.inspect().max_morphons` vs `system.inspect().total_morphons`. If total plateaus well below the cap, the system doesn't need more. If it's pinned at the cap and performance is still improving, raise it.
 
 ### Frustration-Driven Exploration (V2)
 
