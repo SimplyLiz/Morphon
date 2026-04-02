@@ -52,6 +52,10 @@ pub struct SystemConfig {
     /// Endoquilibrium: predictive neuroendocrine regulation.
     #[serde(default)]
     pub endoquilibrium: crate::endoquilibrium::EndoConfig,
+
+    /// V2: Dreaming engine — offline consolidation and self-optimization.
+    #[serde(default)]
+    pub dream: DreamConfig,
 }
 
 impl SystemConfig {
@@ -87,6 +91,7 @@ impl Default for SystemConfig {
             target_morphology: None,
             governance: crate::governance::ConstitutionalConstraints::default(),
             endoquilibrium: crate::endoquilibrium::EndoConfig::default(),
+            dream: DreamConfig::default(),
         }
     }
 }
@@ -493,11 +498,79 @@ impl System {
         });
 
         // V3: Cluster overhead — fused morphons pay extra maintenance cost.
-        let cluster_overhead = self.config.metabolic.cluster_overhead_per_tick;
-        if cluster_overhead > 0.0 {
-            for m in self.morphons.values_mut() {
-                if m.fused_with.is_some() {
-                    m.energy -= cluster_overhead;
+        // V2: Cluster collective compute — energy pooling + shared homeostasis
+        {
+            let cluster_overhead = self.config.metabolic.cluster_overhead_per_tick;
+            let draw_per_tick = self.config.metabolic.cluster_energy_draw_per_tick;
+
+            // Collect cluster member lists to avoid borrow conflicts
+            let cluster_data: Vec<(ClusterId, Vec<MorphonId>)> = self.clusters.iter()
+                .map(|(&cid, c)| (cid, c.members.clone()))
+                .collect();
+
+            for (cid, members) in &cluster_data {
+                let member_count = members.len();
+                if member_count == 0 { continue; }
+
+                // 1. Cluster overhead cost (V3 — kept for backward compat)
+                if cluster_overhead > 0.0 {
+                    for &mid in members {
+                        if let Some(m) = self.morphons.get_mut(&mid) {
+                            m.energy -= cluster_overhead;
+                        }
+                    }
+                }
+
+                // 2. Each fused morphon draws from the shared pool
+                if let Some(cluster) = self.clusters.get_mut(cid) {
+                    for &mid in members {
+                        let actual_draw = draw_per_tick.min(
+                            cluster.shared_energy_pool / member_count as f64
+                        );
+                        if actual_draw > 0.0 {
+                            if let Some(m) = self.morphons.get_mut(&mid) {
+                                m.energy = (m.energy + actual_draw).min(1.0);
+                            }
+                            cluster.shared_energy_pool -= actual_draw;
+                        }
+                    }
+                }
+
+                // 3. Members contribute utility reward back to pool
+                for &mid in members {
+                    if let Some(m) = self.morphons.get(&mid) {
+                        let pe_delta = m.prev_potential.abs() - m.prediction_error;
+                        if pe_delta > 0.0 {
+                            if let Some(cluster) = self.clusters.get_mut(cid) {
+                                cluster.shared_energy_pool += pe_delta * 0.005;
+                            }
+                        }
+                    }
+                }
+
+                // 4. Cluster-level homeostasis: shared setpoint → member thresholds
+                let cluster_mean_rate: f64 = members.iter()
+                    .filter_map(|mid| self.morphons.get(mid))
+                    .map(|m| m.activity_history.mean())
+                    .sum::<f64>() / member_count as f64;
+
+                if let Some(cluster) = self.clusters.get_mut(cid) {
+                    cluster.shared_homeostatic_setpoint +=
+                        0.01 * (cluster_mean_rate - cluster.shared_homeostatic_setpoint);
+                    cluster.shared_homeostatic_setpoint =
+                        cluster.shared_homeostatic_setpoint.clamp(0.05, 0.5);
+                    cluster.shared_energy_pool =
+                        cluster.shared_energy_pool.clamp(0.0, member_count as f64);
+
+                    let setpoint = cluster.shared_homeostatic_setpoint;
+                    for &mid in members {
+                        if let Some(m) = self.morphons.get_mut(&mid) {
+                            let actual_rate = m.activity_history.mean();
+                            m.threshold += 0.01 * (actual_rate - setpoint);
+                            let max_threshold = m.activation_fn.max_output();
+                            m.threshold = m.threshold.clamp(0.05, max_threshold);
+                        }
+                    }
                 }
             }
         }
@@ -609,7 +682,7 @@ impl System {
                     // === ACTOR: Three-factor learning ===
                     // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
                     // Associative morphons: DFA feedback signal (neuron-specific credit)
-                    let (post_activity, post_receptors, feedback_sig, is_assoc, plast_rate) =
+                    let (post_activity, post_receptors, post_sensitivity, feedback_sig, is_assoc, plast_rate) =
                         self.morphons.get(&id)
                             .map(|m| {
                                 let activity = if m.cell_type == CellType::Motor {
@@ -620,9 +693,10 @@ impl System {
                                 };
                                 let is_a = m.cell_type == CellType::Associative
                                     || m.cell_type == CellType::Stem;
-                                (activity, m.receptors.clone(), m.feedback_signal, is_a, m.plasticity_rate)
+                                (activity, m.receptors.clone(), m.receptor_sensitivity.clone(),
+                                 m.feedback_signal, is_a, m.plasticity_rate)
                             })
-                            .unwrap_or((0.0, Default::default(), 0.0, false, 1.0));
+                            .unwrap_or((0.0, Default::default(), Default::default(), 0.0, false, 1.0));
                     let incoming = self.topology.incoming_synapses_mut(id);
 
                     for (pre_id, edge_idx) in incoming {
@@ -659,12 +733,12 @@ impl System {
                                 }
 
                                 // Tag synapses where DFA update was strong.
-                                // Capture is deferred to episode end (report_episode_end)
-                                // where performance-relative decisions are made.
+                                // Accumulate tag (not set to max) — capture is deferred to
+                                // episode end where performance-relative decisions are made.
                                 let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
                                 if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
-                                    synapse.tag = 1.0;
-                                    synapse.tag_strength = dfa_strength;
+                                    synapse.tag = (synapse.tag + dfa_strength * 0.05).min(1.0);
+                                    synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
                                 }
                                 synapse.age += 1;
                                 if synapse.eligibility.abs() > 0.1 {
@@ -689,6 +763,7 @@ impl System {
                                     plasticity,
                                     &post_receptors,
                                     endo_gains,
+                                    &post_sensitivity,
                                 );
                                 // Per-tick capture is disabled — capture is now episode-gated
                                 // via report_episode_end(). Tags still accumulate per-tick.
@@ -829,6 +904,36 @@ impl System {
             }
         }
 
+        // === V2: RECORD MODULATION + PE DELTAS FOR RECEPTOR ADAPTATION ===
+        if tick.medium {
+            let reward_signal = self.modulation.reward_delta().abs();
+            let novelty_signal = self.modulation.novelty;
+            let arousal_signal = self.modulation.arousal;
+            let homeostasis_signal = self.modulation.homeostasis;
+            for m in self.morphons.values_mut() {
+                // Record PE delta
+                let pe_delta = m.prediction_error - m.frustration.prev_pe;
+                m.recent_pe_deltas.push(pe_delta);
+                // Record per-channel modulation signals
+                m.recent_modulation
+                    .entry(ModulatorType::Reward)
+                    .or_insert_with(|| RingBuffer::new(10))
+                    .push(reward_signal);
+                m.recent_modulation
+                    .entry(ModulatorType::Novelty)
+                    .or_insert_with(|| RingBuffer::new(10))
+                    .push(novelty_signal);
+                m.recent_modulation
+                    .entry(ModulatorType::Arousal)
+                    .or_insert_with(|| RingBuffer::new(10))
+                    .push(arousal_signal);
+                m.recent_modulation
+                    .entry(ModulatorType::Homeostasis)
+                    .or_insert_with(|| RingBuffer::new(10))
+                    .push(homeostasis_signal);
+            }
+        }
+
         // === SLOW PATH ===
         if tick.slow {
             let slow_report = morphogenesis::step_slow(
@@ -856,6 +961,19 @@ impl System {
                     self.diag.field_pe_max = pe_layer.max();
                     self.diag.field_pe_mean = pe_layer.mean();
                 }
+            }
+
+            // V2: Adapt receptor sensitivities — meta-learning on slow tick.
+            // Rate is very conservative (0.001) to avoid destabilizing a tuned pipeline.
+            // Adaptation accumulates over hundreds of slow ticks → meaningful over
+            // thousands of episodes, not within a single training run.
+            for m in self.morphons.values_mut() {
+                learning::adapt_receptor_sensitivity(
+                    &mut m.receptor_sensitivity,
+                    &m.recent_modulation,
+                    &m.recent_pe_deltas,
+                    0.001,
+                );
             }
         }
 
@@ -969,6 +1087,24 @@ impl System {
                 homeostasis::rollback_synapses(&checkpoint, &mut self.topology);
                 self.diag.rollback_triggered = true;
                 self.diag.total_rollbacks += 1;
+            }
+        }
+
+        // === V2: DREAMING ENGINE ===
+        // Runs on glacial tick when system is mature/consolidating or low activity
+        if tick.glacial && self.config.dream.enabled {
+            let is_mature = matches!(
+                self.endo.stage(),
+                crate::endoquilibrium::DevelopmentalStage::Mature
+                | crate::endoquilibrium::DevelopmentalStage::Consolidating
+            );
+            let total_firing: usize = self.diag.firing_by_type.values().map(|(f, _)| *f).sum();
+            let total_morphons: usize = self.diag.firing_by_type.values().map(|(_, t)| *t).sum();
+            let is_low_activity = total_morphons == 0
+                || (total_firing as f64 / total_morphons as f64) < 0.05;
+
+            if is_mature || is_low_activity {
+                self.dream_cycle();
             }
         }
 
@@ -1289,8 +1425,7 @@ impl System {
             // Below consolidation_gate: tags accumulate but never capture.
             // Above gate: captures happen, locking in proven representations.
             // "Sklerotien-Bildung" — only consolidate near a rich nutrient source.
-            if fb > 0.01 {
-                let can_consolidate = self.recent_performance > self.consolidation_gate;
+            if fb > 0.01 && self.recent_performance > self.consolidation_gate {
                 let incoming = self.topology.incoming_synapses_mut(assoc_id);
                 for (_, edge_idx) in incoming {
                     if let Some(syn) = self.topology.synapse_mut(edge_idx) {
@@ -1299,7 +1434,7 @@ impl System {
                             syn.tag = syn.tag.min(1.0);
                             syn.tag_strength = syn.tag;
                         }
-                        if syn.tag > self.config.learning.capture_threshold && !syn.consolidated && can_consolidate {
+                        if syn.tag > self.config.learning.capture_threshold && !syn.consolidated {
                             syn.consolidated = true;
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
@@ -1368,11 +1503,13 @@ impl System {
             self.peak_performance = self.recent_performance;
         }
 
-        // Deconsolidation: if performance drops >20% from peak, melt weakest synapses
+        // Deconsolidation: if performance drops >40% from peak, melt weakest synapses.
+        // 20% was too sensitive — a few bad CartPole episodes trigger melting that
+        // destroys a good policy. 40% requires sustained degradation.
         if self.peak_performance > self.consolidation_gate
-            && self.recent_performance < self.peak_performance * 0.8
+            && self.recent_performance < self.peak_performance * 0.6
         {
-            self.deconsolidate_weakest(0.1); // melt 10% of consolidated synapses
+            self.deconsolidate_weakest(0.05); // melt 5% of consolidated synapses
         }
     }
 
@@ -1386,11 +1523,20 @@ impl System {
         let delta = episode_steps - self.running_avg_steps;
         self.running_avg_steps = 0.95 * self.running_avg_steps + 0.05 * episode_steps;
 
-        if delta > 0.0 {
-            // Above average — consolidate tagged synapses
+        if delta > 0.0 && self.recent_performance > self.consolidation_gate {
+            // Above average AND above performance gate — increase consolidation_level
+            // (gradual, not binary). Only the DFA path sets consolidated=true.
             let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
-            self.capture_tagged_synapses(strength);
-        } else {
+            for ei in self.topology.graph.edge_indices() {
+                if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                    if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
+                        let delta_level = strength * syn.tag_strength.min(1.0) * 0.1;
+                        syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
+                        syn.tag *= 0.5;
+                    }
+                }
+            }
+        } else if delta < 0.0 {
             // Below average — decay tags, don't consolidate
             self.decay_all_tags(0.5);
         }
@@ -1860,6 +2006,133 @@ impl System {
             self.step();
         }
         self.read_output()
+    }
+
+    /// V2: Explicitly trigger a dream cycle (e.g., between RL episodes).
+    /// Can be called regardless of developmental stage.
+    pub fn trigger_dream(&mut self) {
+        self.dream_cycle();
+    }
+
+    /// V2: Dreaming engine — offline consolidation and self-optimization.
+    ///
+    /// Three phases:
+    /// 1. Consolidation: high-tag synapses get increased consolidation_level
+    /// 2. Self-optimization: stale, unused, weak synapses get refreshed
+    /// 3. Curiosity signal: clusters with high internal PE variance + low
+    ///    external connectivity get mild Novelty injection
+    fn dream_cycle(&mut self) {
+        if !self.config.dream.enabled {
+            return;
+        }
+        // Don't consolidate during dreaming until performance is above the gate.
+        // Early consolidation locks in random weights.
+        let can_consolidate = self.recent_performance > self.consolidation_gate;
+
+        // === Phase 1: Dream Consolidation ===
+        // Find high-tag-strength synapses and consolidate them
+        let dream_lr = self.config.dream.dream_learning_rate;
+        let tag_thresh = self.config.dream.dream_tag_threshold;
+        let max_synapses = self.config.dream.max_dream_synapses;
+
+        if can_consolidate {
+            let candidates: Vec<petgraph::graph::EdgeIndex> = self.topology.graph
+                .edge_indices()
+                .filter(|&ei| {
+                    self.topology.graph.edge_weight(ei).is_some_and(|syn| {
+                        syn.tag_strength > tag_thresh && syn.consolidation_level < 1.0
+                    })
+                })
+                .take(max_synapses)
+                .collect();
+
+            for ei in candidates {
+                if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                    // Increase consolidation proportional to tag strength
+                    let delta_level = dream_lr * syn.tag_strength.min(1.0) * 0.1;
+                    syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
+                    if syn.consolidation_level > 0.5 {
+                        syn.consolidated = true;
+                    }
+                    // Partially consume tag during dreaming
+                    syn.tag *= 0.7;
+                    syn.tag_strength *= 0.7;
+                }
+            }
+        }
+
+        // Replay episodic memories during dreaming (more than waking)
+        let replayed = self.memory.episodic.replay(5);
+        for episode in replayed {
+            if episode.reward > 0.1 {
+                self.modulation.inject_reward(episode.reward * 0.1);
+            }
+        }
+
+        // === Phase 2: Self-Optimization — refresh stale synapses ===
+        let stale_age = self.config.dream.stale_synapse_age;
+        let stale_usage = self.config.dream.stale_usage_threshold;
+        let reset_scale = self.config.dream.reset_weight_scale;
+
+        for ei in self.topology.graph.edge_indices() {
+            if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
+                if syn.age > stale_age
+                    && syn.usage_count < stale_usage
+                    && !syn.consolidated
+                    && syn.weight.abs() < 0.1
+                {
+                    // Refresh to small value (not prune) — give a second chance
+                    let sign = if syn.weight >= 0.0 { 1.0 } else { -1.0 };
+                    let pseudo_random = ((syn.age.wrapping_mul(31).wrapping_add(7)) % 100) as f64 / 100.0;
+                    syn.weight = sign * reset_scale * (0.5 + 0.5 * pseudo_random);
+                    syn.age = 0;
+                    syn.usage_count = 0;
+                    syn.eligibility = 0.0;
+                    syn.pre_trace = 0.0;
+                    syn.post_trace = 0.0;
+                }
+            }
+        }
+
+        // === Phase 3: Curiosity Signal — topology anomalies ===
+        let curiosity_strength = self.config.dream.curiosity_signal_strength;
+
+        for cluster in self.clusters.values() {
+            if cluster.members.len() < 2 {
+                continue;
+            }
+
+            // Internal PE variance
+            let pe_vals: Vec<f64> = cluster.members.iter()
+                .filter_map(|mid| self.morphons.get(mid))
+                .map(|m| m.prediction_error)
+                .collect();
+            if pe_vals.is_empty() { continue; }
+            let mean_pe = pe_vals.iter().sum::<f64>() / pe_vals.len() as f64;
+            let pe_variance = pe_vals.iter()
+                .map(|pe| (pe - mean_pe).powi(2))
+                .sum::<f64>() / pe_vals.len() as f64;
+
+            // External connectivity ratio
+            let member_set: std::collections::HashSet<MorphonId> =
+                cluster.members.iter().copied().collect();
+            let external_connections: usize = cluster.members.iter()
+                .flat_map(|&mid| self.topology.outgoing(mid))
+                .filter(|(nid, _)| !member_set.contains(nid))
+                .count();
+            let external_ratio = external_connections as f64
+                / (cluster.members.len() as f64 * 5.0).max(1.0);
+
+            // High internal variance + low external connectivity = anomaly
+            if pe_variance > 0.1 && external_ratio < 0.3 {
+                for &mid in &cluster.members {
+                    if let Some(m) = self.morphons.get_mut(&mid) {
+                        m.input_accumulator += curiosity_strength;
+                    }
+                }
+                self.modulation.inject_novelty(curiosity_strength * 0.5);
+            }
+        }
     }
 
     /// Get system inspection statistics.

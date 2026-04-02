@@ -1,7 +1,7 @@
 //! Core types and enums for the Morphogenic Intelligence engine.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Unique identifier for a Morphon.
@@ -195,6 +195,25 @@ pub fn default_receptors(cell_type: CellType) -> ReceptorSet {
         }
     }
     set
+}
+
+/// Default receptor sensitivities for a cell type.
+/// Present receptors get 1.0, absent get 0.01 (never fully deaf).
+/// V2: Sub-morphon plasticity — these values adapt during learning.
+pub fn default_receptor_sensitivity(cell_type: CellType) -> HashMap<ModulatorType, f64> {
+    let receptors = default_receptors(cell_type);
+    [
+        ModulatorType::Reward,
+        ModulatorType::Novelty,
+        ModulatorType::Arousal,
+        ModulatorType::Homeostasis,
+    ]
+    .iter()
+    .map(|&ch| {
+        let val = if receptors.contains(&ch) { 1.0 } else { 0.01 };
+        (ch, val)
+    })
+    .collect()
 }
 
 /// Position in N-dimensional hyperbolic information space (Poincaré ball model).
@@ -448,12 +467,58 @@ impl Default for FrustrationConfig {
     }
 }
 
+/// Configuration for the V2 dreaming engine — offline consolidation and self-optimization.
+///
+/// The dreaming engine runs during glacial ticks when the system is mature or idle.
+/// It consolidates tagged synapses, refreshes stale connections, and broadcasts
+/// curiosity signals to topology anomalies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamConfig {
+    /// Whether dreaming is enabled.
+    pub enabled: bool,
+    /// Learning rate multiplier during dream mode (reduced vs waking).
+    pub dream_learning_rate: f64,
+    /// Minimum tag strength to select a synapse for dream consolidation.
+    pub dream_tag_threshold: f64,
+    /// Maximum number of synapses to process per dream cycle.
+    pub max_dream_synapses: usize,
+    /// Synapse age threshold for self-optimization reset candidates.
+    pub stale_synapse_age: u64,
+    /// Maximum usage count below which a stale synapse is a reset candidate.
+    pub stale_usage_threshold: u64,
+    /// Weight reset magnitude for stale synapses (fraction of weight_max).
+    pub reset_weight_scale: f64,
+    /// Curiosity signal strength for topology anomalies.
+    pub curiosity_signal_strength: f64,
+}
+
+impl Default for DreamConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dream_learning_rate: 0.3,
+            dream_tag_threshold: 0.2,
+            max_dream_synapses: 50,
+            stale_synapse_age: 5000,
+            stale_usage_threshold: 3,
+            reset_weight_scale: 0.1,
+            curiosity_signal_strength: 0.15,
+        }
+    }
+}
+
 /// Ring buffer for activity history tracking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RingBuffer {
     data: Vec<f64>,
     head: usize,
     len: usize,
+}
+
+impl Default for RingBuffer {
+    fn default() -> Self {
+        Self::new(10)
+    }
 }
 
 impl RingBuffer {

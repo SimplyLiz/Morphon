@@ -486,6 +486,14 @@ pub struct Cluster {
     /// See concept doc section 3.7B.
     pub inhibitory_morphons: Vec<MorphonId>,
 
+    /// V2: Shared energy pool — members contribute on fusion, draw during operation.
+    #[serde(default)]
+    pub shared_energy_pool: f64,
+
+    /// V2: Shared homeostatic setpoint — single computation for the group.
+    #[serde(default)]
+    pub shared_homeostatic_setpoint: f64,
+
     /// V3: Epistemic state — how confident is the system in this cluster's knowledge?
     #[serde(default)]
     pub epistemic_state: crate::epistemic::EpistemicState,
@@ -568,13 +576,28 @@ pub fn fusion(
             let cluster_id = *next_cluster_id;
             *next_cluster_id += 1;
 
-            // Calculate shared threshold
+            // Calculate shared threshold and homeostatic setpoint
+            let member_count = members.len() as f64;
             let avg_threshold: f64 = members
                 .iter()
                 .filter_map(|mid| morphons.get(mid))
                 .map(|m| m.threshold)
                 .sum::<f64>()
-                / members.len() as f64;
+                / member_count;
+
+            let avg_setpoint: f64 = members
+                .iter()
+                .filter_map(|mid| morphons.get(mid))
+                .map(|m| m.homeostatic_setpoint)
+                .sum::<f64>()
+                / member_count;
+
+            // V2: Pool 30% of each member's energy into shared pool
+            let pooled_energy: f64 = members
+                .iter()
+                .filter_map(|mid| morphons.get(mid))
+                .map(|m| m.energy * 0.3)
+                .sum();
 
             // Update morphon states
             for &mid in &members {
@@ -582,6 +605,7 @@ pub fn fusion(
                     m.fused_with = Some(cluster_id);
                     m.autonomy = 0.5; // partial fusion
                     m.threshold = avg_threshold;
+                    m.energy *= 0.7; // contributed 30% to pool
                 }
             }
 
@@ -603,6 +627,8 @@ pub fn fusion(
                     members,
                     shared_threshold: avg_threshold,
                     inhibitory_morphons,
+                    shared_energy_pool: pooled_energy,
+                    shared_homeostatic_setpoint: avg_setpoint,
                     epistemic_state: crate::epistemic::EpistemicState::Hypothesis {
                         formation_step: 0, // caller doesn't have step_count; updated on next glacial eval
                     },
@@ -763,10 +789,13 @@ pub fn defusion(
 
         // High variance in prediction errors → defuse
         if error_variance > 0.5 {
+            // V2: Return pooled energy equally to ex-members
+            let per_member = cluster.shared_energy_pool / cluster.members.len().max(1) as f64;
             for &mid in &cluster.members {
                 if let Some(m) = morphons.get_mut(&mid) {
                     m.fused_with = None;
                     m.autonomy = 1.0;
+                    m.energy = (m.energy + per_member).min(1.0);
                 }
             }
             clusters_to_remove.push(*cluster_id);
@@ -1508,6 +1537,8 @@ mod tests {
             members: vec![1, 2, 3],
             shared_threshold: 0.3,
             inhibitory_morphons: vec![],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.15,
             epistemic_state: Default::default(),
             epistemic_history: Default::default(),
         });
@@ -1554,6 +1585,8 @@ mod tests {
             members: vec![1, 2, 3],
             shared_threshold: 0.3,
             inhibitory_morphons: vec![99],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.15,
             epistemic_state: Default::default(),
             epistemic_history: Default::default(),
         });
@@ -1769,5 +1802,119 @@ mod tests {
         let params = MorphogenesisParams::default();
         let count = transdifferentiation(&mut morphons, &topo, &params);
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn fusion_creates_energy_pool() {
+        let (mut morphons, mut topology, params, mut cluster_id, mut morphon_id) = setup_fusion_test();
+
+        // Set up conditions for fusion: high activity, correlated firing, low PE
+        for m in morphons.values_mut() {
+            for _ in 0..50 { m.activity_history.push(1.0); }
+            m.fired = true;
+            m.prediction_error = 0.01;
+            m.desire = 0.1;
+            m.energy = 0.9;
+        }
+
+        let mut clusters = HashMap::new();
+        let fused = fusion(
+            &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
+            &mut topology, &params,
+        );
+
+        if fused > 0 {
+            let cluster = clusters.values().next().unwrap();
+            assert!(cluster.shared_energy_pool > 0.0,
+                "cluster should have pooled energy: {}", cluster.shared_energy_pool);
+            // Members should have reduced energy (contributed 30%)
+            for &mid in &cluster.members {
+                if let Some(m) = morphons.get(&mid) {
+                    assert!(m.energy < 0.9, "member energy should be reduced after pooling");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn defusion_returns_energy() {
+        let (mut morphons, mut topology, params, mut cluster_id, mut morphon_id) = setup_fusion_test();
+
+        // Force fusion
+        for m in morphons.values_mut() {
+            for _ in 0..50 { m.activity_history.push(1.0); }
+            m.fired = true;
+            m.prediction_error = 0.01;
+            m.desire = 0.1;
+            m.energy = 0.9;
+        }
+
+        let mut clusters = HashMap::new();
+        fusion(
+            &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
+            &mut topology, &params,
+        );
+
+        if !clusters.is_empty() {
+            // Record energy before defusion
+            let member_ids: Vec<MorphonId> = clusters.values()
+                .next().unwrap().members.clone();
+            let energy_before: Vec<f64> = member_ids.iter()
+                .filter_map(|mid| morphons.get(mid))
+                .map(|m| m.energy)
+                .collect();
+
+            // Force defusion by giving high PE variance
+            for (i, &mid) in member_ids.iter().enumerate() {
+                if let Some(m) = morphons.get_mut(&mid) {
+                    m.prediction_error = if i % 2 == 0 { 0.9 } else { 0.0 };
+                }
+            }
+
+            let defused = defusion(&mut morphons, &mut clusters, &mut topology);
+            if defused > 0 {
+                // Energy should have been returned
+                for (i, &mid) in member_ids.iter().enumerate() {
+                    if let Some(m) = morphons.get(&mid) {
+                        assert!(m.fused_with.is_none(), "member should be defused");
+                        assert!(m.energy >= energy_before[i],
+                            "member energy should not decrease after defusion");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Helper: set up a minimal scenario for fusion testing
+    fn setup_fusion_test() -> (HashMap<MorphonId, Morphon>, Topology, MorphogenesisParams, ClusterId, MorphonId) {
+        let mut morphons = HashMap::new();
+        let mut topology = Topology::new();
+
+        // Create 4 connected morphons
+        for i in 0..4u64 {
+            let pos = HyperbolicPoint::origin(4);
+            let mut m = Morphon::new(i, pos);
+            m.cell_type = CellType::Associative;
+            m.differentiation_level = 0.5;
+            topology.add_morphon(i);
+            morphons.insert(i, m);
+        }
+
+        // Connect them densely
+        for i in 0..4u64 {
+            for j in 0..4u64 {
+                if i != j {
+                    topology.add_synapse(i, j, Synapse::new(0.3));
+                }
+            }
+        }
+
+        let params = MorphogenesisParams {
+            fusion_min_size: 3,
+            fusion_correlation_threshold: 0.75,
+            ..Default::default()
+        };
+
+        (morphons, topology, params, 0, 100)
     }
 }

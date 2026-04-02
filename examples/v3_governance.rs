@@ -541,6 +541,8 @@ fn main() {
             members: vec![1, 2, 3, 4, 5, 6], // 6 members
             shared_threshold: 0.5,
             inhibitory_morphons: vec![],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.15,
             epistemic_state: Default::default(),
             epistemic_history: Default::default(),
         };

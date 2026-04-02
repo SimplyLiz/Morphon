@@ -3,6 +3,7 @@
 use crate::justification::SynapticJustification;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A Synapse connecting two Morphons.
 ///
@@ -109,7 +110,19 @@ pub struct MetabolicConfig {
     /// V3: Energy bonus for successful epistemic verification (Phase 2).
     #[serde(default)]
     pub reward_for_verification: f64,
+
+    /// V2: Base cost reduction factor for fused morphons [0.0, 1.0].
+    /// Fused morphons pay `base_cost * (1.0 - cluster_base_cost_reduction)`.
+    #[serde(default = "default_cluster_reduction")]
+    pub cluster_base_cost_reduction: f64,
+
+    /// V2: Energy drawn from cluster pool per tick by each fused morphon.
+    #[serde(default = "default_cluster_draw")]
+    pub cluster_energy_draw_per_tick: f64,
 }
+
+fn default_cluster_reduction() -> f64 { 0.4 }
+fn default_cluster_draw() -> f64 { 0.0003 }
 
 impl Default for MetabolicConfig {
     fn default() -> Self {
@@ -122,6 +135,8 @@ impl Default for MetabolicConfig {
             cluster_overhead_per_tick: 0.0005,
             reward_for_successful_output: 0.05,
             reward_for_verification: 0.0, // Phase 2 placeholder
+            cluster_base_cost_reduction: 0.4,
+            cluster_energy_draw_per_tick: 0.0003,
         }
     }
 }
@@ -208,6 +223,19 @@ pub struct Morphon {
     /// Per-morphon frustration state for escaping local minima via adaptive noise.
     #[serde(default)]
     pub frustration: FrustrationState,
+
+    // === V2: Sub-Morphon Plasticity (Adaptive Receptors) ===
+    /// Continuous receptor sensitivity per modulator channel [0.01, 2.0].
+    /// Modulates amplitude of neuromodulatory signals during weight updates.
+    /// Adapts based on correlation between modulation and PE reduction.
+    #[serde(default)]
+    pub receptor_sensitivity: HashMap<ModulatorType, f64>,
+    /// Recent modulation signals per channel for adaptation tracking.
+    #[serde(default)]
+    pub recent_modulation: HashMap<ModulatorType, RingBuffer>,
+    /// Recent prediction error deltas for adaptation tracking.
+    #[serde(default)]
+    pub recent_pe_deltas: RingBuffer,
 }
 
 impl Morphon {
@@ -241,6 +269,9 @@ impl Morphon {
             feedback_signal: 0.0,
             plasticity_rate: 1.0, // default; overwritten by developmental program
             frustration: FrustrationState::default(),
+            receptor_sensitivity: default_receptor_sensitivity(CellType::Stem),
+            recent_modulation: HashMap::new(),
+            recent_pe_deltas: RingBuffer::new(10),
         }
     }
 
@@ -285,6 +316,13 @@ impl Morphon {
             // Child inherits parent's plasticity with mutation — anchors beget anchors
             plasticity_rate: (self.plasticity_rate + rng.random_range(-0.1..0.1)).clamp(0.1, 2.0),
             frustration: FrustrationState::default(),
+            // V2: Child inherits parent's receptor sensitivities with small mutation
+            receptor_sensitivity: self.receptor_sensitivity.iter().map(|(&ch, &val)| {
+                let mutated = (val + rng.random_range(-0.05..0.05)).clamp(0.01, 2.0);
+                (ch, mutated)
+            }).collect(),
+            recent_modulation: HashMap::new(),
+            recent_pe_deltas: RingBuffer::new(10),
         }
     }
 
@@ -376,12 +414,15 @@ impl Morphon {
         }
 
         // Homeostatic threshold regulation
+        // V2: Fused morphons defer to cluster-level homeostasis in system.rs
         // Upper clamp respects the activation function's output range — without this,
         // threshold can exceed max activation output, permanently silencing the morphon.
         let actual_rate = self.activity_history.mean();
-        self.threshold += 0.01 * (actual_rate - self.homeostatic_setpoint);
-        let max_threshold = self.activation_fn.max_output();
-        self.threshold = self.threshold.clamp(0.05, max_threshold);
+        if self.fused_with.is_none() {
+            self.threshold += 0.01 * (actual_rate - self.homeostatic_setpoint);
+            let max_threshold = self.activation_fn.max_output();
+            self.threshold = self.threshold.clamp(0.05, max_threshold);
+        }
 
         // Division pressure accumulates from two sources:
         // 1. Active morphons accumulate division pressure.
@@ -400,8 +441,13 @@ impl Morphon {
         }
 
         // V3 Metabolic Budget: energy earned through utility, not flat regen.
-        // 1. Base maintenance cost (just being alive)
-        self.energy -= metabolic.base_cost;
+        // 1. Base maintenance cost — V2: fused morphons get reduced cost (offload overhead)
+        let effective_base_cost = if self.fused_with.is_some() {
+            metabolic.base_cost * (1.0 - metabolic.cluster_base_cost_reduction)
+        } else {
+            metabolic.base_cost
+        };
+        self.energy -= effective_base_cost;
         // 2. Per-synapse maintenance cost (connections are expensive)
         self.energy -= synapse_count as f64 * metabolic.synapse_cost;
         // 3. Utility reward: earn energy by reducing prediction error
@@ -454,6 +500,7 @@ impl Morphon {
         self.differentiation_level = (self.differentiation_level + rate).min(1.0);
         self.activation_fn = ActivationFn::for_cell_type(target);
         self.receptors = default_receptors(target);
+        self.receptor_sensitivity = default_receptor_sensitivity(target);
         true
     }
 
@@ -468,6 +515,7 @@ impl Morphon {
             self.cell_type = CellType::Stem;
             self.activation_fn = ActivationFn::Sigmoid;
             self.receptors = default_receptors(CellType::Stem);
+            self.receptor_sensitivity = default_receptor_sensitivity(CellType::Stem);
         }
     }
 }

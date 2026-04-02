@@ -147,8 +147,11 @@ pub fn update_eligibility(
 
 /// Apply the receptor-gated three-factor learning rule.
 ///
-/// Only modulation channels that the post-synaptic morphon has receptors for
-/// are included in M(t). This creates differential learning:
+/// V2: Receptor sensitivity modulates channel amplitude continuously [0.01, 2.0]
+/// instead of binary gating. When `receptor_sensitivity` is empty, falls back to
+/// binary gating via `post_receptors` for backward compatibility.
+///
+/// Differential learning:
 ///   - Motor morphons (Reward + Arousal receptors) learn from reward signals
 ///   - Sensory morphons (Novelty + Arousal receptors) learn from novelty
 ///   - Associative morphons (Reward + Novelty receptors) learn from both
@@ -163,33 +166,21 @@ pub fn apply_weight_update(
     plasticity_rate: f64,
     post_receptors: &ReceptorSet,
     channel_gains: [f64; 4],
+    receptor_sensitivity: &std::collections::HashMap<ModulatorType, f64>,
 ) -> bool {
-    // Receptor-gated modulation: only include channels the post-synaptic morphon responds to.
+    // V2: Sensitivity-modulated gating. Falls back to binary when map is empty.
+    let sens = |ch: &ModulatorType| -> f64 {
+        receptor_sensitivity.get(ch).copied().unwrap_or(
+            if post_receptors.contains(ch) { 1.0 } else { 0.0 }
+        )
+    };
+
     // Channel gains are set by Endoquilibrium (default [1.0; 4] when disabled).
     // Reward channel uses DELTA (reward change) as a pseudo-TD error signal.
-    // This provides bidirectional modulation that never converges to zero:
-    // improving → positive, worsening → negative, steady → zero.
-    // (Frémaux et al. 2013: critic/TD-error signal is necessary for RL convergence)
-    let r = if post_receptors.contains(&ModulatorType::Reward) {
-        params.alpha_reward * modulation.reward_delta() * channel_gains[0]
-    } else {
-        0.0
-    };
-    let n = if post_receptors.contains(&ModulatorType::Novelty) {
-        params.alpha_novelty * modulation.novelty * channel_gains[1]
-    } else {
-        0.0
-    };
-    let a = if post_receptors.contains(&ModulatorType::Arousal) {
-        params.alpha_arousal * modulation.arousal * channel_gains[2]
-    } else {
-        0.0
-    };
-    let h = if post_receptors.contains(&ModulatorType::Homeostasis) {
-        params.alpha_homeostasis * modulation.homeostasis * channel_gains[3]
-    } else {
-        0.0
-    };
+    let r = sens(&ModulatorType::Reward) * params.alpha_reward * modulation.reward_delta() * channel_gains[0];
+    let n = sens(&ModulatorType::Novelty) * params.alpha_novelty * modulation.novelty * channel_gains[1];
+    let a = sens(&ModulatorType::Arousal) * params.alpha_arousal * modulation.arousal * channel_gains[2];
+    let h = sens(&ModulatorType::Homeostasis) * params.alpha_homeostasis * modulation.homeostasis * channel_gains[3];
     let m = r + n + a + h;
 
     // Standard three-factor: fast eligibility × receptor-gated modulation
@@ -227,6 +218,44 @@ pub fn should_prune(synapse: &Synapse, params: &LearningParams) -> bool {
         && synapse.age > 100
         && synapse.weight.abs() < params.weight_min
         && synapse.usage_count < 5
+}
+
+/// V2: Adapt receptor sensitivities based on correlation between recent
+/// modulation signals and prediction error reduction.
+///
+/// For each channel: if modulation preceded PE reduction → increase sensitivity.
+/// If modulation preceded PE increase → decrease sensitivity.
+/// This is meta-learning: the morphon learns how to learn.
+pub fn adapt_receptor_sensitivity(
+    receptor_sensitivity: &mut std::collections::HashMap<ModulatorType, f64>,
+    recent_modulation: &std::collections::HashMap<ModulatorType, crate::types::RingBuffer>,
+    recent_pe_deltas: &crate::types::RingBuffer,
+    adaptation_rate: f64,
+) {
+    if recent_pe_deltas.len() < 3 {
+        return;
+    }
+
+    for (&channel, mod_history) in recent_modulation.iter() {
+        if mod_history.len() < 3 {
+            continue;
+        }
+
+        // Correlation: sum(mod_signal * (-pe_delta)) / n
+        // Negative PE delta = improvement → positive correlation = good
+        let n = mod_history.len().min(recent_pe_deltas.len());
+        let correlation: f64 = mod_history
+            .iter()
+            .zip(recent_pe_deltas.iter())
+            .take(n)
+            .map(|(&m, &pe_d)| m * (-pe_d))
+            .sum::<f64>()
+            / n as f64;
+
+        let current = receptor_sensitivity.get(&channel).copied().unwrap_or(0.01);
+        let adjusted = current + adaptation_rate * correlation;
+        receptor_sensitivity.insert(channel, adjusted.clamp(0.01, 2.0));
+    }
 }
 
 #[cfg(test)]
@@ -369,7 +398,7 @@ mod tests {
         assert!(!sensory_receptors.contains(&ModulatorType::Reward));
 
         let weight_before = syn.weight;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &sensory_receptors, [1.0; 4]);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &sensory_receptors, [1.0; 4], &Default::default());
 
         // With zero novelty and zero arousal, weight change should be minimal
         let _delta_sensory = (syn.weight - weight_before).abs();
@@ -381,7 +410,7 @@ mod tests {
         assert!(motor_receptors.contains(&ModulatorType::Reward));
 
         let weight_before2 = syn2.weight;
-        apply_weight_update(&mut syn2, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
+        apply_weight_update(&mut syn2, &modulation, &params, 0.01, &motor_receptors, [1.0; 4], &Default::default());
         let delta2 = (syn2.weight - weight_before2).abs();
 
         // Motor (with reward receptor) should have larger change when reward is high
@@ -405,7 +434,7 @@ mod tests {
         modulation.inject_reward(0.8);
 
         let motor_receptors = default_receptors(CellType::Motor);
-        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
+        let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4], &Default::default());
 
         assert!(!captured, "per-tick capture should be disabled");
         assert!(!syn.consolidated, "synapse should not be consolidated per-tick");
@@ -428,8 +457,8 @@ mod tests {
 
         // Use Associative receptors (Reward + Novelty) — reward delta drives update
         let receptors = default_receptors(CellType::Associative);
-        apply_weight_update(&mut syn_plastic, &modulation, &params, 0.1, &receptors, [1.0; 4]);
-        apply_weight_update(&mut syn_consolidated, &modulation, &params, 0.1, &receptors, [1.0; 4]);
+        apply_weight_update(&mut syn_plastic, &modulation, &params, 0.1, &receptors, [1.0; 4], &Default::default());
+        apply_weight_update(&mut syn_consolidated, &modulation, &params, 0.1, &receptors, [1.0; 4], &Default::default());
 
         let delta_plastic = (syn_plastic.weight - 0.3).abs();
         let delta_consolidated = (syn_consolidated.weight - 0.3).abs();
@@ -451,7 +480,7 @@ mod tests {
         modulation.inject_reward(1.0);
 
         let motor_receptors = default_receptors(CellType::Motor);
-        apply_weight_update(&mut syn, &modulation, &params, 1.0, &motor_receptors, [1.0; 4]);
+        apply_weight_update(&mut syn, &modulation, &params, 1.0, &motor_receptors, [1.0; 4], &Default::default());
 
         assert!(
             syn.weight <= params.weight_max,
@@ -513,7 +542,7 @@ mod tests {
         let receptors = default_receptors(CellType::Stem);
 
         let initial_usage = syn.usage_count;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4]);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4], &Default::default());
         assert_eq!(syn.usage_count, initial_usage + 1);
     }
 
@@ -526,7 +555,100 @@ mod tests {
         let receptors = default_receptors(CellType::Stem);
 
         let initial_age = syn.age;
-        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4]);
+        apply_weight_update(&mut syn, &modulation, &params, 0.01, &receptors, [1.0; 4], &Default::default());
         assert_eq!(syn.age, initial_age + 1);
+    }
+
+    #[test]
+    fn receptor_sensitivity_scales_weight_update() {
+        let params = LearningParams::default();
+
+        // Two identical synapses
+        let mut syn_full = Synapse::new(0.5);
+        syn_full.eligibility = 0.5;
+        let mut syn_half = Synapse::new(0.5);
+        syn_half.eligibility = 0.5;
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(0.0);
+        modulation.inject_reward(0.8);
+
+        let receptors = default_receptors(CellType::Motor);
+
+        // Full sensitivity (1.0 for Reward)
+        let mut full_sens = std::collections::HashMap::new();
+        full_sens.insert(ModulatorType::Reward, 1.0);
+        full_sens.insert(ModulatorType::Arousal, 1.0);
+
+        // Half sensitivity (0.5 for Reward)
+        let mut half_sens = std::collections::HashMap::new();
+        half_sens.insert(ModulatorType::Reward, 0.5);
+        half_sens.insert(ModulatorType::Arousal, 1.0);
+
+        apply_weight_update(&mut syn_full, &modulation, &params, 0.1, &receptors, [1.0; 4], &full_sens);
+        apply_weight_update(&mut syn_half, &modulation, &params, 0.1, &receptors, [1.0; 4], &half_sens);
+
+        let delta_full = (syn_full.weight - 0.5).abs();
+        let delta_half = (syn_half.weight - 0.5).abs();
+
+        // Half sensitivity should produce roughly half the weight change
+        assert!(delta_full > 0.001, "full sensitivity should produce update: {delta_full}");
+        assert!(delta_half < delta_full, "half sensitivity ({delta_half}) should be less than full ({delta_full})");
+    }
+
+    #[test]
+    fn empty_sensitivity_matches_binary_gating() {
+        let params = LearningParams::default();
+
+        let mut syn_binary = Synapse::new(0.5);
+        syn_binary.eligibility = 0.5;
+        let mut syn_empty = Synapse::new(0.5);
+        syn_empty.eligibility = 0.5;
+
+        let mut modulation = Neuromodulation::default();
+        modulation.inject_reward(0.0);
+        modulation.inject_reward(0.8);
+
+        let receptors = default_receptors(CellType::Motor);
+
+        // Binary: no sensitivity map (empty)
+        apply_weight_update(&mut syn_binary, &modulation, &params, 0.1, &receptors, [1.0; 4], &Default::default());
+
+        // Explicit 1.0 for present receptors, 0.0 for absent — should match binary
+        let mut explicit_sens = std::collections::HashMap::new();
+        explicit_sens.insert(ModulatorType::Reward, 1.0);
+        explicit_sens.insert(ModulatorType::Arousal, 1.0);
+        explicit_sens.insert(ModulatorType::Novelty, 0.0);
+        explicit_sens.insert(ModulatorType::Homeostasis, 0.0);
+
+        apply_weight_update(&mut syn_empty, &modulation, &params, 0.1, &receptors, [1.0; 4], &explicit_sens);
+
+        // Should be very close (not exact due to 0.0 vs absent in empty map)
+        let diff = (syn_binary.weight - syn_empty.weight).abs();
+        assert!(diff < 0.001, "binary and explicit sensitivity should match: diff={diff}");
+    }
+
+    #[test]
+    fn adapt_receptor_sensitivity_increases_on_positive_correlation() {
+        use crate::types::RingBuffer;
+
+        let mut sensitivity = std::collections::HashMap::new();
+        sensitivity.insert(ModulatorType::Reward, 1.0);
+
+        let mut mod_history = std::collections::HashMap::new();
+        let mut reward_buf = RingBuffer::new(10);
+        let mut pe_deltas = RingBuffer::new(10);
+
+        // Positive correlation: high modulation, negative PE delta (= improvement)
+        for _ in 0..5 {
+            reward_buf.push(0.8);     // strong modulation
+            pe_deltas.push(-0.3);     // PE decreased (improvement)
+        }
+        mod_history.insert(ModulatorType::Reward, reward_buf);
+
+        adapt_receptor_sensitivity(&mut sensitivity, &mod_history, &pe_deltas, 0.1);
+
+        let new_sens = sensitivity[&ModulatorType::Reward];
+        assert!(new_sens > 1.0, "sensitivity should increase on positive correlation: {new_sens}");
     }
 }

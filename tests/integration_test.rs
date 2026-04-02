@@ -279,7 +279,7 @@ fn test_tag_and_capture_delayed_reward() {
     modulation.inject_reward(0.8);
 
     let motor_receptors = default_receptors(CellType::Motor);
-    let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4]);
+    let captured = apply_weight_update(&mut syn, &modulation, &params, 0.01, &motor_receptors, [1.0; 4], &Default::default());
     assert!(!captured, "per-tick capture should be disabled");
     assert!(syn.tag > 0.0, "tag should still exist for episode-end capture");
 }
@@ -383,4 +383,98 @@ fn test_serialization_roundtrip() {
     assert_eq!(stats_before.fused_clusters, stats_after.fused_clusters);
     assert_eq!(stats_before.step_count, stats_after.step_count);
     assert_eq!(stats_before.max_generation, stats_after.max_generation);
+}
+
+#[test]
+fn test_dream_consolidates_tagged_synapses() {
+    let config = SystemConfig::default();
+    let mut system = System::new(config);
+
+    // Run a few steps to build up some synapse state
+    for _ in 0..50 {
+        system.inject_reward(0.5);
+        system.step();
+    }
+
+    // Set performance above consolidation gate so dream consolidation is allowed
+    for _ in 0..100 {
+        system.report_performance(200.0);
+    }
+
+    // Manually set some synapses to have high tag strength
+    let edge_indices: Vec<_> = system.topology.graph.edge_indices().take(5).collect();
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+            syn.tag_strength = 0.8;
+            syn.tag = 0.5;
+            syn.consolidation_level = 0.1;
+            syn.consolidated = false;
+        }
+    }
+
+    // Run dream cycle
+    system.trigger_dream();
+
+    // Verify consolidation increased and tags consumed
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight(ei) {
+            assert!(syn.consolidation_level > 0.1,
+                "consolidation should increase: {}", syn.consolidation_level);
+            assert!(syn.tag_strength < 0.8,
+                "tag should be partially consumed: {}", syn.tag_strength);
+        }
+    }
+}
+
+#[test]
+fn test_dream_resets_stale_synapses() {
+    let config = SystemConfig::default();
+    let mut system = System::new(config);
+
+    // Set some synapses to be stale candidates
+    let edge_indices: Vec<_> = system.topology.graph.edge_indices().take(3).collect();
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+            syn.age = 6000; // > stale_synapse_age (5000)
+            syn.usage_count = 1; // < stale_usage_threshold (3)
+            syn.weight = 0.05; // < 0.1
+            syn.consolidated = false;
+        }
+    }
+
+    system.trigger_dream();
+
+    // Verify stale synapses got refreshed
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight(ei) {
+            assert_eq!(syn.age, 0, "stale synapse age should be reset");
+            assert_eq!(syn.usage_count, 0, "stale synapse usage should be reset");
+        }
+    }
+}
+
+#[test]
+fn test_dream_respects_disabled() {
+    let mut config = SystemConfig::default();
+    config.dream.enabled = false;
+    let mut system = System::new(config);
+
+    // Set up tagged synapses
+    let edge_indices: Vec<_> = system.topology.graph.edge_indices().take(3).collect();
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+            syn.tag_strength = 0.8;
+            syn.consolidation_level = 0.1;
+        }
+    }
+
+    system.trigger_dream();
+
+    // Nothing should change
+    for &ei in &edge_indices {
+        if let Some(syn) = system.topology.graph.edge_weight(ei) {
+            assert!((syn.consolidation_level - 0.1).abs() < 0.001,
+                "consolidation should not change when dream disabled");
+        }
+    }
 }
