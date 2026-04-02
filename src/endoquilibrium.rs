@@ -261,6 +261,10 @@ pub struct ChannelState {
     pub homeostasis_gain: f32,
     pub threshold_bias: f32,
     pub plasticity_mult: f32,
+    /// Consolidation gain: how aggressively tagged synapses get captured.
+    /// Biology: PRP (plasticity-related protein) availability, gated by
+    /// neuromodulatory state. High = capture-friendly, low = tags accumulate but don't consolidate.
+    pub consolidation_gain: f32,
 }
 
 impl Default for ChannelState {
@@ -272,6 +276,7 @@ impl Default for ChannelState {
             homeostasis_gain: 1.0,
             threshold_bias: 0.0,
             plasticity_mult: 1.0,
+            consolidation_gain: 1.0,
         }
     }
 }
@@ -285,6 +290,7 @@ impl ChannelState {
         self.homeostasis_gain = self.homeostasis_gain.clamp(0.3, 2.0);
         self.threshold_bias = self.threshold_bias.clamp(-0.3, 0.3);
         self.plasticity_mult = self.plasticity_mult.clamp(0.1, 5.0);
+        self.consolidation_gain = self.consolidation_gain.clamp(0.2, 3.0);
     }
 }
 
@@ -682,7 +688,29 @@ impl Endoquilibrium {
             });
         }
 
-        // ── Rule 6: Energy Pressure ──
+        // ── Rule 6: Consolidation Gain (PRP availability) ──
+        // Stressed/Proliferating systems need aggressive capture when good episodes arrive.
+        // Mature systems are selective — only consolidate with strong evidence.
+        // Biology: dopamine/norepinephrine gate PRP synthesis → capture threshold.
+        match self.predictor.stage {
+            DevelopmentalStage::Stressed | DevelopmentalStage::Proliferating => {
+                ch.consolidation_gain = 2.5;
+                interventions.push(Intervention {
+                    rule: "stage_consolidation".into(), vital: "developmental_stage".into(),
+                    actual: 0.0, setpoint: 1.0,
+                    lever: "consolidation_gain".into(),
+                    adjustment: 1.5,
+                });
+            }
+            DevelopmentalStage::Differentiating => {
+                ch.consolidation_gain = 1.5;
+            }
+            DevelopmentalStage::Consolidating | DevelopmentalStage::Mature => {
+                ch.consolidation_gain = 1.0;
+            }
+        }
+
+        // ── Rule 7: Energy Pressure ──
         if energy > 0.95 {
             // Critical: safe mode
             ch.plasticity_mult = 0.0;
@@ -727,6 +755,7 @@ impl Endoquilibrium {
         self.channels.homeostasis_gain = lerp(self.channels.homeostasis_gain, raw.homeostasis_gain, a);
         self.channels.threshold_bias = lerp(self.channels.threshold_bias, raw.threshold_bias, a);
         self.channels.plasticity_mult = lerp(self.channels.plasticity_mult, raw.plasticity_mult, a);
+        self.channels.consolidation_gain = lerp(self.channels.consolidation_gain, raw.consolidation_gain, a);
         self.channels.clamp();
     }
 
@@ -768,10 +797,10 @@ impl Endoquilibrium {
         let s = &self.predictor.stage;
         let c = &self.channels;
         format!(
-            "endo: stage={:?} rg={:.2} ng={:.2} ag={:.2} hg={:.2} tb={:.3} pm={:.2} hp={:.2}",
+            "endo: stage={:?} rg={:.2} ng={:.2} ag={:.2} hg={:.2} tb={:.3} pm={:.2} cg={:.2} hp={:.2}",
             s, c.reward_gain, c.novelty_gain, c.arousal_gain,
             c.homeostasis_gain, c.threshold_bias, c.plasticity_mult,
-            self.last_diag.health_score,
+            c.consolidation_gain, self.last_diag.health_score,
         )
     }
 

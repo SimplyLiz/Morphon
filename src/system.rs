@@ -671,14 +671,6 @@ impl System {
         // This breaks the circular dependency where critic and actor share learning rules.
         let mut captures_this_step = 0_u64;
         if tick.medium {
-            // Endo-aware tag rate: aggressive in early/stressed stages, conservative when mature.
-            let endo_tag_factor = match self.endo.stage() {
-                crate::endoquilibrium::DevelopmentalStage::Stressed
-                | crate::endoquilibrium::DevelopmentalStage::Proliferating => 3.0,
-                crate::endoquilibrium::DevelopmentalStage::Differentiating => 2.0,
-                crate::endoquilibrium::DevelopmentalStage::Consolidating
-                | crate::endoquilibrium::DevelopmentalStage::Mature => 1.0,
-            };
             let critic_set: std::collections::HashSet<MorphonId> =
                 self.critic_ports.iter().copied().collect();
             let td_err = self.last_td_error;
@@ -765,7 +757,7 @@ impl System {
                                 // episode end where performance-relative decisions are made.
                                 let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
                                 if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
-                                    synapse.tag = (synapse.tag + dfa_strength * self.config.learning.tag_accumulation_rate * endo_tag_factor).min(1.0);
+                                    synapse.tag = (synapse.tag + dfa_strength * self.config.learning.tag_accumulation_rate).min(1.0);
                                     synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
                                 }
                                 synapse.age += 1;
@@ -1454,6 +1446,7 @@ impl System {
             // Below consolidation_gate: tags accumulate but never capture.
             // Above gate: captures happen, locking in proven representations.
             // "Sklerotien-Bildung" — only consolidate near a rich nutrient source.
+            let cg = self.endo.channels.consolidation_gain as f64;
             if fb > 0.01 && self.recent_performance > self.consolidation_gate {
                 let incoming = self.topology.incoming_synapses_mut(assoc_id);
                 for (_, edge_idx) in incoming {
@@ -1463,7 +1456,10 @@ impl System {
                             syn.tag = syn.tag.min(1.0);
                             syn.tag_strength = syn.tag;
                         }
-                        if syn.tag > self.config.learning.capture_threshold && !syn.consolidated {
+                        // Endo consolidation_gain lowers effective capture threshold.
+                        // High cg = capture-friendly (stressed/proliferating), low = selective (mature).
+                        let effective_threshold = self.config.learning.capture_threshold / cg;
+                        if syn.tag > effective_threshold && !syn.consolidated {
                             syn.consolidated = true;
                             syn.tag = 0.0;
                             self.diag.total_captures += 1;
@@ -1568,13 +1564,14 @@ impl System {
         self.running_avg_steps = 0.95 * self.running_avg_steps + 0.05 * episode_steps;
 
         if delta > 0.0 {
-            // Above average — increase consolidation_level
-            // (gradual, not binary). Only the DFA path sets consolidated=true.
+            // Above average — increase consolidation_level, scaled by Endo consolidation_gain.
+            // Biology: PRP availability gates how much a good episode consolidates.
+            let cg = self.endo.channels.consolidation_gain as f64;
             let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
             for ei in self.topology.graph.edge_indices() {
                 if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
                     if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
-                        let delta_level = strength * syn.tag_strength.min(1.0) * 0.1;
+                        let delta_level = strength * syn.tag_strength.min(1.0) * 0.1 * cg;
                         syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
                         syn.tag *= 0.5;
                     }
