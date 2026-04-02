@@ -71,6 +71,31 @@ pub enum DevelopmentalProgram {
     Custom,
 }
 
+/// How the analog readout layer is trained.
+///
+/// The readout is a linear Purkinje-cell layer external to the MI network.
+/// Different tasks require different training signals — CartPole has a known
+/// correct action (supervised), while open-ended RL only has scalar reward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReadoutTrainingMode {
+    /// Caller provides the correct output index each step.
+    /// Fastest convergence but requires domain knowledge.
+    Supervised,
+    /// Train from TD error signal only — reinforce chosen action proportional
+    /// to TD error magnitude. More general but slower convergence.
+    TDOnly,
+    /// Start supervised, transition to TD-only when performance exceeds
+    /// the consolidation gate. Curriculum: bootstrap with supervision,
+    /// then let the system refine autonomously.
+    Hybrid,
+}
+
+impl Default for ReadoutTrainingMode {
+    fn default() -> Self {
+        ReadoutTrainingMode::Supervised
+    }
+}
+
 /// Lifecycle events that can be enabled/disabled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LifecycleConfig {

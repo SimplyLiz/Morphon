@@ -238,20 +238,29 @@ fn run_episode(
         // External critic: better value estimates for readout training
         let td_error = critic.update(&pre_state, reward, env, !alive);
         let chosen = if action > 0.0 { 1 } else { 0 };
+        let correct_action = if env.theta > 0.0 { 1 } else { 0 };
 
-        // Train analog readout with supervised hint from pole angle.
-        // Correct action = push in the direction the pole is leaning.
-        // This gives the readout the directional signal that scalar TD error lacks.
-        // The MI network still learns representations unsupervised — only the
-        // readout mapping is supervised. Cerebellar circuit pattern:
-        // granule cells (Associative) = unsupervised features,
-        // Purkinje cells (readout) = supervised climbing-fiber error.
-        let correct_action = if env.theta > 0.0 { 1 } else { 0 }; // lean right → push right
-        // Constant learning rate — learn from every step, not just high-TD moments.
-        // TD-scaled lr concentrated learning on failure moments where theta is at threshold,
-        // giving no useful signal for small-angle balancing.
-        system.train_readout(correct_action, 0.05);
-        system.reward_contrastive(correct_action, 0.2, 0.1);
+        // Readout training mode — configurable via SystemConfig.readout_mode
+        let base_lr = 0.05;
+        match system.readout_training_mode() {
+            morphon_core::types::ReadoutTrainingMode::Supervised => {
+                // Supervised: train with correct action from domain knowledge.
+                // Cerebellar pattern: granule cells = unsupervised, Purkinje = supervised.
+                system.train_readout(correct_action, base_lr);
+                system.reward_contrastive(correct_action, 0.2, 0.1);
+            }
+            morphon_core::types::ReadoutTrainingMode::TDOnly => {
+                // TD-only: reinforce chosen action scaled by TD error.
+                if td_error > 0.0 {
+                    system.train_readout(chosen, td_error.min(1.0) * base_lr);
+                    system.reward_contrastive(chosen, td_error.min(1.0) * 0.2, 0.1);
+                } else {
+                    let other = 1 - chosen;
+                    system.train_readout(other, td_error.abs().min(1.0) * base_lr * 0.5);
+                }
+            }
+            _ => unreachable!(), // Hybrid resolves to Supervised or TDOnly
+        }
 
         // TD(λ)-like trace stretching: when pole is in danger (>50% of threshold),
         // inject novelty to boost plasticity. This extends the effective eligibility

@@ -56,6 +56,13 @@ pub struct SystemConfig {
     /// V2: Dreaming engine — offline consolidation and self-optimization.
     #[serde(default)]
     pub dream: DreamConfig,
+
+    /// How the analog readout layer should be trained.
+    /// Supervised = caller provides correct action (fastest, needs domain knowledge).
+    /// TDOnly = learn from TD error signal only (general, slower).
+    /// Hybrid = supervised until consolidation_gate, then TD-only.
+    #[serde(default)]
+    pub readout_mode: ReadoutTrainingMode,
 }
 
 impl SystemConfig {
@@ -92,6 +99,7 @@ impl Default for SystemConfig {
             governance: crate::governance::ConstitutionalConstraints::default(),
             endoquilibrium: crate::endoquilibrium::EndoConfig::default(),
             dream: DreamConfig::default(),
+            readout_mode: ReadoutTrainingMode::default(),
         }
     }
 }
@@ -1487,6 +1495,21 @@ impl System {
     /// Number of output ports (motor Morphons available for external output).
     pub fn output_size(&self) -> usize {
         self.output_ports.len()
+    }
+
+    /// Current readout training mode. In Hybrid mode, this reflects the
+    /// active phase (Supervised until consolidation gate, then TDOnly).
+    pub fn readout_training_mode(&self) -> ReadoutTrainingMode {
+        match self.config.readout_mode {
+            ReadoutTrainingMode::Hybrid => {
+                if self.recent_performance > self.consolidation_gate {
+                    ReadoutTrainingMode::TDOnly
+                } else {
+                    ReadoutTrainingMode::Supervised
+                }
+            }
+            other => other,
+        }
     }
 
     /// Report recent performance and trigger adaptive consolidation.
