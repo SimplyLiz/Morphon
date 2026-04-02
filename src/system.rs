@@ -660,6 +660,7 @@ impl System {
         if self.endo.config.enabled && tick.medium {
             let vitals = crate::endoquilibrium::sense_vitals(
                 &self.morphons, &self.topology, &self.diag, self.step_count,
+                self.recent_performance,
             );
             self.endo.tick(vitals);
         }
@@ -1581,28 +1582,6 @@ impl System {
             // Below average — decay tags, don't consolidate
             self.decay_all_tags(0.5);
         }
-    }
-
-    /// Consolidate synapses with active tags. `strength` (0-1) controls how much
-    /// consolidation_level increases. Only tags above threshold are captured.
-    fn capture_tagged_synapses(&mut self, strength: f64) {
-        let mut captures = 0_u64;
-        for ei in self.topology.graph.edge_indices() {
-            if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
-                if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
-                    // Increase consolidation level proportional to tag strength and episode quality
-                    let delta_level = strength * syn.tag_strength.min(1.0) * 0.3;
-                    syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
-                    if syn.consolidation_level > 0.5 {
-                        syn.consolidated = true; // binary flag for pruning protection
-                    }
-                    syn.tag *= 0.5; // partially consume the tag
-                    captures += 1;
-                }
-            }
-        }
-        self.diag.captures_this_step = captures;
-        self.diag.total_captures += captures;
     }
 
     /// Decay all active tags after a below-average episode.

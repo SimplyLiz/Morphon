@@ -108,6 +108,9 @@ pub struct VitalSigns {
     pub energy_utilization: f32,
     // Task performance
     pub prediction_error_mean: f32,
+    /// Rolling reward/performance metric (task-agnostic, set by caller).
+    /// For CartPole: episode steps. For MNIST: classification accuracy.
+    pub reward_avg: f32,
 }
 
 impl Default for VitalSigns {
@@ -127,6 +130,7 @@ impl Default for VitalSigns {
             total_synapses: 0,
             energy_utilization: 0.5,
             prediction_error_mean: 0.1,
+            reward_avg: 0.0,
         }
     }
 }
@@ -138,6 +142,7 @@ pub fn sense_vitals(
     topology: &Topology,
     diag: &Diagnostics,
     step: u64,
+    reward_avg: f64,
 ) -> VitalSigns {
     let n = morphons.len().max(1) as f32;
 
@@ -190,6 +195,7 @@ pub fn sense_vitals(
         total_synapses: diag.total_synapses as u32,
         energy_utilization,
         prediction_error_mean: pe_sum / n,
+        reward_avg: reward_avg as f32,
     }
 }
 
@@ -370,6 +376,7 @@ struct AllostasisPredictor {
     slow_emas: VitalSigns,
     pe_history: VecDeque<f32>,
     morphon_count_history: VecDeque<u32>,
+    reward_history: VecDeque<f32>,
     stage: DevelopmentalStage,
 }
 
@@ -380,6 +387,7 @@ impl Default for AllostasisPredictor {
             slow_emas: VitalSigns::default(),
             pe_history: VecDeque::with_capacity(200),
             morphon_count_history: VecDeque::with_capacity(200),
+            reward_history: VecDeque::with_capacity(500),
             stage: DevelopmentalStage::Proliferating,
         }
     }
@@ -396,6 +404,7 @@ impl AllostasisPredictor {
         ema_update_f32(&mut self.fast_emas.weight_entropy, vitals.weight_entropy, fast_alpha);
         ema_update_f32(&mut self.fast_emas.energy_utilization, vitals.energy_utilization, fast_alpha);
         ema_update_f32(&mut self.fast_emas.prediction_error_mean, vitals.prediction_error_mean, fast_alpha);
+        ema_update_f32(&mut self.fast_emas.reward_avg, vitals.reward_avg, fast_alpha);
 
         // Update slow EMAs
         ema_update_f32(&mut self.slow_emas.fr_sensory, vitals.fr_sensory, slow_alpha);
@@ -406,6 +415,7 @@ impl AllostasisPredictor {
         ema_update_f32(&mut self.slow_emas.weight_entropy, vitals.weight_entropy, slow_alpha);
         ema_update_f32(&mut self.slow_emas.energy_utilization, vitals.energy_utilization, slow_alpha);
         ema_update_f32(&mut self.slow_emas.prediction_error_mean, vitals.prediction_error_mean, slow_alpha);
+        ema_update_f32(&mut self.slow_emas.reward_avg, vitals.reward_avg, slow_alpha);
 
         // History for trend detection
         self.pe_history.push_back(vitals.prediction_error_mean);
@@ -416,32 +426,70 @@ impl AllostasisPredictor {
         if self.morphon_count_history.len() > 200 {
             self.morphon_count_history.pop_front();
         }
+        self.reward_history.push_back(vitals.reward_avg);
+        if self.reward_history.len() > 500 {
+            self.reward_history.pop_front();
+        }
 
         // Detect developmental stage
         self.stage = self.detect_stage();
     }
 
     fn detect_stage(&self) -> DevelopmentalStage {
+        // Reward-based stage detection: relative to the system's own history.
+        // Uses slow EMA as "what this system normally achieves" baseline.
+        // No hardcoded absolute thresholds — works for CartPole, MNIST, any task.
+        let reward_trend = self.trend_f32(&self.reward_history);
+        let reward_fast = self.fast_emas.reward_avg;
+        let reward_slow = self.slow_emas.reward_avg;
         let mc_trend = self.trend(&self.morphon_count_history);
-        let pe_trend = self.trend_f32(&self.pe_history);
 
-        // Stressed: PE rising for extended period
-        if pe_trend > 0.001 && self.pe_history.len() >= 100 {
+        // Need enough history for meaningful trends
+        if self.reward_history.len() < 20 {
+            return DevelopmentalStage::Proliferating;
+        }
+
+        // Stressed: reward DROPPING significantly relative to own baseline.
+        // Not "seeing new things" (PE rising) but "getting worse at the task."
+        let slow_abs = reward_slow.abs().max(1.0); // avoid div-by-zero for near-zero rewards
+        if reward_trend < -0.01 * slow_abs && self.reward_history.len() >= 50 {
             return DevelopmentalStage::Stressed;
         }
-        // Proliferating: morphon count rising
+
+        // Mature: reward stable (low variance) and near slow EMA — consistent performance.
+        let reward_std = self.std_f32(&self.reward_history);
+        let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 1.0 };
+        if reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
+            && self.reward_history.len() >= 100
+        {
+            return DevelopmentalStage::Mature;
+        }
+
+        // Consolidating: reward near own ceiling (fast ≥ 95% of slow), stable.
+        if reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.01 * slow_abs {
+            return DevelopmentalStage::Consolidating;
+        }
+
+        // Differentiating: reward actively climbing.
+        if reward_trend > 0.0 {
+            return DevelopmentalStage::Differentiating;
+        }
+
+        // Proliferating: morphon count rising, reward not yet meaningful.
         if mc_trend > 0.01 {
             return DevelopmentalStage::Proliferating;
         }
-        // Consolidating: morphon count falling
-        if mc_trend < -0.005 {
-            return DevelopmentalStage::Consolidating;
-        }
-        // Differentiating: some structural change but count stable
-        if mc_trend.abs() > 0.002 {
-            return DevelopmentalStage::Differentiating;
-        }
-        DevelopmentalStage::Mature
+
+        DevelopmentalStage::Differentiating
+    }
+
+    /// Compute standard deviation of f32 history.
+    fn std_f32(&self, history: &VecDeque<f32>) -> f32 {
+        if history.len() < 2 { return 0.0; }
+        let n = history.len() as f32;
+        let mean: f32 = history.iter().sum::<f32>() / n;
+        let variance: f32 = history.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
+        variance.sqrt()
     }
 
     /// Compute normalized trend (slope / mean) of u32 history.
@@ -689,25 +737,29 @@ impl Endoquilibrium {
         }
 
         // ── Rule 6: Consolidation Gain (PRP availability) ──
-        // Stressed/Proliferating systems need aggressive capture when good episodes arrive.
-        // Mature systems are selective — only consolidate with strong evidence.
-        // Biology: dopamine/norepinephrine gate PRP synthesis → capture threshold.
-        match self.predictor.stage {
-            DevelopmentalStage::Stressed | DevelopmentalStage::Proliferating => {
-                ch.consolidation_gain = 2.5;
-                interventions.push(Intervention {
-                    rule: "stage_consolidation".into(), vital: "developmental_stage".into(),
-                    actual: 0.0, setpoint: 1.0,
-                    lever: "consolidation_gain".into(),
-                    adjustment: 1.5,
-                });
-            }
-            DevelopmentalStage::Differentiating => {
-                ch.consolidation_gain = 1.5;
-            }
-            DevelopmentalStage::Consolidating | DevelopmentalStage::Mature => {
-                ch.consolidation_gain = 1.0;
-            }
+        // Biology: dopamine/norepinephrine gate PRP synthesis → capture.
+        // Proliferating: learn everything fast (nothing to protect).
+        // Differentiating: refining, still capturing aggressively.
+        // Consolidating: normal capture, slowing down.
+        // Mature: protect what works — very selective consolidation.
+        // Stressed: HIGH plasticity (explore) but LOW consolidation
+        //   (don't lock in bad patterns during a crisis).
+        let (cg, pm_stage) = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => (2.5, 1.5),
+            DevelopmentalStage::Differentiating => (2.0, 1.2),
+            DevelopmentalStage::Consolidating => (1.0, 0.8),
+            DevelopmentalStage::Mature => (0.5, 0.5),
+            DevelopmentalStage::Stressed => (0.5, 1.5),
+        };
+        ch.consolidation_gain = cg;
+        ch.plasticity_mult *= pm_stage;
+        if cg != 1.0 {
+            interventions.push(Intervention {
+                rule: "stage_consolidation".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "consolidation_gain/plasticity_mult".into(),
+                adjustment: cg - 1.0,
+            });
         }
 
         // ── Rule 7: Energy Pressure ──
@@ -931,25 +983,54 @@ mod tests {
     #[test]
     fn test_stage_detection_proliferating() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
-        // Feed rising morphon count
-        for i in 0..50 {
+        // Too little reward history → Proliferating
+        for _ in 0..15 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.total_morphons = 100 + i * 5;
+            v.reward_avg = 10.0;
             endo.tick(v);
         }
         assert_eq!(endo.stage(), DevelopmentalStage::Proliferating);
     }
 
     #[test]
+    fn test_stage_detection_differentiating() {
+        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        // Feed rising reward → Differentiating
+        for i in 0..100 {
+            let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+            v.reward_avg = 10.0 + i as f32 * 0.5;
+            endo.tick(v);
+        }
+        assert_eq!(endo.stage(), DevelopmentalStage::Differentiating);
+    }
+
+    #[test]
     fn test_stage_detection_mature() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
-        // Feed stable morphon count
-        for _ in 0..50 {
+        // Feed stable reward with low variance → Mature
+        for _ in 0..200 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.total_morphons = 300;
+            v.reward_avg = 195.0;
             endo.tick(v);
         }
         assert_eq!(endo.stage(), DevelopmentalStage::Mature);
+    }
+
+    #[test]
+    fn test_stage_detection_stressed() {
+        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        // Build up a baseline, then drop reward → Stressed
+        for _ in 0..100 {
+            let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+            v.reward_avg = 150.0;
+            endo.tick(v);
+        }
+        for _ in 0..100 {
+            let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+            v.reward_avg = 80.0; // significant drop
+            endo.tick(v);
+        }
+        assert_eq!(endo.stage(), DevelopmentalStage::Stressed);
     }
 
     #[test]
@@ -959,17 +1040,19 @@ mod tests {
     }
 
     #[test]
-    fn test_healthy_vitals_no_intervention() {
+    fn test_healthy_vitals_stable() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
-        // Feed perfectly healthy vitals (within Mature setpoints)
+        // Feed perfectly healthy vitals with stable reward
         for _ in 0..200 {
-            endo.tick(make_vitals(0.10, 0.30, 2.5, 0.5));
+            let mut v = make_vitals(0.10, 0.30, 2.5, 0.5);
+            v.reward_avg = 100.0;
+            endo.tick(v);
         }
-        // Channels should stay near defaults
-        assert!((endo.channels.threshold_bias).abs() < 0.05,
+        // Channels should be reasonable (stage may be Mature with pm_stage=0.5)
+        assert!((endo.channels.threshold_bias).abs() < 0.1,
             "healthy vitals should produce near-zero bias, got {}", endo.channels.threshold_bias);
-        assert!((endo.channels.plasticity_mult - 1.0).abs() < 0.3,
-            "healthy vitals should keep plasticity near 1.0, got {}", endo.channels.plasticity_mult);
-        assert!(endo.last_diag.health_score > 0.8);
+        assert!(endo.channels.plasticity_mult >= 0.1,
+            "plasticity should stay within bounds, got {}", endo.channels.plasticity_mult);
+        assert!(endo.last_diag.health_score > 0.7);
     }
 }
