@@ -276,9 +276,18 @@ pub struct Morphon {
     /// gate = sigmoid(astrocytic_state - threshold_a), multiplied into weight updates.
     #[serde(default = "default_astrocytic_state")]
     pub astrocytic_state: f64,
+
+    // === V2: Per-Morphon Noise ===
+    /// Base noise amplitude for membrane potential perturbation.
+    /// Initialized from cell type (Motor=0.0, Associative=0.08, others=0.1),
+    /// inherited with mutation in divide(), updated on differentiation.
+    /// Final noise = intrinsic_noise × frustration.noise_amplitude.
+    #[serde(default = "default_intrinsic_noise")]
+    pub intrinsic_noise: f64,
 }
 
 fn default_astrocytic_state() -> f64 { 0.5 }
+fn default_intrinsic_noise() -> f64 { 0.1 }
 
 impl Morphon {
     /// Create a new stem-cell Morphon at the given position.
@@ -315,6 +324,7 @@ impl Morphon {
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
             astrocytic_state: 0.5,
+            intrinsic_noise: crate::types::intrinsic_noise_for(CellType::Stem),
         }
     }
 
@@ -367,6 +377,8 @@ impl Morphon {
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
             astrocytic_state: self.astrocytic_state,
+            // Child inherits parent's noise with mutation — noisy parents beget noisy children
+            intrinsic_noise: (self.intrinsic_noise + rng.random_range(-0.01..0.01)).clamp(0.0, 0.2),
         }
     }
 
@@ -392,17 +404,11 @@ impl Morphon {
         // only the current input, not accumulated history. Without this, noise
         // accumulates over hundreds of steps and drifts motors to ±clamp.
         let leak_rate = if self.cell_type == CellType::Motor { 1.0 } else { 0.1 };
-        // Pseudo-random noise centered at zero.
-        // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
-        // Other types get standard noise (0.1) for baseline activity.
+        // Pseudo-random noise centered at zero, scaled by per-morphon intrinsic_noise.
+        // intrinsic_noise is set per cell type (Motor=0, Associative=0.08, others=0.1),
+        // inherited in divide(), updated on differentiation. Frustration amplifies on top.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise_scale = match self.cell_type {
-            CellType::Motor => 0.0,
-            // Reduced noise for Associative morphons — preserves pattern stability
-            // for readout learning while frustration scaling still drives exploration.
-            CellType::Associative => 0.02 * self.frustration.noise_amplitude,
-            _ => 0.1 * self.frustration.noise_amplitude,
-        };
+        let noise_scale = self.intrinsic_noise * self.frustration.noise_amplitude;
         let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
@@ -549,6 +555,7 @@ impl Morphon {
         self.activation_fn = ActivationFn::for_cell_type(target);
         self.receptors = default_receptors(target);
         self.receptor_sensitivity = default_receptor_sensitivity(target);
+        self.intrinsic_noise = crate::types::intrinsic_noise_for(target);
         true
     }
 
@@ -564,6 +571,7 @@ impl Morphon {
             self.activation_fn = ActivationFn::Sigmoid;
             self.receptors = default_receptors(CellType::Stem);
             self.receptor_sensitivity = default_receptor_sensitivity(CellType::Stem);
+            self.intrinsic_noise = crate::types::intrinsic_noise_for(CellType::Stem);
         }
     }
 }

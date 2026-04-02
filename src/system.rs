@@ -1029,10 +1029,12 @@ impl System {
                 // Target norm: proportional to number of connections
                 let target_norm = edge_indices.len() as f64 * 0.3;
                 if pos_sum > 0.01 {
-                    // Gentle clamping [0.9, 1.1] preserves weight diversity
-                    // while preventing explosion. Stronger clamping (0.5-2.0)
-                    // collapsed all weights to the target norm, destroying features.
-                    let scale = (target_norm / pos_sum).clamp(0.9, 1.1);
+                    // Scaling tolerance derived from plasticity_rate:
+                    // Anchors (low pr) get tight clamping → protect learned features.
+                    // Sails (high pr) get wide clamping → allow fast adaptation.
+                    let pr = self.morphons.get(&aid).map(|m| m.plasticity_rate).unwrap_or(1.0);
+                    let tol = 0.1 + 0.15 * pr.min(2.0);
+                    let scale = (target_norm / pos_sum).clamp(1.0 - tol, 1.0 + tol);
                     for &ei in &edge_indices {
                         if let Some(syn) = self.topology.synapse_mut(ei) {
                             if syn.weight > 0.0 {
@@ -1725,6 +1727,10 @@ impl System {
                         let target = 0.2 + (1.0 - normalized_imp) * 0.8;
                         m.plasticity_rate += anchoring_rate * (target - m.plasticity_rate);
                         m.plasticity_rate = m.plasticity_rate.clamp(0.1, 2.5);
+                        // Dampen noise for important morphons — anchors produce stable output.
+                        let noise_target = crate::types::intrinsic_noise_for(m.cell_type) * target;
+                        m.intrinsic_noise += anchoring_rate * (noise_target - m.intrinsic_noise);
+                        m.intrinsic_noise = m.intrinsic_noise.clamp(0.0, 0.2);
                     }
                 }
             }

@@ -250,6 +250,18 @@ pub fn default_receptor_sensitivity(cell_type: CellType) -> HashMap<ModulatorTyp
     .collect()
 }
 
+/// Default intrinsic noise amplitude for a cell type.
+/// Motor morphons get zero noise (output must be deterministic).
+/// Associative morphons get reduced noise (readout stability).
+/// Sensory/Stem/Modulatory get full noise (exploration).
+pub fn intrinsic_noise_for(cell_type: CellType) -> f64 {
+    match cell_type {
+        CellType::Motor => 0.0,
+        CellType::Associative => 0.08,
+        _ => 0.1,
+    }
+}
+
 /// Position in N-dimensional hyperbolic information space (Poincaré ball model).
 ///
 /// The Poincaré ball maps the entire hyperbolic space into the unit ball.
