@@ -57,6 +57,10 @@ mod bindings {
                     ..dev_config
                 },
                 field: FieldConfig { enabled: true, ..Default::default() },
+                endoquilibrium: crate::endoquilibrium::EndoConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
                 ..Default::default()
             };
 
@@ -161,6 +165,48 @@ mod bindings {
         /// Train analog readout weights using delta rule.
         pub fn train_readout(&mut self, correct_index: usize, learning_rate: f64) {
             self.inner.train_readout(correct_index, learning_rate);
+        }
+
+        /// Supervised teaching signal for classification tasks.
+        pub fn teach_supervised(&mut self, correct_index: usize, learning_rate: f64) {
+            self.inner.teach_supervised(correct_index, learning_rate);
+        }
+
+        /// Report task performance to the endo predictor.
+        /// This drives developmental stage detection (Proliferating → Mature → Stressed).
+        pub fn report_performance(&mut self, performance: f64) {
+            self.inner.report_performance(performance);
+        }
+
+        /// Signal end of an episode (triggers consolidation).
+        pub fn report_episode_end(&mut self, episode_steps: f64) {
+            self.inner.report_episode_end(episode_steps);
+        }
+
+        /// Reset all morphon potentials to zero (useful between trials).
+        pub fn reset_voltages(&mut self) {
+            self.inner.reset_voltages();
+        }
+
+        /// Trigger a dream cycle — offline replay and consolidation.
+        pub fn trigger_dream(&mut self) {
+            self.inner.trigger_dream();
+        }
+
+        /// Run N steps with the same input, return final output.
+        pub fn process_steps(&mut self, input: &[f64], n: usize) -> Vec<f64> {
+            self.inner.process_steps(input, n)
+        }
+
+        /// Get the current critic value estimate.
+        pub fn critic_value(&self) -> f64 {
+            self.inner.critic_value()
+        }
+
+        /// Compute TD error from reward and inject as modulation.
+        /// Returns the TD error value.
+        pub fn inject_td_error(&mut self, reward: f64, gamma: f64) -> f64 {
+            self.inner.inject_td_error(reward, gamma)
         }
 
         /// Get system statistics as a JSON string.
@@ -312,6 +358,43 @@ mod bindings {
                 },
                 "avg_skepticism": skepticism_sum / n_clusters,
                 "total_clusters": self.inner.clusters.len(),
+            })
+            .to_string()
+        }
+
+        /// Get Endoquilibrium diagnostics as a JSON string.
+        /// Includes developmental stage, channel gains, health score,
+        /// vital signs, and active interventions.
+        pub fn endo_json(&self) -> String {
+            let endo = &self.inner.endo;
+            let diag = &endo.last_diag;
+            let ch = &diag.channels;
+
+            let interventions: Vec<serde_json::Value> = diag.interventions.iter().map(|iv| {
+                serde_json::json!({
+                    "rule": iv.rule,
+                    "vital": iv.vital,
+                    "actual": iv.actual,
+                    "setpoint": iv.setpoint,
+                    "lever": iv.lever,
+                    "adjustment": iv.adjustment,
+                })
+            }).collect();
+
+            serde_json::json!({
+                "enabled": endo.config.enabled,
+                "stage": format!("{:?}", diag.stage),
+                "health_score": diag.health_score,
+                "channels": {
+                    "reward_gain": ch.reward_gain,
+                    "novelty_gain": ch.novelty_gain,
+                    "arousal_gain": ch.arousal_gain,
+                    "homeostasis_gain": ch.homeostasis_gain,
+                    "threshold_bias": ch.threshold_bias,
+                    "plasticity_mult": ch.plasticity_mult,
+                    "consolidation_gain": ch.consolidation_gain,
+                },
+                "interventions": interventions,
             })
             .to_string()
         }

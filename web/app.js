@@ -135,6 +135,107 @@ let mouseClientX = 0, mouseClientY = 0;
 // Track last user input time to avoid noise overwrite
 let lastUserInputTime = 0;
 
+// Reusable Three.js objects for learning pulses (avoid per-frame allocations)
+const _pulseDummy = new THREE.Object3D();
+const _pulseColor = new THREE.Color(0.98, 0.75, 0.14);
+// Reusable vectors for edge hover raycast
+const _edgeVecA = new THREE.Vector3();
+const _edgeVecB = new THREE.Vector3();
+
+// Cached DOM element references — populated once in initDOMCache()
+const dom = {};
+function initDOMCache() {
+  // Header
+  dom.hStep = document.getElementById('h-step');
+  dom.hFired = document.getElementById('h-fired');
+  dom.hUptime = document.getElementById('h-uptime');
+  // Left panel stats
+  dom.sMorphons = document.getElementById('s-morphons');
+  dom.sSynapses = document.getElementById('s-synapses');
+  dom.sClusters = document.getElementById('s-clusters');
+  dom.sGen = document.getElementById('s-gen');
+  dom.sFiring = document.getElementById('s-firing');
+  dom.sFired = document.getElementById('s-fired');
+  dom.sEnergy = document.getElementById('s-energy');
+  dom.sError = document.getElementById('s-error');
+  dom.sFieldPeMax = document.getElementById('s-field-pe-max');
+  dom.sFieldPeMean = document.getElementById('s-field-pe-mean');
+  dom.sWmem = document.getElementById('s-wmem');
+  dom.sBorn = document.getElementById('s-born');
+  dom.sDied = document.getElementById('s-died');
+  dom.sTransdiff = document.getElementById('s-transdiff');
+  // Cell type counts
+  dom.ctStem = document.getElementById('ct-Stem');
+  dom.ctSensory = document.getElementById('ct-Sensory');
+  dom.ctAssociative = document.getElementById('ct-Associative');
+  dom.ctMotor = document.getElementById('ct-Motor');
+  dom.ctModulatory = document.getElementById('ct-Modulatory');
+  dom.ctFused = document.getElementById('ct-Fused');
+  dom.ctMap = { Stem: null, Sensory: null, Associative: null, Motor: null, Modulatory: null, Fused: null };
+  for (const t of Object.keys(dom.ctMap)) dom.ctMap[t] = document.getElementById('ct-' + t);
+  // Neuromodulation bars
+  dom.modReward = document.getElementById('mod-reward');
+  dom.modRewardV = document.getElementById('mod-reward-v');
+  dom.modNovelty = document.getElementById('mod-novelty');
+  dom.modNoveltyV = document.getElementById('mod-novelty-v');
+  dom.modArousal = document.getElementById('mod-arousal');
+  dom.modArousalV = document.getElementById('mod-arousal-v');
+  dom.modHomeo = document.getElementById('mod-homeo');
+  dom.modHomeoV = document.getElementById('mod-homeo-v');
+  // Endo panel
+  dom.endoStage = document.getElementById('endo-stage');
+  dom.endoHealthBar = document.getElementById('endo-health-bar');
+  dom.endoHealthV = document.getElementById('endo-health-v');
+  dom.endoChannels = document.getElementById('endo-channels');
+  dom.endoInterventions = document.getElementById('endo-interventions');
+  dom.endoRg = document.getElementById('endo-rg');
+  dom.endoNg = document.getElementById('endo-ng');
+  dom.endoAg = document.getElementById('endo-ag');
+  dom.endoHg = document.getElementById('endo-hg');
+  dom.endoTb = document.getElementById('endo-tb');
+  dom.endoPm = document.getElementById('endo-pm');
+  dom.endoCg = document.getElementById('endo-cg');
+  // Governance
+  dom.sJustified = document.getElementById('s-justified');
+  dom.sConsolidated = document.getElementById('s-consolidated');
+  dom.sSkepticism = document.getElementById('s-skepticism');
+  dom.sEpistemic = document.getElementById('s-epistemic');
+  // Detail panel
+  dom.detailPanel = document.getElementById('detail-panel');
+  dom.dId = document.getElementById('d-id');
+  dom.dType = document.getElementById('d-type');
+  dom.dDot = document.getElementById('d-dot');
+  dom.dGen = document.getElementById('d-gen');
+  dom.dAge = document.getElementById('d-age');
+  dom.dEnergy = document.getElementById('d-energy');
+  dom.dEnergyBar = document.getElementById('d-energy-bar');
+  dom.dPotential = document.getElementById('d-potential');
+  dom.dThreshold = document.getElementById('d-threshold');
+  dom.dDiff = document.getElementById('d-diff');
+  dom.dDiffBar = document.getElementById('d-diff-bar');
+  dom.dError = document.getElementById('d-error');
+  dom.dDesire = document.getElementById('d-desire');
+  dom.dFired = document.getElementById('d-fired');
+  dom.dConns = document.getElementById('d-conns');
+  dom.dEpistemicRow = document.getElementById('d-epistemic-row');
+  dom.dSkepticismRow = document.getElementById('d-skepticism-row');
+  dom.dJustifiedRow = document.getElementById('d-justified-row');
+  dom.dEpistemic = document.getElementById('d-epistemic');
+  dom.dSkepticism = document.getElementById('d-skepticism');
+  dom.dJustified = document.getElementById('d-justified');
+  // Motor output
+  dom.motorOutput = document.getElementById('motor-output');
+  // Tooltip
+  dom.tooltip = document.getElementById('tooltip');
+  // Cluster list
+  dom.clusterList = document.getElementById('cluster-list');
+}
+
+// Cached parsed JSON — refreshed once per update cycle
+let cachedMod = null;
+let cachedEndo = null;
+let cachedGov = null;
+
 // ============================================================
 // CUSTOM SHADERS
 // ============================================================
@@ -449,14 +550,13 @@ function updateRaycast() {
   hoveredNodeId = closest !== null ? nodeData[closest]?.id ?? null : null;
   renderer.domElement.style.cursor = hoveredNodeId !== null ? 'pointer' : 'default';
 
-  const tooltip = document.getElementById('tooltip');
   if (hoveredNodeId !== null) {
     const node = nodeData[nodeMap.get(hoveredNodeId)]; // O(1) lookup via nodeMap
     if (node) {
-      tooltip.style.display = 'block';
+      dom.tooltip.style.display = 'block';
       // Position at cursor — avoids 3D→2D projection drift
-      tooltip.style.left = (mouseClientX + 16) + 'px';
-      tooltip.style.top = (mouseClientY - 10) + 'px';
+      dom.tooltip.style.left = (mouseClientX + 16) + 'px';
+      dom.tooltip.style.top = (mouseClientY - 10) + 'px';
       const ct = node.cell_type.toLowerCase();
       const dotColor = `var(--${ct}, #888)`;
       const energyPct = Math.min(node.energy / 2, 1) * 100;
@@ -468,7 +568,7 @@ function updateRaycast() {
       const fusedTag = node.fused
         ? ' <span class="tip-tag" style="background:rgba(244,114,182,0.2);color:#f472b6">FUSED</span>'
         : '';
-      tooltip.innerHTML = `
+      dom.tooltip.innerHTML = `
         <div class="tip-header">
           <span class="tip-dot" style="background:${dotColor}${node.fired ? ';box-shadow:0 0 6px ' + dotColor : ''}"></span>
           <span class="tip-id">#${node.id}${fusedTag}</span>
@@ -508,7 +608,7 @@ function updateRaycast() {
       showEdgeTooltip(edgeIdx);
     } else {
       hoveredEdgeIdx = null;
-      tooltip.style.display = 'none';
+      dom.tooltip.style.display = 'none';
     }
   }
 }
@@ -883,55 +983,121 @@ function updateScene() {
 // ============================================================
 function updatePanels() {
   if (!system) return;
-  // Cache stats — used by both updatePanels and detectEvents
+  // Cache all parsed JSON for this update cycle
   cachedStats = JSON.parse(system.inspect());
-  const stats = cachedStats;
-  const mod = JSON.parse(system.modulation_json());
+  cachedMod = JSON.parse(system.modulation_json());
+  if (system.endo_json) cachedEndo = JSON.parse(system.endo_json());
+  if (system.governance_json) cachedGov = JSON.parse(system.governance_json());
 
-  document.getElementById('h-step').textContent = stats.step_count;
-  document.getElementById('h-fired').textContent = frameFired.size;
+  const stats = cachedStats;
+  const mod = cachedMod;
+
+  dom.hStep.textContent = stats.step_count;
+  dom.hFired.textContent = frameFired.size;
   // Uptime since last reset
   const uptimeSec = Math.floor((performance.now() - systemStartTime) / 1000);
   const m = Math.floor(uptimeSec / 60), s = uptimeSec % 60;
   const h = Math.floor(m / 60);
-  document.getElementById('h-uptime').textContent = h > 0
+  dom.hUptime.textContent = h > 0
     ? `${h}:${String(m % 60).padStart(2, '0')}:${String(s).padStart(2, '0')}`
     : `${m}:${String(s).padStart(2, '0')}`;
 
-  document.getElementById('s-morphons').textContent = stats.total_morphons;
-  document.getElementById('s-synapses').textContent = stats.total_synapses;
-  document.getElementById('s-clusters').textContent = stats.fused_clusters;
-  document.getElementById('s-gen').textContent = stats.max_generation;
-  document.getElementById('s-firing').textContent = (stats.firing_rate * 100).toFixed(1) + '%';
-  document.getElementById('s-fired').textContent = frameFired.size;
-  document.getElementById('s-energy').textContent = stats.avg_energy.toFixed(2);
-  document.getElementById('s-error').textContent = stats.avg_prediction_error.toFixed(3);
-  document.getElementById('s-field-pe-max').textContent = (stats.field_pe_max || 0).toFixed(3);
-  document.getElementById('s-field-pe-mean').textContent = (stats.field_pe_mean || 0).toFixed(3);
-  document.getElementById('s-wmem').textContent = stats.working_memory_items;
-  document.getElementById('s-born').textContent = stats.total_born || 0;
-  document.getElementById('s-died').textContent = stats.total_died || 0;
-  document.getElementById('s-transdiff').textContent = stats.total_transdifferentiations || 0;
+  dom.sMorphons.textContent = stats.total_morphons;
+  dom.sSynapses.textContent = stats.total_synapses;
+  dom.sClusters.textContent = stats.fused_clusters;
+  dom.sGen.textContent = stats.max_generation;
+  dom.sFiring.textContent = (stats.firing_rate * 100).toFixed(1) + '%';
+  dom.sFired.textContent = frameFired.size;
+  dom.sEnergy.textContent = stats.avg_energy.toFixed(2);
+  dom.sError.textContent = stats.avg_prediction_error.toFixed(3);
+  dom.sFieldPeMax.textContent = (stats.field_pe_max || 0).toFixed(3);
+  dom.sFieldPeMean.textContent = (stats.field_pe_mean || 0).toFixed(3);
+  dom.sWmem.textContent = stats.working_memory_items;
+  dom.sBorn.textContent = stats.total_born || 0;
+  dom.sDied.textContent = stats.total_died || 0;
+  dom.sTransdiff.textContent = stats.total_transdifferentiations || 0;
 
   const counts = stats.differentiation_map || {};
   for (const type of ['Stem', 'Sensory', 'Associative', 'Motor', 'Modulatory', 'Fused']) {
-    const el = document.getElementById('ct-' + type);
+    const el = dom.ctMap[type];
     if (el) el.textContent = counts[type] || 0;
   }
 
-  setModBar('mod-reward', 'mod-reward-v', mod.reward);
-  setModBar('mod-novelty', 'mod-novelty-v', mod.novelty);
-  setModBar('mod-arousal', 'mod-arousal-v', mod.arousal);
-  setModBar('mod-homeo', 'mod-homeo-v', mod.homeostasis);
+  setModBarEl(dom.modReward, dom.modRewardV, mod.reward);
+  setModBarEl(dom.modNovelty, dom.modNoveltyV, mod.novelty);
+  setModBarEl(dom.modArousal, dom.modArousalV, mod.arousal);
+  setModBarEl(dom.modHomeo, dom.modHomeoV, mod.homeostasis);
+
+  // Endoquilibrium panel
+  if (cachedEndo) {
+    const endo = cachedEndo;
+    if (!endo.enabled) {
+      dom.endoStage.textContent = 'OFF';
+      dom.endoStage.className = 'endo-stage-badge';
+      dom.endoHealthBar.style.width = '0%';
+      dom.endoHealthV.textContent = '---';
+      dom.endoChannels.style.opacity = '0.3';
+      dom.endoInterventions.innerHTML =
+        '<div class="endo-disabled-msg">Endo disabled in config</div>';
+    } else {
+      const stage = endo.stage.toLowerCase();
+      dom.endoStage.textContent = endo.stage;
+      dom.endoStage.className = 'endo-stage-badge ' + stage;
+
+      const hp = Math.max(0, Math.min(1, endo.health_score));
+      dom.endoHealthBar.style.width = (hp * 100) + '%';
+      const hpHue = hp * 120;
+      dom.endoHealthBar.style.background = `hsl(${hpHue}, 70%, 50%)`;
+      dom.endoHealthV.textContent = hp.toFixed(2);
+      dom.endoHealthV.style.color = hp < 0.5 ? '#ef4444' : hp < 0.8 ? '#fbbf24' : 'var(--text-dim)';
+
+      dom.endoChannels.style.opacity = '1';
+      const ch = endo.channels;
+      dom.endoRg.textContent = ch.reward_gain.toFixed(2);
+      dom.endoNg.textContent = ch.novelty_gain.toFixed(2);
+      dom.endoAg.textContent = ch.arousal_gain.toFixed(2);
+      dom.endoHg.textContent = ch.homeostasis_gain.toFixed(2);
+      dom.endoTb.textContent = ch.threshold_bias.toFixed(3);
+      dom.endoPm.textContent = ch.plasticity_mult.toFixed(2);
+      dom.endoCg.textContent = ch.consolidation_gain.toFixed(2);
+
+      // Color deviant channels
+      const colorVal = (el, val, neutral) => {
+        const dev = Math.abs(val - neutral);
+        if (dev > 0.3) el.style.color = val > neutral ? '#fbbf24' : '#508cff';
+        else el.style.color = 'var(--text-bright)';
+      };
+      colorVal(dom.endoRg, ch.reward_gain, 1.0);
+      colorVal(dom.endoNg, ch.novelty_gain, 1.0);
+      colorVal(dom.endoAg, ch.arousal_gain, 1.0);
+      colorVal(dom.endoHg, ch.homeostasis_gain, 1.0);
+      colorVal(dom.endoPm, ch.plasticity_mult, 1.0);
+      colorVal(dom.endoCg, ch.consolidation_gain, 1.0);
+      if (Math.abs(ch.threshold_bias) > 0.05) {
+        dom.endoTb.style.color = ch.threshold_bias > 0 ? '#fbbf24' : '#508cff';
+      } else {
+        dom.endoTb.style.color = 'var(--text-bright)';
+      }
+
+      // Active interventions
+      if (endo.interventions.length === 0) {
+        dom.endoInterventions.innerHTML = '';
+      } else {
+        dom.endoInterventions.innerHTML = endo.interventions.map(iv =>
+          `<div class="endo-intervention" title="${iv.vital}: ${iv.actual.toFixed(3)} → ${iv.setpoint.toFixed(3)}">${iv.rule} → ${iv.lever}</div>`
+        ).join('');
+      }
+    }
+  }
 
   // V3: Governance panel
-  if (system.governance_json) {
-    const gov = JSON.parse(system.governance_json());
-    document.getElementById('s-justified').textContent = (gov.justified_fraction * 100).toFixed(0) + '%';
-    document.getElementById('s-consolidated').textContent = (gov.consolidated_fraction * 100).toFixed(0) + '%';
-    document.getElementById('s-skepticism').textContent = gov.avg_skepticism.toFixed(2);
+  if (cachedGov) {
+    const gov = cachedGov;
+    dom.sJustified.textContent = (gov.justified_fraction * 100).toFixed(0) + '%';
+    dom.sConsolidated.textContent = (gov.consolidated_fraction * 100).toFixed(0) + '%';
+    dom.sSkepticism.textContent = gov.avg_skepticism.toFixed(2);
     const cs = gov.cluster_states;
-    document.getElementById('s-epistemic').textContent =
+    dom.sEpistemic.textContent =
       `H${cs.hypothesis} S${cs.supported} O${cs.outdated} C${cs.contested}`;
 
     justifiedHistory.push(gov.justified_fraction);
@@ -970,7 +1136,7 @@ function updatePanels() {
 function updateMotorOutput() {
   if (!system) return;
   const output = system.read_output();
-  const container = document.getElementById('motor-output');
+  const container = dom.motorOutput;
   const count = output.length;
 
   // Build/update bars (reuse DOM if count matches)
@@ -996,6 +1162,10 @@ function updateMotorOutput() {
 function setModBar(barId, valId, value) {
   document.getElementById(barId).style.width = (value * 100) + '%';
   document.getElementById(valId).textContent = value.toFixed(2);
+}
+function setModBarEl(barEl, valEl, value) {
+  barEl.style.width = (value * 100) + '%';
+  valEl.textContent = value.toFixed(2);
 }
 
 function drawSparkline(canvasId, data, color) {
@@ -1061,26 +1231,25 @@ function drawSparkline(canvasId, data, color) {
 }
 
 function updateDetailPanel() {
-  const panel = document.getElementById('detail-panel');
-  if (selectedNodeId === null) { panel.classList.remove('visible'); return; }
+  if (selectedNodeId === null) { dom.detailPanel.classList.remove('visible'); return; }
   const node = nodeData[nodeMap.get(selectedNodeId)];
-  if (!node) { panel.classList.remove('visible'); selectedNodeId = null; return; }
+  if (!node) { dom.detailPanel.classList.remove('visible'); selectedNodeId = null; return; }
 
-  panel.classList.add('visible');
-  document.getElementById('d-id').textContent = '#' + node.id;
-  document.getElementById('d-type').textContent = node.cell_type;
-  document.getElementById('d-dot').style.background = CELL_COLORS[node.cell_type]?.getStyle() || '#888';
-  document.getElementById('d-gen').textContent = node.generation;
-  document.getElementById('d-age').textContent = node.age;
-  document.getElementById('d-energy').textContent = node.energy.toFixed(2);
-  document.getElementById('d-energy-bar').style.width = (node.energy * 100) + '%';
-  document.getElementById('d-potential').textContent = node.potential.toFixed(3);
-  document.getElementById('d-threshold').textContent = node.threshold.toFixed(3);
-  document.getElementById('d-diff').textContent = node.differentiation.toFixed(2);
-  document.getElementById('d-diff-bar').style.width = (node.differentiation * 100) + '%';
-  document.getElementById('d-error').textContent = node.prediction_error.toFixed(3);
-  document.getElementById('d-desire').textContent = node.desire.toFixed(3);
-  document.getElementById('d-fired').textContent = node.fired ? 'YES' : '-';
+  dom.detailPanel.classList.add('visible');
+  dom.dId.textContent = '#' + node.id;
+  dom.dType.textContent = node.cell_type;
+  dom.dDot.style.background = CELL_COLORS[node.cell_type]?.getStyle() || '#888';
+  dom.dGen.textContent = node.generation;
+  dom.dAge.textContent = node.age;
+  dom.dEnergy.textContent = node.energy.toFixed(2);
+  dom.dEnergyBar.style.width = (node.energy * 100) + '%';
+  dom.dPotential.textContent = node.potential.toFixed(3);
+  dom.dThreshold.textContent = node.threshold.toFixed(3);
+  dom.dDiff.textContent = node.differentiation.toFixed(2);
+  dom.dDiffBar.style.width = (node.differentiation * 100) + '%';
+  dom.dError.textContent = node.prediction_error.toFixed(3);
+  dom.dDesire.textContent = node.desire.toFixed(3);
+  dom.dFired.textContent = node.fired ? 'YES' : '-';
 
   let inCount = 0, outCount = 0, justifiedCount = 0, reinforcedCount = 0;
   for (const e of edgeData) {
@@ -1091,25 +1260,22 @@ function updateDetailPanel() {
     }
     if (e.from === selectedNodeId) outCount++;
   }
-  document.getElementById('d-conns').textContent = `${inCount}\u2193 ${outCount}\u2191`;
+  dom.dConns.textContent = `${inCount}\u2193 ${outCount}\u2191`;
 
   // V3: Epistemic state for clustered morphons
-  const epRow = document.getElementById('d-epistemic-row');
-  const skRow = document.getElementById('d-skepticism-row');
-  const jfRow = document.getElementById('d-justified-row');
   if (node.fused && node.epistemic_state !== 'none') {
-    epRow.style.display = '';
-    skRow.style.display = '';
-    jfRow.style.display = '';
-    document.getElementById('d-epistemic').textContent = node.epistemic_state;
-    document.getElementById('d-skepticism').textContent = node.skepticism.toFixed(2);
-    document.getElementById('d-justified').textContent = `${justifiedCount}/${inCount} in, ${reinforcedCount} reinforced`;
+    dom.dEpistemicRow.style.display = '';
+    dom.dSkepticismRow.style.display = '';
+    dom.dJustifiedRow.style.display = '';
+    dom.dEpistemic.textContent = node.epistemic_state;
+    dom.dSkepticism.textContent = node.skepticism.toFixed(2);
+    dom.dJustified.textContent = `${justifiedCount}/${inCount} in, ${reinforcedCount} reinforced`;
   } else {
-    epRow.style.display = 'none';
-    skRow.style.display = 'none';
-    jfRow.style.display = inCount > 0 ? '' : 'none';
+    dom.dEpistemicRow.style.display = 'none';
+    dom.dSkepticismRow.style.display = 'none';
+    dom.dJustifiedRow.style.display = inCount > 0 ? '' : 'none';
     if (inCount > 0) {
-      document.getElementById('d-justified').textContent = `${justifiedCount}/${inCount} justified`;
+      dom.dJustified.textContent = `${justifiedCount}/${inCount} justified`;
     }
   }
 }
@@ -1138,8 +1304,8 @@ function detectEvents() {
   lastSynapseCount = sc;
 
   // V3: Log epistemic state transitions
-  if (system.governance_json) {
-    const gov = JSON.parse(system.governance_json());
+  if (cachedGov) {
+    const gov = cachedGov;
     const cs = gov.cluster_states;
     const key = `H${cs.hypothesis}S${cs.supported}O${cs.outdated}C${cs.contested}`;
     if (lastEpistemicKey && key !== lastEpistemicKey) {
@@ -1275,6 +1441,13 @@ function setupControls() {
   });
   document.getElementById('btn-arousal').addEventListener('click', () => {
     if (system) { system.inject_arousal(0.9); addEvent('', 'Arousal injected (0.9)', 'event-death'); }
+  });
+
+  document.getElementById('btn-dream').addEventListener('click', () => {
+    if (system) { system.trigger_dream(); addEvent('', 'Dream cycle triggered', 'event-other'); }
+  });
+  document.getElementById('btn-reset-v').addEventListener('click', () => {
+    if (system) { system.reset_voltages(); addEvent('', 'Voltages reset', 'event-other'); }
   });
 
   document.getElementById('feed-burst').addEventListener('click', () => { lastUserInputTime = performance.now(); makeInput('burst'); });
@@ -1991,10 +2164,9 @@ function updateGraph(stats) {
   graphData.died.push(died - lastDied);
   graphData.fieldPe.push(stats.field_pe_mean || 0);
   // V3: push governance data
-  if (system && system.governance_json) {
-    const gov = JSON.parse(system.governance_json());
-    graphData.justifiedPct.push(gov.justified_fraction);
-    graphData.skepticism.push(gov.avg_skepticism);
+  if (cachedGov) {
+    graphData.justifiedPct.push(cachedGov.justified_fraction);
+    graphData.skepticism.push(cachedGov.avg_skepticism);
   } else {
     graphData.justifiedPct.push(0);
     graphData.skepticism.push(0);
@@ -2072,7 +2244,16 @@ function animate() {
 
     updateScene();
     drawRasterPlot();
-    if (frameCount % 3 === 0) { updatePanels(); detectEvents(); }
+    if (frameCount % 3 === 0) {
+      updatePanels(); detectEvents();
+      // Feed performance to endo so stage detection works.
+      // Use firing rate as a proxy metric — in the demo there's no explicit task,
+      // but endo needs a reward signal to detect stages.
+      if (system.report_performance && cachedStats) {
+        const perf = cachedStats.firing_rate * 100; // 0-100 scale
+        system.report_performance(perf);
+      }
+    }
   }
 
   updateSpikes();
@@ -2257,19 +2438,15 @@ function findClosestEdge(mouseX, mouseY) {
     const ti = nodeMap.get(e.to);
     if (fi === undefined || ti === undefined) continue;
 
-    const fp = new THREE.Vector3(
-      nodePositions[fi*3], nodePositions[fi*3+1], nodePositions[fi*3+2]
-    ).project(camera);
-    const tp = new THREE.Vector3(
-      nodePositions[ti*3], nodePositions[ti*3+1], nodePositions[ti*3+2]
-    ).project(camera);
+    _edgeVecA.set(nodePositions[fi*3], nodePositions[fi*3+1], nodePositions[fi*3+2]).project(camera);
+    _edgeVecB.set(nodePositions[ti*3], nodePositions[ti*3+1], nodePositions[ti*3+2]).project(camera);
 
     // Point-to-segment distance in NDC
-    const dx = tp.x - fp.x, dy = tp.y - fp.y;
+    const dx = _edgeVecB.x - _edgeVecA.x, dy = _edgeVecB.y - _edgeVecA.y;
     const lenSq = dx*dx + dy*dy;
     if (lenSq < 0.0001) continue;
-    const t = Math.max(0, Math.min(1, ((ndcX-fp.x)*dx + (ndcY-fp.y)*dy) / lenSq));
-    const px = fp.x + t*dx, py = fp.y + t*dy;
+    const t = Math.max(0, Math.min(1, ((ndcX-_edgeVecA.x)*dx + (ndcY-_edgeVecA.y)*dy) / lenSq));
+    const px = _edgeVecA.x + t*dx, py = _edgeVecA.y + t*dy;
     const distSq = (ndcX-px)*(ndcX-px) + (ndcY-py)*(ndcY-py);
 
     // Convert to approximate pixels (NDC range is 2, screen is ~1000px)
@@ -2283,13 +2460,12 @@ function findClosestEdge(mouseX, mouseY) {
 }
 
 function showEdgeTooltip(edgeIdx) {
-  const tooltip = document.getElementById('tooltip');
   const e = edgeData[edgeIdx];
-  if (!e) { tooltip.style.display = 'none'; return; }
+  if (!e) { dom.tooltip.style.display = 'none'; return; }
 
-  tooltip.style.display = 'block';
-  tooltip.style.left = (mouseClientX + 16) + 'px';
-  tooltip.style.top = (mouseClientY - 10) + 'px';
+  dom.tooltip.style.display = 'block';
+  dom.tooltip.style.left = (mouseClientX + 16) + 'px';
+  dom.tooltip.style.top = (mouseClientY - 10) + 'px';
 
   const wPct = Math.min(Math.abs(e.weight) / 2, 1) * 100;
   const wColor = e.weight >= 0 ? 'var(--accent)' : '#ff4466';
@@ -2297,7 +2473,7 @@ function showEdgeTooltip(edgeIdx) {
   const causeColor = PROVENANCE_COLORS[cause] || PROVENANCE_COLORS.none;
   const causeHex = `rgb(${Math.round(causeColor.r*255)},${Math.round(causeColor.g*255)},${Math.round(causeColor.b*255)})`;
 
-  tooltip.innerHTML = `
+  dom.tooltip.innerHTML = `
     <div class="tip-header">
       <span class="tip-id">${e.from} &rarr; ${e.to}</span>
       <span class="tip-type" style="font-size:9px">${e.consolidated ? 'CONSOLIDATED' : 'plastic'}</span>
@@ -2364,14 +2540,13 @@ function updateLearningPulses() {
     const fade = t < 0.7 ? 1.0 : (1.0 - t) * 3.3;
     const count = spikesMesh.count;
     if (count < MAX_SPIKES) {
-      const dummy = new THREE.Object3D();
-      dummy.position.set(x, y, z);
-      dummy.scale.setScalar(0.055); // larger than spikes
-      dummy.updateMatrix();
-      spikesMesh.setMatrixAt(count, dummy.matrix);
-      const goldColor = new THREE.Color(0.98, 0.75, 0.14);
-      goldColor.multiplyScalar(2.0 * fade);
-      spikesMesh.setColorAt(count, goldColor);
+      _pulseDummy.position.set(x, y, z);
+      _pulseDummy.scale.setScalar(0.055); // larger than spikes
+      _pulseDummy.updateMatrix();
+      spikesMesh.setMatrixAt(count, _pulseDummy.matrix);
+      _pulseColor.setRGB(0.98, 0.75, 0.14);
+      _pulseColor.multiplyScalar(2.0 * fade);
+      spikesMesh.setColorAt(count, _pulseColor);
       spikesMesh.count = count + 1;
     }
   }
@@ -2381,12 +2556,10 @@ function updateLearningPulses() {
 // V3: CLUSTER LIST PANEL
 // ============================================================
 function updateClusterList() {
-  const container = document.getElementById('cluster-list');
-  if (!container || !system || !system.governance_json) return;
+  if (!dom.clusterList || !cachedGov) return;
 
-  const gov = JSON.parse(system.governance_json());
-  if (gov.total_clusters === 0) {
-    container.innerHTML = '<div style="color:var(--text-dim);font-size:9px;padding:4px">No clusters</div>';
+  if (cachedGov.total_clusters === 0) {
+    dom.clusterList.innerHTML = '<div style="color:var(--text-dim);font-size:9px;padding:4px">No clusters</div>';
     return;
   }
 
@@ -2422,10 +2595,10 @@ function updateClusterList() {
       <span style="color:var(--text-dim);margin-left:auto">${c.skepticism.toFixed(2)}</span>
     </div>`;
   }
-  container.innerHTML = html;
+  dom.clusterList.innerHTML = html;
 
   // Click handler — zoom to cluster
-  container.querySelectorAll('.cluster-row').forEach(row => {
+  dom.clusterList.querySelectorAll('.cluster-row').forEach(row => {
     row.addEventListener('click', () => {
       const cid = parseInt(row.dataset.cid);
       const c = clusters.get(cid);
@@ -2585,6 +2758,7 @@ function drawLineageTree() {
 // INIT
 // ============================================================
 async function main() {
+  initDOMCache();
   initScene();
   setupControls();
   initRaster();
