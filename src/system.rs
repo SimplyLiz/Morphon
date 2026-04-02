@@ -2056,6 +2056,10 @@ impl System {
         let max_synapses = self.config.dream.max_dream_synapses;
 
         if can_consolidate {
+            // Scale dream consolidation by Endo consolidation_gain — same PRP model
+            // as waking consolidation. Mature (cg=0.5) → selective dreaming.
+            // Differentiating (cg=2.0) → aggressive replay consolidation.
+            let cg = self.endo.channels.consolidation_gain as f64;
             let candidates: Vec<petgraph::graph::EdgeIndex> = self.topology.graph
                 .edge_indices()
                 .filter(|&ei| {
@@ -2068,13 +2072,11 @@ impl System {
 
             for ei in candidates {
                 if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
-                    // Increase consolidation proportional to tag strength
-                    let delta_level = dream_lr * syn.tag_strength.min(1.0) * 0.1;
+                    let delta_level = dream_lr * syn.tag_strength.min(1.0) * 0.1 * cg;
                     syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
                     if syn.consolidation_level > 0.5 {
                         syn.consolidated = true;
                     }
-                    // Partially consume tag during dreaming
                     syn.tag *= 0.7;
                     syn.tag_strength *= 0.7;
                 }

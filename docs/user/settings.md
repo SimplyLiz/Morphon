@@ -217,6 +217,25 @@ When enabled, Endoquilibrium monitors firing rates, eligibility density, weight 
 | `homeostasis_gain` | [0.3, 2.0] | Multiplies homeostasis signal |
 | `threshold_bias` | [-0.3, 0.3] | Added to morphon firing threshold |
 | `plasticity_mult` | [0.1, 5.0] | Scales all weight update magnitudes |
+| `consolidation_gain` | [0.2, 3.0] | Scales tag-and-capture consolidation rate. Biology: PRP availability |
+
+### Consolidation Gain
+
+`consolidation_gain` (cg) controls how aggressively tagged synapses get consolidated. It modulates three consolidation paths consistently:
+
+- **DFA capture** (`train_readout`): effective capture threshold = `capture_threshold / cg`. Higher cg = lower bar for capture.
+- **Episode-end consolidation** (`report_episode_end`): `delta_level *= cg`. Higher cg = faster consolidation_level increase.
+- **Dream consolidation** (`dream_cycle`): `delta_level *= cg`. Same PRP model during offline replay.
+
+Endo sets cg based on developmental stage (detected from reward trend):
+
+| Stage | cg | plasticity_mult | Rationale |
+|---|---|---|---|
+| Proliferating | 2.5 | 1.5 | Learn fast, capture everything — nothing to protect |
+| Differentiating | 2.0 | 1.2 | Refining, still capturing aggressively |
+| Consolidating | 1.0 | 0.8 | Slowing down, normal selectivity |
+| Mature | 0.5 | 0.5 | Protect what works — very selective |
+| Stressed | 0.5 | 1.5 | Explore alternatives, but don't lock in bad patterns |
 
 **Caution**: Endo amplifies learning signals based on vital signs. On tasks with fixed topology and already-tuned `alpha_*` values, this can cause over-amplification. If learning is unstable with Endo enabled, either reduce `alpha_reward` or disable Endo.
 
@@ -238,6 +257,7 @@ Some settings can be influenced by the MI system itself at runtime:
 | Setting | Controller | Mechanism |
 |---|---|---|
 | Channel gains (reward/novelty/arousal/homeostasis) | Endoquilibrium | Six regulation rules based on vital signs |
+| Consolidation gain (capture aggressiveness) | Endoquilibrium | Stage-dependent: Proliferating=2.5, Mature=0.5 |
 | `plasticity_mult` | Endoquilibrium | Scales all weight updates. Reduced under energy pressure |
 | `threshold_bias` | Endoquilibrium | Raises/lowers global firing threshold |
 | Receptor sensitivity per channel | Sub-morphon plasticity (V2) | Correlation between modulation and PE reduction |
