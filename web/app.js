@@ -229,12 +229,30 @@ function initDOMCache() {
   dom.tooltip = document.getElementById('tooltip');
   // Cluster list
   dom.clusterList = document.getElementById('cluster-list');
+  // Learning pipeline
+  dom.lpSynBar = document.getElementById('lp-syn-bar');
+  dom.lpSynV = document.getElementById('lp-syn-v');
+  dom.lpEligBar = document.getElementById('lp-elig-bar');
+  dom.lpEligV = document.getElementById('lp-elig-v');
+  dom.lpTagBar = document.getElementById('lp-tag-bar');
+  dom.lpTagV = document.getElementById('lp-tag-v');
+  dom.lpCapBar = document.getElementById('lp-cap-bar');
+  dom.lpCapV = document.getElementById('lp-cap-v');
+  dom.lpConBar = document.getElementById('lp-con-bar');
+  dom.lpConV = document.getElementById('lp-con-v');
+  dom.lpJusBar = document.getElementById('lp-jus-bar');
+  dom.lpJusV = document.getElementById('lp-jus-v');
+  dom.weightHistogram = document.getElementById('weight-histogram');
+  dom.whMin = document.getElementById('wh-min');
+  dom.whMax = document.getElementById('wh-max');
+  dom.whStats = document.getElementById('wh-stats');
 }
 
 // Cached parsed JSON — refreshed once per update cycle
 let cachedMod = null;
 let cachedEndo = null;
 let cachedGov = null;
+let cachedLearning = null;
 
 // ============================================================
 // CUSTOM SHADERS
@@ -986,8 +1004,16 @@ function updatePanels() {
   // Cache all parsed JSON for this update cycle
   cachedStats = JSON.parse(system.inspect());
   cachedMod = JSON.parse(system.modulation_json());
-  if (system.endo_json) cachedEndo = JSON.parse(system.endo_json());
+  try {
+    cachedEndo = JSON.parse(system.endo_json());
+  } catch(e) {
+    if (!system._endoWarned) {
+      console.error('endo_json failed:', e.message, '— rebuild WASM and hard-refresh (Cmd+Shift+R)');
+      system._endoWarned = true;
+    }
+  }
   if (system.governance_json) cachedGov = JSON.parse(system.governance_json());
+  try { cachedLearning = JSON.parse(system.learning_json()); } catch(_) {}
 
   const stats = cachedStats;
   const mod = cachedMod;
@@ -1029,6 +1055,10 @@ function updatePanels() {
   setModBarEl(dom.modHomeo, dom.modHomeoV, mod.homeostasis);
 
   // Endoquilibrium panel
+  if (!cachedEndo && dom.endoStage) {
+    dom.endoStage.textContent = 'N/A';
+    dom.endoStage.className = 'endo-stage-badge';
+  }
   if (cachedEndo) {
     const endo = cachedEndo;
     if (!endo.enabled) {
@@ -1128,8 +1158,9 @@ function updatePanels() {
   updateGraph(stats);
   if (selectedNodeId !== null) updateDetailPanel();
 
-  // V3: Cluster list + timeline + lineage
+  // V3: Cluster list + timeline
   updateClusterList();
+  updateLearningPanel();
   recordTimelineSnapshot();
 }
 
@@ -2553,6 +2584,103 @@ function updateLearningPulses() {
 }
 
 // ============================================================
+// LEARNING PIPELINE PANEL
+// ============================================================
+function updateLearningPanel() {
+  if (!cachedLearning || !dom.lpSynBar) return;
+  const lp = cachedLearning;
+  const total = Math.max(lp.total_synapses, 1);
+
+  // Pipeline bars — each as fraction of total synapses
+  dom.lpSynBar.style.width = '100%';
+  dom.lpSynV.textContent = lp.total_synapses;
+
+  const eligPct = (lp.eligible / total * 100);
+  dom.lpEligBar.style.width = eligPct + '%';
+  dom.lpEligV.textContent = lp.eligible;
+
+  const tagPct = (lp.active_tags / total * 100);
+  dom.lpTagBar.style.width = tagPct + '%';
+  dom.lpTagV.textContent = lp.active_tags;
+
+  dom.lpCapBar.style.width = Math.min(lp.total_captures / total * 100, 100) + '%';
+  dom.lpCapV.textContent = lp.total_captures;
+
+  const conPct = (lp.consolidated / total * 100);
+  dom.lpConBar.style.width = conPct + '%';
+  dom.lpConV.textContent = lp.consolidated;
+
+  const jusPct = (lp.justified_fraction * 100);
+  dom.lpJusBar.style.width = jusPct + '%';
+  dom.lpJusV.textContent = jusPct.toFixed(0) + '%';
+
+  // Weight histogram
+  drawWeightHistogram(lp);
+}
+
+function drawWeightHistogram(lp) {
+  const canvas = dom.weightHistogram;
+  if (!canvas) return;
+
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.floor(rect.width * dpr);
+  const h = Math.floor((rect.height - 20) * dpr); // leave room for labels
+  if (w < 10 || h < 10) return;
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = (rect.height - 20) + 'px';
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  const bins = lp.weight_histogram;
+  if (!bins || bins.length === 0) return;
+
+  const maxBin = Math.max(...bins, 1);
+  const numBins = bins.length;
+  const barW = w / numBins;
+  const midBin = Math.floor(numBins / 2);
+
+  for (let i = 0; i < numBins; i++) {
+    const barH = (bins[i] / maxBin) * (h - 4);
+    const x = i * barW;
+    const y = h - barH;
+
+    // Color: blue for negative weights, warm for positive, brighter near edges
+    const t = i / (numBins - 1); // 0=most negative, 1=most positive
+    if (t < 0.5) {
+      const intensity = (0.5 - t) * 2; // 1 at far left, 0 at center
+      ctx.fillStyle = `rgba(80, 140, 255, ${0.25 + intensity * 0.6})`;
+    } else {
+      const intensity = (t - 0.5) * 2; // 0 at center, 1 at far right
+      ctx.fillStyle = `rgba(251, 191, 36, ${0.25 + intensity * 0.6})`;
+    }
+
+    ctx.fillRect(x + 0.5, y, barW - 1, barH);
+  }
+
+  // Zero line
+  const zeroX = midBin * barW + barW / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(zeroX, 0);
+  ctx.lineTo(zeroX, h);
+  ctx.stroke();
+
+  // Update axis labels
+  const range = lp.weight_range || 1;
+  dom.whMin.textContent = (-range).toFixed(1);
+  dom.whMax.textContent = '+' + range.toFixed(1);
+  dom.whStats.textContent = `μ=${lp.weight_mean.toFixed(3)} σ=${lp.weight_std.toFixed(3)}`;
+}
+
+// ============================================================
 // V3: CLUSTER LIST PANEL
 // ============================================================
 function updateClusterList() {
@@ -2667,94 +2795,6 @@ function scrubTimeline(index) {
 }
 
 // ============================================================
-// V3: LINEAGE TREE (Canvas 2D in bottom panel tab)
-// ============================================================
-function drawLineageTree() {
-  const canvas = document.getElementById('lineage-canvas');
-  if (!canvas || !system) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(rect.height * dpr);
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const w = rect.width, h = rect.height;
-  ctx.clearRect(0, 0, w, h);
-
-  let lineageData;
-  try {
-    lineageData = JSON.parse(system.lineage_json());
-  } catch(_) { return; }
-
-  if (!lineageData || !lineageData.nodes || lineageData.nodes.length === 0) {
-    ctx.fillStyle = '#5a6a88';
-    ctx.font = '10px "JetBrains Mono", monospace';
-    ctx.fillText('No lineage data', 10, 20);
-    return;
-  }
-
-  const nodes = lineageData.nodes;
-  const edges = lineageData.edges || [];
-
-  // Layout: group by generation (Y), spread within generation (X)
-  const genMap = new Map();
-  for (const n of nodes) {
-    const gen = n.generation || 0;
-    if (!genMap.has(gen)) genMap.set(gen, []);
-    genMap.get(gen).push(n);
-  }
-
-  const gens = [...genMap.keys()].sort((a, b) => a - b);
-  const maxGen = gens.length;
-  const nodePositions = new Map();
-  const rowH = Math.min(h / (maxGen + 1), 30);
-  const aliveSet = new Set(nodeData.map(n => n.id));
-
-  for (let gi = 0; gi < gens.length; gi++) {
-    const gen = gens[gi];
-    const row = genMap.get(gen);
-    const y = 15 + gi * rowH;
-    const spacing = Math.min(w / (row.length + 1), 20);
-    const startX = (w - row.length * spacing) / 2;
-    for (let ni = 0; ni < row.length; ni++) {
-      const x = startX + ni * spacing + spacing / 2;
-      nodePositions.set(row[ni].id, { x, y });
-    }
-  }
-
-  // Draw edges
-  ctx.strokeStyle = 'rgba(80, 140, 255, 0.15)';
-  ctx.lineWidth = 0.5;
-  for (const e of edges) {
-    const from = nodePositions.get(e.parent);
-    const to = nodePositions.get(e.child);
-    if (from && to) {
-      ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(to.x, to.y);
-      ctx.stroke();
-    }
-  }
-
-  // Draw nodes
-  const CELL_HEX = {
-    Stem: '#8890a4', Sensory: '#00d4ff', Associative: '#a78bfa',
-    Motor: '#ff6b35', Modulatory: '#34d399', Fused: '#f472b6',
-  };
-  for (const n of nodes) {
-    const pos = nodePositions.get(n.id);
-    if (!pos) continue;
-    const alive = aliveSet.has(n.id);
-    const color = alive ? (CELL_HEX[n.cell_type] || '#888') : '#333';
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, alive ? 3 : 2, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-  }
-}
-
-// ============================================================
 // INIT
 // ============================================================
 async function main() {
@@ -2790,13 +2830,6 @@ async function main() {
   }
 
   // V3: Lineage tab — redraw on tab switch
-  document.querySelectorAll('#bottom-panel .tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.tab === 'tab-lineage') {
-        setTimeout(drawLineageTree, 50);
-      }
-    });
-  });
 
   renderer.setAnimationLoop(animate);
 }

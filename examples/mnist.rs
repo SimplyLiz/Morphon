@@ -111,7 +111,11 @@ fn create_system() -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            kwta_fraction: 0.01, // ~3-5 winners — forces class-selective specialization
+            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
+                fraction: 0.01, // ~3-5 winners — forces class-selective specialization
+                local_radius: 0.0,
+                local_k: 3,
+            },
             ..Default::default()
         },
         lifecycle: LifecycleConfig {

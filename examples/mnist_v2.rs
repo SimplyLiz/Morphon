@@ -111,13 +111,16 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
         learning: base_learning_params(),
         morphogenesis: MorphogenesisParams::default(),
         homeostasis: HomeostasisParams {
-            kwta_fraction,
-            local_kwta_radius: radius,
-            local_kwta_k: local_k,
+            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
+                fraction: kwta_fraction,
+                local_radius: radius,
+                local_k,
+            },
             ..Default::default()
         },
         lifecycle: frozen_lifecycle(),
         metabolic: MetabolicConfig::default(),
+        endoquilibrium: morphon_core::endoquilibrium::EndoConfig { enabled: true, ..Default::default() },
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
@@ -160,9 +163,11 @@ fn create_v2(kwta_fraction: f64, local: bool) -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            kwta_fraction,
-            local_kwta_radius: if local { 5.0 } else { 0.0 },
-            local_kwta_k: if local { 5 } else { 3 },
+            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
+                fraction: kwta_fraction,
+                local_radius: if local { 5.0 } else { 0.0 },
+                local_k: if local { 5 } else { 3 },
+            },
             ..Default::default()
         },
         // Frozen during training — V2 features active during development only
@@ -182,6 +187,7 @@ fn create_v2(kwta_fraction: f64, local: bool) -> System {
         },
         target_morphology: Some(tm),
         metabolic: MetabolicConfig::default(),
+        endoquilibrium: morphon_core::endoquilibrium::EndoConfig { enabled: true, ..Default::default() },
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
@@ -224,6 +230,9 @@ fn train_and_eval(
         // LR schedule: 0.05 → 0.005 over epochs
         let lr = LR_START * (LR_END / LR_START).powf(epoch as f64 / epochs.max(1) as f64);
 
+        let mut running_correct = 0_u64;
+        let mut running_total = 0_u64;
+
         for (bi, &idx) in indices.iter().take(n_train).enumerate() {
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
@@ -233,19 +242,25 @@ fn train_and_eval(
             system.train_readout(correct, lr);
             system.reward_contrastive(correct, 0.2, 0.1);
 
-            // Tell endo about each image as a mini-episode
+            // Track running accuracy and report to endo every image
             let predicted = system.read_output().iter().enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i).unwrap_or(0);
+            running_total += 1;
+            if predicted == correct { running_correct += 1; }
+            let running_acc = running_correct as f64 / running_total as f64;
+            system.report_performance(running_acc);
+
+            // Episode-end consolidation per image
             let reward = if predicted == correct { 1.0 } else { 0.0 };
-            system.report_performance(reward);
             system.report_episode_end(reward);
 
             let report_interval = if n_train <= 500 { 250 } else { 1000 };
             if (bi + 1) % report_interval == 0 || (bi + 1 == n_train && epoch + 1 == epochs) {
                 let acc = evaluate(system, test_images, test_labels, 100);
-                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} ({:.0}s)",
-                    label, epoch + 1, bi + 1, n_train, acc, lr, start.elapsed().as_secs());
+                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} ({:.0}s) {}",
+                    label, epoch + 1, bi + 1, n_train, acc, lr, start.elapsed().as_secs(),
+                    system.endo.summary());
             }
         }
     }
@@ -316,7 +331,10 @@ fn main() {
 
     // Neighborhood size diagnostic for local k-WTA
     if debug {
-        let radius = diag_sys.config.homeostasis.local_kwta_radius;
+        let radius = match &diag_sys.config.homeostasis.competition_mode {
+            morphon_core::homeostasis::CompetitionMode::GlobalKWTA { local_radius, .. } => *local_radius,
+            _ => 0.0,
+        };
         if radius > 0.0 {
             let positions: Vec<_> = assoc_ids.iter()
                 .filter_map(|&id| diag_sys.morphons.get(&id).map(|m| m.position.clone()))

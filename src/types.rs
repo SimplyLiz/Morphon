@@ -34,6 +34,10 @@ pub enum CellType {
     Modulatory,
     /// Part of a fused cluster — no longer fully autonomous.
     Fused,
+    /// Intra-group inhibitory interneuron for local competition (iSTDP).
+    /// Distinguished from Modulatory (inter-cluster) to enable separate
+    /// learning rules and lifecycle management.
+    InhibitoryInterneuron,
 }
 
 impl Default for CellType {
@@ -184,6 +188,7 @@ impl ActivationFn {
             CellType::Motor => ActivationFn::Burst,
             CellType::Modulatory => ActivationFn::Oscillatory,
             CellType::Fused => ActivationFn::Sigmoid,
+            CellType::InhibitoryInterneuron => ActivationFn::Sigmoid,
         }
     }
 }
@@ -216,6 +221,10 @@ pub fn default_receptors(cell_type: CellType) -> ReceptorSet {
         }
         CellType::Fused => {
             set.insert(ModulatorType::Reward);
+            set.insert(ModulatorType::Homeostasis);
+        }
+        CellType::InhibitoryInterneuron => {
+            // Interneurons respond to homeostasis only — not reward-gated.
             set.insert(ModulatorType::Homeostasis);
         }
     }

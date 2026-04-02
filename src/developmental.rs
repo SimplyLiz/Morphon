@@ -116,6 +116,7 @@ impl DevelopmentalConfig {
 /// Returns the initial set of Morphons, Topology, and the next available ID.
 pub fn develop(
     config: &DevelopmentalConfig,
+    homeostasis: &crate::homeostasis::HomeostasisParams,
     rng: &mut impl Rng,
 ) -> (HashMap<MorphonId, Morphon>, Topology, MorphonId) {
     let mut morphons = HashMap::new();
@@ -236,6 +237,17 @@ pub fn develop(
         }
     }
 
+    // === Phase 4.5: Local Inhibitory Interneurons (iSTDP competition) ===
+    // When CompetitionMode::LocalInhibition, create inhibitory interneurons
+    // wired to Associative morphons for emergent lateral inhibition.
+    create_local_inhibitory_interneurons(
+        &mut morphons,
+        &mut topology,
+        &mut next_id,
+        &homeostasis.competition_mode,
+        rng,
+    );
+
     // === Phase 5: Refinement Pruning ===
     // Remove weakest random connections to sharpen the network
     let edges = topology.all_edges();
@@ -248,6 +260,104 @@ pub fn develop(
     }
 
     (morphons, topology, next_id)
+}
+
+/// Create intra-group inhibitory interneurons for local competition (iSTDP).
+///
+/// Groups Associative morphons by spatial proximity in the Poincare ball,
+/// creates one InhibitoryInterneuron per group, and wires bidirectionally:
+/// - Excitatory: Assoc → Interneuron (drives the interneuron when the group is active)
+/// - Inhibitory: Interneuron → Assoc (suppresses the group, creating competition)
+///
+/// iSTDP (Vogels et al. 2011) will tune the inhibitory weights during training
+/// to maintain a target firing rate — no explicit k-WTA parameter needed.
+fn create_local_inhibitory_interneurons(
+    morphons: &mut HashMap<MorphonId, Morphon>,
+    topology: &mut Topology,
+    next_id: &mut MorphonId,
+    competition_mode: &crate::homeostasis::CompetitionMode,
+    _rng: &mut impl Rng,
+) {
+    let (interneuron_ratio, initial_inh_weight, inhibition_radius) = match competition_mode {
+        crate::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio, initial_inh_weight, inhibition_radius, ..
+        } => (*interneuron_ratio, *initial_inh_weight, *inhibition_radius),
+        _ => return, // Only activate for LocalInhibition mode
+    };
+
+    // Collect Associative morphon IDs and positions
+    let assoc_data: Vec<(MorphonId, HyperbolicPoint)> = morphons.values()
+        .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+        .map(|m| (m.id, m.position.clone()))
+        .collect();
+
+    if assoc_data.is_empty() {
+        return;
+    }
+
+    let num_interneurons = (assoc_data.len() as f64 * interneuron_ratio).ceil() as usize;
+    if num_interneurons == 0 {
+        return;
+    }
+
+    // Simple grouping: evenly partition Assoc morphons, one interneuron per group.
+    // Each interneuron is positioned at the centroid of its group.
+    let group_size = (assoc_data.len() + num_interneurons - 1) / num_interneurons;
+
+    for chunk in assoc_data.chunks(group_size) {
+        let dim = chunk[0].1.coords.len();
+
+        // Compute centroid of this group
+        let mut centroid = vec![0.0; dim];
+        for (_, pos) in chunk {
+            for (i, c) in pos.coords.iter().enumerate() {
+                centroid[i] += c;
+            }
+        }
+        for c in &mut centroid {
+            *c /= chunk.len() as f64;
+        }
+        // Clamp inside Poincare ball
+        let norm: f64 = centroid.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 0.85 {
+            let scale = 0.85 / norm;
+            for c in &mut centroid {
+                *c *= scale;
+            }
+        }
+
+        let position = HyperbolicPoint { coords: centroid, curvature: 1.0 };
+        let inh_id = *next_id;
+        *next_id += 1;
+
+        let mut inh_morphon = Morphon::new(inh_id, position.clone());
+        inh_morphon.cell_type = CellType::InhibitoryInterneuron;
+        inh_morphon.activation_fn = ActivationFn::Sigmoid;
+        inh_morphon.receptors = default_receptors(CellType::InhibitoryInterneuron);
+        inh_morphon.differentiation_level = 1.0; // terminally differentiated
+        inh_morphon.homeostatic_setpoint = 0.3; // interneurons should be active
+
+        topology.add_morphon(inh_id);
+
+        // Wire bidirectionally to group members (or all Assoc if radius = 0)
+        for (assoc_id, assoc_pos) in chunk {
+            let in_range = inhibition_radius <= 0.0
+                || position.distance(assoc_pos) < inhibition_radius;
+            if !in_range {
+                continue;
+            }
+
+            // Excitatory: Assoc → Interneuron (drives the interneuron)
+            let exc_syn = Synapse::new(0.3).with_delay(0.5);
+            topology.add_synapse(*assoc_id, inh_id, exc_syn);
+
+            // Inhibitory: Interneuron → Assoc (competition)
+            let inh_syn = Synapse::new(initial_inh_weight).with_delay(0.5);
+            topology.add_synapse(inh_id, *assoc_id, inh_syn);
+        }
+
+        morphons.insert(inh_id, inh_morphon);
+    }
 }
 
 // === V2: Target Morphology ===

@@ -209,6 +209,57 @@ mod bindings {
             self.inner.inject_td_error(reward, gamma)
         }
 
+        /// Get learning pipeline stats + weight histogram as JSON.
+        pub fn learning_json(&self) -> String {
+            let diag = &self.inner.diag;
+            let topo = &self.inner.topology;
+
+            // Build 20-bin weight histogram across [-max, max]
+            const NUM_BINS: usize = 20;
+            let mut bins = [0u32; NUM_BINS];
+            let mut abs_max = 0.0_f64;
+
+            for ei in topo.graph.edge_indices() {
+                if let Some(syn) = topo.graph.edge_weight(ei) {
+                    let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+                    abs_max = abs_max.max(w.abs());
+                }
+            }
+            if abs_max < 1e-10 { abs_max = 1.0; }
+            let range = abs_max * 2.0;
+
+            for ei in topo.graph.edge_indices() {
+                if let Some(syn) = topo.graph.edge_weight(ei) {
+                    let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+                    let normalized = (w + abs_max) / range; // [0, 1]
+                    let bin = ((normalized * NUM_BINS as f64) as usize).min(NUM_BINS - 1);
+                    bins[bin] += 1;
+                }
+            }
+
+            let bins_vec: Vec<u32> = bins.to_vec();
+
+            serde_json::json!({
+                "total_synapses": diag.total_synapses,
+                "eligible": diag.eligibility_nonzero_count,
+                "active_tags": diag.active_tags,
+                "captures_this_step": diag.captures_this_step,
+                "total_captures": diag.total_captures,
+                "consolidated": diag.consolidated_count,
+                "consolidated_fraction": diag.consolidated_fraction,
+                "justified_fraction": diag.justified_fraction,
+                "weight_mean": diag.weight_mean,
+                "weight_std": diag.weight_std,
+                "weight_abs_max": diag.weight_abs_max,
+                "weight_histogram": bins_vec,
+                "weight_range": abs_max,
+                "eligibility_mean": diag.eligibility_mean_abs,
+                "spikes_delivered": diag.spikes_delivered_this_step,
+                "spikes_pending": diag.spikes_pending,
+            })
+            .to_string()
+        }
+
         /// Get system statistics as a JSON string.
         pub fn inspect(&self) -> String {
             let stats = self.inner.inspect();

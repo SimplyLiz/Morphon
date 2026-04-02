@@ -1,0 +1,25 @@
+{
+  "baseline": {
+    "accuracy": 13.0
+  },
+  "benchmark": "mnist_v2",
+  "damage_recovery": {
+    "killed": 105,
+    "morphons_after_damage": 1567,
+    "morphons_after_recovery": 2000,
+    "morphons_before": 1672,
+    "post_damage": 10.5,
+    "post_recovery": 9.5,
+    "pre_damage": 10.5
+  },
+  "profile": "quick",
+  "timestamp": 1775077943,
+  "v2": {
+    "accuracy": 10.5,
+    "field_pe": 2.706506975918787,
+    "frustration": 0.011280614727302971,
+    "morphons": 1672,
+    "synapses": 91931
+  },
+  "version": "0.5.0"
+}

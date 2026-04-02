@@ -501,6 +501,51 @@
     display: none;
   }
   .tab-content.active { display: flex; flex-direction: column; }
+
+  /* Learning pipeline */
+  .pipeline-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 16px;
+  }
+  .lp-label {
+    width: 80px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .lp-bar-track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.04);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .lp-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.2s ease;
+    width: 0%;
+    background: var(--accent);
+  }
+  .lp-bar-fill.lp-eligible { background: #508cff; }
+  .lp-bar-fill.lp-tagged { background: #a78bfa; }
+  .lp-bar-fill.lp-captured { background: #fbbf24; }
+  .lp-bar-fill.lp-consolidated { background: #34d399; }
+  .lp-bar-fill.lp-justified { background: #f472b6; }
+  .lp-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-bright);
+    width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
   #tab-raster {
     padding: 4px 8px;
   }
@@ -1129,7 +1174,7 @@
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
-    <button class="tab-btn" data-tab="tab-lineage">LINEAGE</button>
+    <button class="tab-btn" data-tab="tab-learning">LEARNING</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -1184,10 +1229,28 @@
     </div>
   </div>
 
-  <!-- TAB 4: LINEAGE TREE -->
-  <div id="tab-lineage" class="tab-content">
-    <div id="lineage-canvas-wrap" style="width:100%;height:100%;overflow-x:auto">
-      <canvas id="lineage-canvas" style="width:100%;height:100%"></canvas>
+  <!-- TAB 4: LEARNING PIPELINE -->
+  <div id="tab-learning" class="tab-content">
+    <div style="display:flex; height:100%; gap:16px; padding:8px 12px; overflow:hidden;">
+      <!-- Pipeline flow -->
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:0;">
+        <div class="pipeline-row" id="lp-synapses"><span class="lp-label">Synapses</span><div class="lp-bar-track"><div class="lp-bar-fill" id="lp-syn-bar"></div></div><span class="lp-value" id="lp-syn-v">0</span></div>
+        <div class="pipeline-row" id="lp-eligible"><span class="lp-label">Eligible</span><div class="lp-bar-track"><div class="lp-bar-fill lp-eligible" id="lp-elig-bar"></div></div><span class="lp-value" id="lp-elig-v">0</span></div>
+        <div class="pipeline-row" id="lp-tagged"><span class="lp-label">Tagged</span><div class="lp-bar-track"><div class="lp-bar-fill lp-tagged" id="lp-tag-bar"></div></div><span class="lp-value" id="lp-tag-v">0</span></div>
+        <div class="pipeline-row" id="lp-captured"><span class="lp-label">Captured</span><div class="lp-bar-track"><div class="lp-bar-fill lp-captured" id="lp-cap-bar"></div></div><span class="lp-value" id="lp-cap-v">0</span></div>
+        <div class="pipeline-row" id="lp-consolidated"><span class="lp-label">Consolidated</span><div class="lp-bar-track"><div class="lp-bar-fill lp-consolidated" id="lp-con-bar"></div></div><span class="lp-value" id="lp-con-v">0</span></div>
+        <div class="pipeline-row" id="lp-justified"><span class="lp-label">Justified</span><div class="lp-bar-track"><div class="lp-bar-fill lp-justified" id="lp-jus-bar"></div></div><span class="lp-value" id="lp-jus-v">0%</span></div>
+      </div>
+      <!-- Weight histogram -->
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Weight Distribution</div>
+        <canvas id="weight-histogram" style="flex:1; width:100%;"></canvas>
+        <div style="display:flex; justify-content:space-between; font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--text-dim); margin-top:2px;">
+          <span id="wh-min">-1.0</span>
+          <span id="wh-stats">μ=0 σ=0</span>
+          <span id="wh-max">+1.0</span>
+        </div>
+      </div>
     </div>
   </div>
 </div>

@@ -101,7 +101,7 @@ pub struct VitalSigns {
     pub tag_count: u32,
     pub capture_count: u32,
     // Structural
-    pub cell_type_fractions: [f32; 6],
+    pub cell_type_fractions: [f32; 7],
     pub total_morphons: u32,
     pub total_synapses: u32,
     // Metabolic
@@ -111,6 +111,11 @@ pub struct VitalSigns {
     /// Rolling reward/performance metric (task-agnostic, set by caller).
     /// For CartPole: episode steps. For MNIST: classification accuracy.
     pub reward_avg: f32,
+    /// Per-cluster winner counts: (cluster_id, winners_this_step).
+    /// Exposed as a vec, not a mean — temporal processing will create clusters
+    /// with very different firing dynamics (persistent state vs transient processing).
+    #[serde(default)]
+    pub winners_per_cluster: Vec<(u64, u32)>,
 }
 
 impl Default for VitalSigns {
@@ -125,12 +130,13 @@ impl Default for VitalSigns {
             weight_entropy: 3.0,
             tag_count: 0,
             capture_count: 0,
-            cell_type_fractions: [0.0; 6],
+            cell_type_fractions: [0.0; 7],
             total_morphons: 0,
             total_synapses: 0,
             energy_utilization: 0.5,
             prediction_error_mean: 0.1,
             reward_avg: 0.0,
+            winners_per_cluster: Vec::new(),
         }
     }
 }
@@ -155,7 +161,7 @@ pub fn sense_vitals(
     };
 
     // Cell type fractions
-    let mut type_counts = [0u32; 6];
+    let mut type_counts = [0u32; 7];
     let mut pe_sum = 0.0_f32;
     let mut energy_sum = 0.0_f32;
     for m in morphons.values() {
@@ -164,8 +170,8 @@ pub fn sense_vitals(
         pe_sum += m.prediction_error as f32;
         energy_sum += m.energy as f32;
     }
-    let mut fractions = [0.0_f32; 6];
-    for i in 0..6 {
+    let mut fractions = [0.0_f32; 7];
+    for i in 0..7 {
         fractions[i] = type_counts[i] as f32 / n;
     }
 
@@ -196,6 +202,19 @@ pub fn sense_vitals(
         energy_utilization,
         prediction_error_mean: pe_sum / n,
         reward_avg: reward_avg as f32,
+        winners_per_cluster: {
+            // Count fired morphons per cluster (fused_with).
+            // Unclustered morphons are not included — their competition
+            // is either global k-WTA or via local inhibitory interneurons.
+            let mut cluster_fires: HashMap<u64, u32> = HashMap::new();
+            for m in morphons.values() {
+                if let Some(cid) = m.fused_with {
+                    let entry = cluster_fires.entry(cid).or_insert(0);
+                    if m.fired { *entry += 1; }
+                }
+            }
+            cluster_fires.into_iter().collect()
+        },
     }
 }
 
@@ -208,6 +227,7 @@ fn cell_type_index(ct: CellType) -> usize {
         CellType::Motor => 3,
         CellType::Modulatory => 4,
         CellType::Fused => 5,
+        CellType::InhibitoryInterneuron => 6,
     }
 }
 
@@ -256,9 +276,9 @@ fn compute_weight_entropy(topology: &Topology) -> f32 {
     entropy
 }
 
-// ─── Channel State (the 6 levers) ───────────────────────────────────
+// ─── Channel State (the 10 levers) ──────────────────────────────────
 
-/// The 6 actuators Endoquilibrium controls.
+/// The actuators Endoquilibrium controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelState {
     pub reward_gain: f32,
@@ -268,10 +288,30 @@ pub struct ChannelState {
     pub threshold_bias: f32,
     pub plasticity_mult: f32,
     /// Consolidation gain: how aggressively tagged synapses get captured.
-    /// Biology: PRP (plasticity-related protein) availability, gated by
-    /// neuromodulatory state. High = capture-friendly, low = tags accumulate but don't consolidate.
     pub consolidation_gain: f32,
+    // === Endo V2 levers ===
+    /// Scales activity-dependent winner threshold boost (Diehl & Cook).
+    #[serde(default = "default_channel_one")]
+    pub winner_adaptation_mult: f32,
+    /// Scales capture_threshold for tag-and-capture consolidation.
+    #[serde(default = "default_channel_one")]
+    pub capture_threshold_mult: f32,
+    /// Scales rollback_pe_threshold.
+    #[serde(default = "default_channel_one")]
+    pub rollback_pe_threshold_mult: f32,
+    /// Scales tau_eligibility (eligibility trace time constant).
+    /// >1 = wider credit assignment window (slow captures), <1 = tighter (fast captures).
+    /// Driven by ticks_since_last_capture — the single lever that most directly
+    /// enables temporal processing.
+    #[serde(default = "default_channel_one")]
+    pub tau_eligibility_mult: f32,
+    /// Scales slow trace leak rate. Plumbing for temporal processing —
+    /// no regulation rule yet, just the lever slot.
+    #[serde(default = "default_channel_one")]
+    pub slow_trace_leak: f32,
 }
+
+fn default_channel_one() -> f32 { 1.0 }
 
 impl Default for ChannelState {
     fn default() -> Self {
@@ -283,6 +323,11 @@ impl Default for ChannelState {
             threshold_bias: 0.0,
             plasticity_mult: 1.0,
             consolidation_gain: 1.0,
+            winner_adaptation_mult: 1.0,
+            capture_threshold_mult: 1.0,
+            rollback_pe_threshold_mult: 1.0,
+            tau_eligibility_mult: 1.0,
+            slow_trace_leak: 1.0,
         }
     }
 }
@@ -297,6 +342,11 @@ impl ChannelState {
         self.threshold_bias = self.threshold_bias.clamp(-0.3, 0.3);
         self.plasticity_mult = self.plasticity_mult.clamp(0.1, 5.0);
         self.consolidation_gain = self.consolidation_gain.clamp(0.2, 3.0);
+        self.winner_adaptation_mult = self.winner_adaptation_mult.clamp(0.3, 2.5);
+        self.capture_threshold_mult = self.capture_threshold_mult.clamp(0.5, 1.5);
+        self.rollback_pe_threshold_mult = self.rollback_pe_threshold_mult.clamp(0.25, 2.0);
+        self.tau_eligibility_mult = self.tau_eligibility_mult.clamp(0.5, 2.0);
+        self.slow_trace_leak = self.slow_trace_leak.clamp(0.1, 3.0);
     }
 }
 
@@ -327,7 +377,7 @@ struct DevelopmentalSetpoints {
     elig_max: f32,
     entropy_min: f32,
     entropy_max: f32,
-    type_targets: [f32; 6], // S, A, M, Mod, Stem, Fused
+    type_targets: [f32; 7], // S, A, M, Mod, Stem, Fused, InhibitoryInterneuron
 }
 
 impl Default for DevelopmentalSetpoints {
@@ -343,25 +393,25 @@ impl DevelopmentalSetpoints {
                 fr_assoc_min: 0.12, fr_assoc_max: 0.18,
                 elig_min: 0.40, elig_max: 0.70,
                 entropy_min: 3.0, entropy_max: 4.5,
-                type_targets: [0.15, 0.20, 0.35, 0.10, 0.15, 0.05],
+                type_targets: [0.15, 0.20, 0.35, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Differentiating => Self {
                 fr_assoc_min: 0.10, fr_assoc_max: 0.15,
                 elig_min: 0.30, elig_max: 0.60,
                 entropy_min: 2.5, entropy_max: 4.0,
-                type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05],
+                type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Consolidating | DevelopmentalStage::Mature => Self {
                 fr_assoc_min: 0.08, fr_assoc_max: 0.12,
                 elig_min: 0.20, elig_max: 0.40,
                 entropy_min: 2.0, entropy_max: 3.5,
-                type_targets: [0.05, 0.20, 0.45, 0.10, 0.15, 0.05],
+                type_targets: [0.05, 0.20, 0.45, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Stressed => Self {
                 fr_assoc_min: 0.08, fr_assoc_max: 0.15,
                 elig_min: 0.15, elig_max: 0.50,
                 entropy_min: 2.0, entropy_max: 4.0,
-                type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05],
+                type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05, 0.0],
             },
         }
     }
@@ -426,9 +476,15 @@ impl AllostasisPredictor {
         if self.morphon_count_history.len() > 200 {
             self.morphon_count_history.pop_front();
         }
-        self.reward_history.push_back(vitals.reward_avg);
-        if self.reward_history.len() > 500 {
-            self.reward_history.pop_front();
+        // Only push reward when it meaningfully changed — between report_performance()
+        // calls, reward_avg is stale and repeating the same value inflates the history
+        // with artificial flatness, triggering premature Consolidating.
+        let last_reward = self.reward_history.back().copied().unwrap_or(-1.0);
+        if (vitals.reward_avg - last_reward).abs() > 1e-6 {
+            self.reward_history.push_back(vitals.reward_avg);
+            if self.reward_history.len() > 500 {
+                self.reward_history.pop_front();
+            }
         }
 
         // Detect developmental stage
@@ -451,22 +507,26 @@ impl AllostasisPredictor {
 
         // Stressed: reward DROPPING significantly relative to own baseline.
         // Not "seeing new things" (PE rising) but "getting worse at the task."
-        let slow_abs = reward_slow.abs().max(1.0); // avoid div-by-zero for near-zero rewards
-        if reward_trend < -0.01 * slow_abs && self.reward_history.len() >= 50 {
+        // Use max(0.01) not max(1.0) — for MNIST rewards in [0,1], max(1.0)
+        // makes the threshold absolute and triggers Stressed on tiny dips.
+        let slow_abs = reward_slow.abs().max(0.01);
+        if reward_trend < -0.05 * slow_abs && self.reward_history.len() >= 50 {
             return DevelopmentalStage::Stressed;
         }
 
         // Mature: reward stable (low variance) and near slow EMA — consistent performance.
+        // Require slow EMA to be meaningfully above zero — can't be mature if barely learning.
         let reward_std = self.std_f32(&self.reward_history);
         let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 1.0 };
-        if reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
+        if reward_slow > 0.05 && reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
             && self.reward_history.len() >= 100
         {
             return DevelopmentalStage::Mature;
         }
 
         // Consolidating: reward near own ceiling (fast ≥ 95% of slow), stable.
-        if reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.01 * slow_abs {
+        // Require slow EMA > 0.05 — both near zero doesn't mean "at ceiling."
+        if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.05 * slow_abs {
             return DevelopmentalStage::Consolidating;
         }
 
@@ -795,6 +855,92 @@ impl Endoquilibrium {
             });
         }
 
+        // ── Rule 8: Winner Adaptation Multiplier (stage-dependent) ──
+        let wam = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 1.5,
+            DevelopmentalStage::Differentiating => 1.2,
+            DevelopmentalStage::Consolidating => 1.0,
+            DevelopmentalStage::Mature => 0.7,
+            DevelopmentalStage::Stressed => 1.3,
+        };
+        ch.winner_adaptation_mult = wam;
+        if (wam - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_winner_adaptation".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "winner_adaptation_mult".into(),
+                adjustment: wam - 1.0,
+            });
+        }
+
+        // ── Rule 9: Capture Threshold Multiplier (tag-capture health) ──
+        let ctm = if self.ticks_since_last_capture > cfg.tag_capture_stale_ticks {
+            0.7 // long stall → lower threshold (easier capture)
+        } else if self.ticks_since_last_capture > cfg.tag_capture_stale_ticks / 2 {
+            0.85
+        } else {
+            1.0
+        };
+        ch.capture_threshold_mult = ctm;
+        if ctm != 1.0 {
+            interventions.push(Intervention {
+                rule: "capture_threshold_health".into(), vital: "ticks_since_capture".into(),
+                actual: self.ticks_since_last_capture as f32,
+                setpoint: cfg.tag_capture_stale_ticks as f32,
+                lever: "capture_threshold_mult".into(),
+                adjustment: ctm - 1.0,
+            });
+        }
+
+        // ── Rule 10: Rollback PE Threshold Multiplier (stage-dependent) ──
+        let rpm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 1.5,   // tolerant during growth
+            DevelopmentalStage::Differentiating => 1.0,
+            DevelopmentalStage::Consolidating => 0.7,
+            DevelopmentalStage::Mature => 0.5,           // strict when mature
+            DevelopmentalStage::Stressed => 0.25,        // very strict under stress
+        };
+        ch.rollback_pe_threshold_mult = rpm;
+        if (rpm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_rollback_sensitivity".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "rollback_pe_threshold_mult".into(),
+                adjustment: rpm - 1.0,
+            });
+        }
+
+        // ── Rule 11: Tau Eligibility Multiplier (capture-speed driven) ──
+        // Slow captures → widen the credit assignment window (tau_e up).
+        // Fast captures → tighten it for precision (tau_e down).
+        // This is the single lever that most directly enables temporal processing.
+        let tem = if self.ticks_since_last_capture > cfg.tag_capture_stale_ticks * 2 {
+            1.8 // very slow captures → wide window
+        } else if self.ticks_since_last_capture > cfg.tag_capture_stale_ticks {
+            1.4 // slow captures → wider
+        } else if self.ticks_since_last_capture < cfg.tag_capture_stale_ticks / 4
+            && vitals.capture_count > 0
+        {
+            0.7 // fast captures → tighter for precision
+        } else {
+            1.0
+        };
+        ch.tau_eligibility_mult = tem;
+        if (tem - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "tau_eligibility_capture_speed".into(),
+                vital: "ticks_since_capture".into(),
+                actual: self.ticks_since_last_capture as f32,
+                setpoint: cfg.tag_capture_stale_ticks as f32,
+                lever: "tau_eligibility_mult".into(),
+                adjustment: tem - 1.0,
+            });
+        }
+
+        // slow_trace_leak: no regulation rule yet — plumbing for temporal processing.
+        // Default 1.0 (no-op). Wire a rule when temporal processing lands.
+        ch.slow_trace_leak = 1.0;
+
         (ch, interventions)
     }
 
@@ -808,6 +954,11 @@ impl Endoquilibrium {
         self.channels.threshold_bias = lerp(self.channels.threshold_bias, raw.threshold_bias, a);
         self.channels.plasticity_mult = lerp(self.channels.plasticity_mult, raw.plasticity_mult, a);
         self.channels.consolidation_gain = lerp(self.channels.consolidation_gain, raw.consolidation_gain, a);
+        self.channels.winner_adaptation_mult = lerp(self.channels.winner_adaptation_mult, raw.winner_adaptation_mult, a);
+        self.channels.capture_threshold_mult = lerp(self.channels.capture_threshold_mult, raw.capture_threshold_mult, a);
+        self.channels.rollback_pe_threshold_mult = lerp(self.channels.rollback_pe_threshold_mult, raw.rollback_pe_threshold_mult, a);
+        self.channels.tau_eligibility_mult = lerp(self.channels.tau_eligibility_mult, raw.tau_eligibility_mult, a);
+        self.channels.slow_trace_leak = lerp(self.channels.slow_trace_leak, raw.slow_trace_leak, a);
         self.channels.clamp();
     }
 
@@ -849,16 +1000,24 @@ impl Endoquilibrium {
         let s = &self.predictor.stage;
         let c = &self.channels;
         format!(
-            "endo: stage={:?} rg={:.2} ng={:.2} ag={:.2} hg={:.2} tb={:.3} pm={:.2} cg={:.2} hp={:.2}",
+            "endo: stage={:?} rg={:.2} ng={:.2} ag={:.2} hg={:.2} tb={:.3} pm={:.2} cg={:.2} wam={:.2} ctm={:.2} tem={:.2} hp={:.2}",
             s, c.reward_gain, c.novelty_gain, c.arousal_gain,
             c.homeostasis_gain, c.threshold_bias, c.plasticity_mult,
-            c.consolidation_gain, self.last_diag.health_score,
+            c.consolidation_gain, c.winner_adaptation_mult,
+            c.capture_threshold_mult, c.tau_eligibility_mult,
+            self.last_diag.health_score,
         )
     }
 
     /// Current developmental stage.
     pub fn stage(&self) -> DevelopmentalStage {
         self.predictor.stage
+    }
+
+    /// Target associative firing rate (midpoint of setpoint range).
+    /// Used by iSTDP to derive its homeostatic target when not explicitly configured.
+    pub fn target_assoc_firing_rate(&self) -> f64 {
+        ((self.setpoints.fr_assoc_min + self.setpoints.fr_assoc_max) / 2.0) as f64
     }
 }
 
@@ -1008,9 +1167,11 @@ mod tests {
     fn test_stage_detection_mature() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
         // Feed stable reward with low variance → Mature
-        for _ in 0..200 {
+        // Small jitter so each tick registers as a new reward value
+        // (reward_history deduplicates exact repeats to prevent artificial flatness)
+        for i in 0..200 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.reward_avg = 195.0;
+            v.reward_avg = 195.0 + (i as f32) * 0.001;
             endo.tick(v);
         }
         assert_eq!(endo.stage(), DevelopmentalStage::Mature);
@@ -1020,14 +1181,14 @@ mod tests {
     fn test_stage_detection_stressed() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
         // Build up a baseline, then drop reward → Stressed
-        for _ in 0..100 {
+        for i in 0..100 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.reward_avg = 150.0;
+            v.reward_avg = 150.0 + (i as f32) * 0.001;
             endo.tick(v);
         }
-        for _ in 0..100 {
+        for i in 0..100 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.reward_avg = 80.0; // significant drop
+            v.reward_avg = 80.0 - (i as f32) * 0.001; // significant drop
             endo.tick(v);
         }
         assert_eq!(endo.stage(), DevelopmentalStage::Stressed);
@@ -1043,9 +1204,10 @@ mod tests {
     fn test_healthy_vitals_stable() {
         let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
         // Feed perfectly healthy vitals with stable reward
-        for _ in 0..200 {
+        // Small jitter to bypass reward_history deduplication
+        for i in 0..200 {
             let mut v = make_vitals(0.10, 0.30, 2.5, 0.5);
-            v.reward_avg = 100.0;
+            v.reward_avg = 100.0 + (i as f32) * 0.001;
             endo.tick(v);
         }
         // Channels should be reasonable (stage may be Mature with pm_stage=0.5)

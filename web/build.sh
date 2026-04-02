@@ -12,4 +12,4 @@ rm -rf web/pkg
 mv pkg web/pkg
 
 echo "Done. Serve with:"
-echo "  cd web && python3 -m http.server 8080"
+echo "  cd web && python3 serve.py"

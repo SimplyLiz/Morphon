@@ -103,6 +103,15 @@ pub struct Diagnostics {
     pub justified_fraction: f64,
     /// Average skepticism across all clusters.
     pub avg_skepticism: f64,
+
+    // === V2: Competition metrics (Endo V2) ===
+    /// Treves-Rolls population sparsity of associative activations this step.
+    pub population_sparsity: f64,
+    /// Mean lifetime sparsity (Treves-Rolls) across associative morphons.
+    pub lifetime_sparsity: f64,
+    /// Shannon entropy of per-morphon firing counts (normalized [0,1]).
+    /// Computed at episode end; NaN between episodes.
+    pub winner_diversity_entropy: f64,
 }
 
 impl Diagnostics {
@@ -203,6 +212,25 @@ impl Diagnostics {
             else { assoc_activities.iter().sum::<f64>() / assoc_activities.len() as f64 };
         let avg_energy = energy_sum / morphons.len().max(1) as f64;
 
+        // Competition metrics: population sparsity (from current step firing)
+        let assoc_fired: Vec<f64> = morphons.values()
+            .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            .map(|m| if m.fired { 1.0 } else { 0.0 })
+            .collect();
+        let population_sparsity = treves_rolls_sparsity(&assoc_fired);
+
+        // Competition metrics: lifetime sparsity (from activity_history per morphon)
+        let lifetime_sparsities: Vec<f64> = morphons.values()
+            .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            .filter_map(|m| {
+                let history: Vec<f64> = m.activity_history.iter().copied().collect();
+                let ls = treves_rolls_sparsity(&history);
+                if ls.is_finite() { Some(ls) } else { None }
+            })
+            .collect();
+        let lifetime_sparsity = if lifetime_sparsities.is_empty() { 0.0 }
+            else { lifetime_sparsities.iter().sum::<f64>() / lifetime_sparsities.len() as f64 };
+
         Self {
             weight_mean,
             weight_std,
@@ -226,6 +254,9 @@ impl Diagnostics {
             avg_frustration: frustration_sum / morphons.len().max(1) as f64,
             exploration_mode_count,
             max_frustration: frustration_max,
+            population_sparsity,
+            lifetime_sparsity,
+            winner_diversity_entropy: 0.0, // computed at episode end, not per-step
             ..Default::default()
         }
     }
@@ -264,5 +295,51 @@ impl Diagnostics {
             }
         }
         parts.join(" ")
+    }
+}
+
+/// Treves-Rolls sparsity measure.
+/// Returns 0.0 (dense / all equal) to 1.0 (maximally sparse / one active).
+/// S = (1 - (mean(r))^2 / mean(r^2)) / (1 - 1/N)
+pub fn treves_rolls_sparsity(values: &[f64]) -> f64 {
+    let n = values.len();
+    if n <= 1 { return 0.0; }
+    let mean = values.iter().sum::<f64>() / n as f64;
+    let mean_sq = values.iter().map(|x| x * x).sum::<f64>() / n as f64;
+    if mean_sq < 1e-12 { return 0.0; }
+    (1.0 - (mean * mean) / mean_sq) / (1.0 - 1.0 / n as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_treves_rolls_maximally_sparse() {
+        // One active, rest silent → maximally sparse
+        let values = vec![1.0, 0.0, 0.0, 0.0, 0.0];
+        let s = treves_rolls_sparsity(&values);
+        assert!(s > 0.9, "one active should be near 1.0: {}", s);
+    }
+
+    #[test]
+    fn test_treves_rolls_uniform() {
+        // All equal → minimum sparsity (0.0)
+        let values = vec![0.5, 0.5, 0.5, 0.5, 0.5];
+        let s = treves_rolls_sparsity(&values);
+        assert!(s < 0.01, "uniform should be near 0.0: {}", s);
+    }
+
+    #[test]
+    fn test_treves_rolls_empty() {
+        assert_eq!(treves_rolls_sparsity(&[]), 0.0);
+        assert_eq!(treves_rolls_sparsity(&[1.0]), 0.0);
+    }
+
+    #[test]
+    fn test_treves_rolls_all_zero() {
+        let values = vec![0.0, 0.0, 0.0];
+        let s = treves_rolls_sparsity(&values);
+        assert_eq!(s, 0.0, "all zeros should be 0.0");
     }
 }

@@ -39,7 +39,7 @@ pub struct Synapse {
     /// Incremented on post-spike, decays exponentially with tau_trace.
     pub post_trace: f64,
 
-    /// Slow-decaying activity trace for myelination gating (τ ~ 200 steps).
+    /// Slow-decaying activity trace for myelination gating (τ=200 medium ticks ≈ 2000 sim steps).
     /// Bumped in apply_weight_update (medium path), read in update_myelination (slow path).
     /// Solves the timing mismatch where fast traces (eligibility τ=20, pre/post τ=10)
     /// decay to zero between slow ticks.
@@ -270,7 +270,15 @@ pub struct Morphon {
     /// Recent prediction error deltas for adaptation tracking.
     #[serde(default)]
     pub recent_pe_deltas: RingBuffer,
+
+    // === V2: Astrocytic Gate (AGMP-inspired) ===
+    /// Slow state variable gating excitatory plasticity. Updated every medium tick.
+    /// gate = sigmoid(astrocytic_state - threshold_a), multiplied into weight updates.
+    #[serde(default = "default_astrocytic_state")]
+    pub astrocytic_state: f64,
 }
+
+fn default_astrocytic_state() -> f64 { 0.5 }
 
 impl Morphon {
     /// Create a new stem-cell Morphon at the given position.
@@ -306,6 +314,7 @@ impl Morphon {
             receptor_sensitivity: default_receptor_sensitivity(CellType::Stem),
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
+            astrocytic_state: 0.5,
         }
     }
 
@@ -357,6 +366,7 @@ impl Morphon {
             }).collect(),
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
+            astrocytic_state: self.astrocytic_state,
         }
     }
 

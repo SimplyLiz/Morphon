@@ -135,10 +135,12 @@ pub fn synaptogenesis(
 ) -> usize {
     let mut created = 0;
 
-    // Pre-filter: only morphons with recent activity are candidates
+    // Pre-filter: only morphons with recent activity are candidates.
+    // InhibitoryInterneurons are excluded — their connectivity is managed by iSTDP.
     let active: Vec<MorphonId> = morphons
         .values()
-        .filter(|m| m.activity_history.mean() >= 0.3)
+        .filter(|m| m.cell_type != CellType::InhibitoryInterneuron
+            && m.activity_history.mean() >= 0.3)
         .map(|m| m.id)
         .collect();
 
@@ -324,6 +326,55 @@ pub fn division(
     }
 
     born
+}
+
+/// Wire newly born Associative morphons to nearby InhibitoryInterneurons.
+/// Called after division to ensure new morphons participate in local competition.
+pub fn wire_to_nearby_interneurons(
+    morphons: &HashMap<MorphonId, Morphon>,
+    topology: &mut Topology,
+    competition_mode: &crate::homeostasis::CompetitionMode,
+    new_morphon_ids: &[MorphonId],
+) {
+    let initial_inh_weight = match competition_mode {
+        crate::homeostasis::CompetitionMode::LocalInhibition { initial_inh_weight, .. } => {
+            *initial_inh_weight
+        }
+        _ => return,
+    };
+
+    let interneurons: Vec<(MorphonId, crate::types::HyperbolicPoint)> = morphons.values()
+        .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+        .map(|m| (m.id, m.position.clone()))
+        .collect();
+
+    for &new_id in new_morphon_ids {
+        let new_m = match morphons.get(&new_id) {
+            Some(m) if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem => m,
+            _ => continue,
+        };
+
+        // Connect to the closest interneuron
+        let mut closest: Option<(MorphonId, f64)> = None;
+        for (inh_id, inh_pos) in &interneurons {
+            let dist = new_m.position.distance(inh_pos);
+            if closest.is_none() || dist < closest.unwrap().1 {
+                closest = Some((*inh_id, dist));
+            }
+        }
+
+        if let Some((inh_id, _)) = closest {
+            // Bidirectional wiring
+            if topology.synapse_between(new_id, inh_id).is_none() {
+                topology.add_synapse(new_id, inh_id,
+                    crate::morphon::Synapse::new(0.3).with_delay(0.5));
+            }
+            if topology.synapse_between(inh_id, new_id).is_none() {
+                topology.add_synapse(inh_id, new_id,
+                    crate::morphon::Synapse::new(initial_inh_weight).with_delay(0.5));
+            }
+        }
+    }
 }
 
 /// Run differentiation — Morphons specialize based on their activity patterns.
@@ -1044,7 +1095,9 @@ pub fn apoptosis(
     let to_remove: Vec<MorphonId> = morphons
         .values()
         .filter(|m| {
-            m.age > params.apoptosis_min_age
+            // InhibitoryInterneurons are structural — never apoptose.
+            m.cell_type != CellType::InhibitoryInterneuron
+                && m.age > params.apoptosis_min_age
                 && m.fused_with.is_none()
                 // Two paths to apoptosis:
                 // (a) Isolated + starved: low degree AND low energy

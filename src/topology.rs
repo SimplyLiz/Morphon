@@ -115,6 +115,21 @@ impl Topology {
             .collect()
     }
 
+    /// Get mutable access to all outgoing synapses for a Morphon.
+    /// Returns (target_id, edge_index) pairs for use with `synapse_mut()`.
+    pub fn outgoing_synapses_mut(&mut self, id: MorphonId) -> Vec<(MorphonId, EdgeIndex)> {
+        let Some(&idx) = self.id_to_node.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, petgraph::Direction::Outgoing)
+            .map(|edge| {
+                let target_id = self.graph[edge.target()];
+                (target_id, edge.id())
+            })
+            .collect()
+    }
+
     /// Get a mutable reference to a synapse by edge index.
     pub fn synapse_mut(&mut self, edge: EdgeIndex) -> Option<&mut Synapse> {
         self.graph.edge_weight_mut(edge)
@@ -214,6 +229,8 @@ impl Topology {
                 child_syn.tag = 0.0;
                 child_syn.tag_strength = 0.0;
                 child_syn.consolidated = false;
+                child_syn.activity_trace = 0.0;
+                child_syn.myelination = 0.0;
                 child_syn.justification = Some(SynapticJustification::new(
                     FormationCause::InheritedFromDivision { parent: parent_id },
                     step_count,
@@ -235,6 +252,8 @@ impl Topology {
                 child_syn.age = 0;
                 child_syn.usage_count = 0;
                 child_syn.eligibility = 0.0;
+                child_syn.activity_trace = 0.0;
+                child_syn.myelination = 0.0;
                 child_syn.justification = Some(SynapticJustification::new(
                     FormationCause::InheritedFromDivision { parent: parent_id },
                     step_count,

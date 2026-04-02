@@ -115,6 +115,7 @@ impl System {
             total_born: 0,
             total_died: 0,
             kwta_winners: Vec::new(),
+            episode_fire_counts: std::collections::HashMap::new(),
             total_transdifferentiations: 0,
             feedback_weights: std::collections::HashMap::new(),
             readout_weights: Vec::new(),

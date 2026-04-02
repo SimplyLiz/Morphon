@@ -1,0 +1,17 @@
+{
+  "avg_steps": 21.915,
+  "endo_params": {
+    "fast_tau": 20.02348983767024,
+    "fr_deficit_arousal_k": 0.9999999969315134,
+    "fr_deficit_novelty_k": 0.05011917379008082,
+    "fr_deficit_threshold_k": 0.6154332760169794,
+    "smoothing_alpha": 0.29999999123319243
+  },
+  "learning_params": {
+    "a_minus": -0.11253771277667224,
+    "alpha_reward": 4.99002928764771,
+    "capture_threshold": 0.7124829206461543,
+    "readout_lr": 0.39999999998448393,
+    "tau_eligibility": 14.999999961268475
+  }
+}
