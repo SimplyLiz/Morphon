@@ -192,3 +192,160 @@ Target Morphology → Identity field → migration toward needed regions
 Target Morphology → differentiation bias → correct cell types in regions
 Target Morphology → self-healing → division pressure in underpopulated regions
 ```
+
+---
+
+# V2 Primitives — Phase 2
+
+Three additional primitives completing the V2 spec. These address collective efficiency, meta-learning, and offline consolidation.
+
+## 4. Sub-Morphon Plasticity (Adaptive Receptors)
+
+**Module**: `types.rs` (default_receptor_sensitivity), `morphon.rs` (fields, lifecycle), `learning.rs` (apply_weight_update, adapt_receptor_sensitivity), `system.rs` (recording, adaptation call)
+
+### Biological Basis
+
+Receptor sensitivity is not fixed — neurons regulate how strongly they respond to each neurotransmitter. A neuron in a region where dopamine is irrelevant reduces its dopamine receptor density. This is meta-learning: the system learns how to learn.
+
+### How It Works
+
+Each morphon has `receptor_sensitivity: HashMap<ModulatorType, f64>` — continuous values in [0.01, 2.0] per modulator channel. Initialized from `default_receptor_sensitivity(cell_type)`: present receptors = 1.0, absent = 0.01 (never fully deaf).
+
+**In `apply_weight_update`**: The binary gating (`if receptors.contains(channel)`) is replaced with continuous multiplication by the sensitivity value. Falls back to binary when the map is empty (backward compatible).
+
+```
+reward_signal = sensitivity[Reward] * alpha_reward * reward_delta * endo_gain
+```
+
+**Adaptation** (slow tick): For each morphon, correlate recent modulation signals with PE deltas. If a channel's signal preceded PE reduction → increase sensitivity. If it preceded PE increase → decrease. Rate: 0.001 (very conservative — meaningful over thousands of episodes, not within a single run).
+
+```rust
+correlation = sum(mod_signal_i * (-pe_delta_i)) / n
+sensitivity[channel] += 0.001 * correlation
+```
+
+**Lifecycle**: `divide()` inherits parent sensitivities ± 0.05 mutation. `differentiate()` and `dedifferentiate()` reset to defaults for the new type.
+
+### Current Status
+
+Validated as non-harmful: CartPole solves identically with adaptive receptors active. Sensitivities remain near 1.0 after 1000 episodes at 0.001 adaptation rate. **Not yet validated as beneficial** — would need a task where fixed receptor assignments are suboptimal (e.g., a morphon that needs reward sensitivity despite being Sensory type).
+
+### Configuration
+
+No dedicated config struct — sensitivity is always active. The adaptation rate (0.001) is hardcoded in `system.rs` slow tick. Future: make it configurable or Endo-controlled.
+
+---
+
+## 5. Collective Compute Scaling
+
+**Module**: `morphogenesis.rs` (Cluster struct, fusion/defusion), `morphon.rs` (MetabolicConfig, step()), `system.rs` (cluster energy loop)
+
+### Biological Basis
+
+Cells in a tissue delegate housekeeping to the collective (shared metabolism, shared homeostasis) to focus on their specialty. A muscle fiber doesn't manage its own pH — the tissue does. The cluster is more efficient than the sum of its parts.
+
+### How It Works
+
+**Fusion** pools resources:
+- Each member contributes 30% of energy to `shared_energy_pool`
+- `shared_homeostatic_setpoint` = average of member setpoints
+
+**During operation** (every step, in system.rs cluster loop):
+1. Each fused morphon draws from the shared pool (`cluster_energy_draw_per_tick`)
+2. Members contribute PE-reduction utility back to pool
+3. Cluster-level homeostasis: single setpoint computation applied to all members' thresholds
+4. Fused morphons pay reduced base cost (`base_cost * (1 - cluster_base_cost_reduction)`)
+5. Fused morphons skip individual homeostatic threshold regulation (deferred to cluster)
+
+**Defusion** returns energy: `shared_energy_pool / member_count` distributed equally.
+
+### Current Status
+
+Structurally complete. **Not exercised by CartPole** (fusion disabled). Would activate on tasks with `lifecycle.fusion = true` and sufficient correlated firing to trigger fusion. Needs a growing-network benchmark to validate the efficiency claim.
+
+### Configuration
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `metabolic.cluster_base_cost_reduction` | 0.4 | Base cost reduction for fused morphons (40%) |
+| `metabolic.cluster_energy_draw_per_tick` | 0.0003 | Energy drawn from pool per member per tick |
+
+---
+
+## 6. Dreaming Engine
+
+**Module**: `types.rs` (DreamConfig), `system.rs` (dream_cycle, trigger_dream)
+
+### Biological Basis
+
+Sleep consolidation: the hippocampus replays recent experiences during sleep, strengthening successful patterns and pruning unused connections. The system "exists" between inputs — it processes and consolidates even when idle.
+
+### How It Works
+
+`dream_cycle()` runs three phases:
+
+**Phase 1 — Consolidation**: Find synapses with `tag_strength > dream_tag_threshold` and `consolidation_level < 1.0`. Increase `consolidation_level` by `dream_lr * tag_strength * 0.1 * consolidation_gain`. Set `consolidated = true` when level > 0.5. Consume tags (tag *= 0.7). Also replay top-5 episodic memories with reduced reward injection.
+
+**Phase 2 — Self-optimization**: Find synapses with `age > stale_synapse_age`, `usage_count < stale_usage_threshold`, `!consolidated`, and `weight.abs() < 0.1`. Reset weight to small pseudo-random value, reset age/usage/traces to zero. This gives dead connections a second chance without pruning them.
+
+**Phase 3 — Curiosity signal**: For each cluster, compute internal PE variance and external connectivity ratio. If `pe_variance > 0.1` AND `external_ratio < 0.3` (high internal disagreement, isolated from the network), inject `curiosity_signal_strength` as input and mild novelty. This pushes the system to investigate and connect its anomalous regions.
+
+### When It Runs
+
+- **Automatic**: Glacial tick, when Endo stage is Mature/Consolidating OR firing rate < 5%
+- **Manual**: `system.trigger_dream()` — e.g., between RL episodes or during task transitions
+
+Both paths are gated on `recent_performance > consolidation_gate` (no consolidation of random weights). All consolidation is scaled by Endo's `consolidation_gain` channel.
+
+### Current Status
+
+**Mechanically functional. Not yet validated as beneficial.**
+
+The three phases address real problems, but CartPole doesn't exercise them:
+- Phase 1 is redundant with `report_episode_end` (both consolidate tagged synapses)
+- Phase 2 has no stale synapses (fixed topology, no structural changes create dead connections)
+- Phase 3 has no clusters (fusion disabled)
+
+**Where dreaming would matter** (untested):
+- **Continual learning**: train task A → `trigger_dream()` → train task B → measure task A retention
+- **Growing networks**: with division/fusion, stale synapses and isolated clusters are real problems
+- **Long-running autonomous systems**: consolidation during idle periods
+
+### Configuration
+
+| Parameter | Default | Purpose |
+|-----------|---------|---------|
+| `dream.enabled` | true | Master switch |
+| `dream.dream_learning_rate` | 0.3 | Consolidation rate multiplier (30% of waking) |
+| `dream.dream_tag_threshold` | 0.2 | Minimum tag strength for consolidation candidates |
+| `dream.max_dream_synapses` | 50 | Max synapses processed per cycle |
+| `dream.stale_synapse_age` | 5000 | Age threshold for self-optimization |
+| `dream.stale_usage_threshold` | 3 | Usage count below which a stale synapse resets |
+| `dream.reset_weight_scale` | 0.1 | Weight magnitude for refreshed synapses |
+| `dream.curiosity_signal_strength` | 0.15 | Novelty injection for anomalous clusters |
+
+---
+
+## Phase 2 Cross-Cutting Notes
+
+### Interaction with Consolidation_Gain
+
+All three consolidation paths (DFA capture, episode-end, dreaming) are scaled by Endo's `consolidation_gain` channel. This ensures stage-appropriate consolidation:
+
+| Stage | cg | Effect |
+|-------|-----|--------|
+| Proliferating | 2.5 | Aggressive capture — nothing to protect |
+| Differentiating | 2.0 | Still aggressive — refining features |
+| Consolidating | 1.0 | Normal selectivity |
+| Mature | 0.5 | Selective — protect learned weights |
+| Stressed | 0.5 | Don't lock in bad patterns during crisis |
+
+### Validation Status
+
+| Primitive | Structurally Sound | Exercised by CartPole | Proven Beneficial |
+|-----------|-------------------|----------------------|-------------------|
+| Adaptive Receptors | Yes | Partially (active, neutral effect) | No |
+| Collective Compute | Yes | No (fusion disabled) | No |
+| Dreaming Engine | Yes | Partially (phases 2+3 are no-ops) | No |
+
+Proving benefit requires benchmarks that exercise these features: continual learning (dreaming), growing networks (collective compute, curiosity), and tasks with suboptimal receptor assignments (adaptive receptors).

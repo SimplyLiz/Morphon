@@ -478,3 +478,117 @@ fn test_dream_respects_disabled() {
         }
     }
 }
+
+#[test]
+fn test_dream_stale_refresh_resets_dead_synapses() {
+    let config = SystemConfig::default();
+    let mut system = System::new(config);
+
+    // Set performance above gate
+    for _ in 0..100 { system.report_performance(200.0); }
+
+    // Create stale candidates: old, unused, weak, unconsolidated
+    let targets: Vec<_> = system.topology.graph.edge_indices().take(3).collect();
+    for &ei in &targets {
+        if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+            syn.age = 6000;
+            syn.usage_count = 1;
+            syn.weight = 0.03;
+            syn.consolidated = false;
+        }
+    }
+
+    system.trigger_dream();
+
+    for &ei in &targets {
+        if let Some(syn) = system.topology.graph.edge_weight(ei) {
+            assert_eq!(syn.age, 0, "stale synapse age should reset");
+            assert_eq!(syn.usage_count, 0, "stale synapse usage should reset");
+            assert!(syn.weight.abs() > 0.03,
+                "stale synapse weight should be refreshed to larger value, got {}", syn.weight);
+        }
+    }
+}
+
+#[test]
+fn test_dream_skips_consolidated_synapses() {
+    let config = SystemConfig::default();
+    let mut system = System::new(config);
+
+    for _ in 0..100 { system.report_performance(200.0); }
+
+    // Set up synapses that look stale BUT are consolidated — should be protected
+    let targets: Vec<_> = system.topology.graph.edge_indices().take(3).collect();
+    for &ei in &targets {
+        if let Some(syn) = system.topology.graph.edge_weight_mut(ei) {
+            syn.age = 6000;
+            syn.usage_count = 1;
+            syn.weight = 0.03;
+            syn.consolidated = true; // protected!
+        }
+    }
+
+    system.trigger_dream();
+
+    for &ei in &targets {
+        if let Some(syn) = system.topology.graph.edge_weight(ei) {
+            assert_eq!(syn.age, 6000, "consolidated synapse age should NOT reset");
+            assert!((syn.weight - 0.03).abs() < 0.01,
+                "consolidated synapse weight should be unchanged, got {}", syn.weight);
+        }
+    }
+}
+
+#[test]
+fn test_dream_consolidation_scales_with_cg() {
+    // Two systems: one with high cg (Proliferating), one with low cg (Mature).
+    // Same tagged synapses. Dream should consolidate more with high cg.
+    let config = SystemConfig::default();
+
+    let mut sys_high = System::new(config.clone());
+    let mut sys_low = System::new(config);
+
+    // Both above performance gate
+    for _ in 0..100 {
+        sys_high.report_performance(200.0);
+        sys_low.report_performance(200.0);
+    }
+
+    // Force different Endo cg values
+    sys_high.endo.channels.consolidation_gain = 2.5; // Proliferating
+    sys_low.endo.channels.consolidation_gain = 0.5;  // Mature
+
+    // Same tag setup on both
+    let setup = |sys: &mut System| {
+        let edges: Vec<_> = sys.topology.graph.edge_indices().take(5).collect();
+        for &ei in &edges {
+            if let Some(syn) = sys.topology.graph.edge_weight_mut(ei) {
+                syn.tag_strength = 0.8;
+                syn.tag = 0.5;
+                syn.consolidation_level = 0.0;
+                syn.consolidated = false;
+            }
+        }
+        edges
+    };
+
+    let edges_high = setup(&mut sys_high);
+    let edges_low = setup(&mut sys_low);
+
+    sys_high.trigger_dream();
+    sys_low.trigger_dream();
+
+    // Measure consolidation_level increase
+    let level_high: f64 = edges_high.iter()
+        .filter_map(|&ei| sys_high.topology.graph.edge_weight(ei))
+        .map(|s| s.consolidation_level)
+        .sum();
+    let level_low: f64 = edges_low.iter()
+        .filter_map(|&ei| sys_low.topology.graph.edge_weight(ei))
+        .map(|s| s.consolidation_level)
+        .sum();
+
+    assert!(level_high > level_low,
+        "high cg ({}) should produce more consolidation than low cg ({})",
+        level_high, level_low);
+}
