@@ -212,6 +212,15 @@ pub fn apply_weight_update(
     }
     synapse.age += 1;
 
+    // Bump slow activity trace for myelination gating (τ=200).
+    // Decays each medium tick, bumped when eligibility is meaningful.
+    // Survives between slow ticks (100 steps) unlike eligibility (τ=20).
+    let tau_activity = 200.0;
+    synapse.activity_trace *= (-1.0_f64 / tau_activity).exp();
+    if synapse.eligibility.abs() > 0.05 {
+        synapse.activity_trace = (synapse.activity_trace + 1.0).min(2.0);
+    }
+
     captured
 }
 
@@ -224,14 +233,14 @@ pub fn should_prune(synapse: &Synapse, params: &LearningParams) -> bool {
 }
 
 /// Distance-aware pruning: expensive long-distance synapses must carry more weight
-/// to avoid being pruned. `maintenance_cost` > 0 raises the effective weight threshold.
-pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, maintenance_cost: f64) -> bool {
-    // Old synapses with very low weight and low usage
-    // Consolidated synapses are protected from pruning
-    // Expensive synapses (long-distance or myelinated) need proportionally
-    // higher weight to justify their cost.
-    let cost_factor = 1.0 + maintenance_cost * 10.0; // 10× amplification for sensitivity
-    let effective_weight_min = params.weight_min * cost_factor;
+/// to avoid being pruned. `cost_factor` is a dimensionless multiplier (≥1.0) derived
+/// from hyperbolic distance and myelination maintenance. Directly scales weight_min.
+pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_factor: f64) -> bool {
+    // Old synapses with very low weight and low usage.
+    // Consolidated synapses are protected from pruning.
+    // Long-distance synapses need proportionally higher weight to justify
+    // their metabolic cost — cost_factor raises the pruning threshold.
+    let effective_weight_min = params.weight_min * cost_factor.max(1.0);
     !synapse.consolidated
         && synapse.age > 100
         && synapse.weight.abs() < effective_weight_min
@@ -673,16 +682,17 @@ mod tests {
     #[test]
     fn distance_cost_raises_pruning_threshold() {
         let params = LearningParams::default();
-        // Synapse at weight_min — should survive with zero cost
+        // Synapse at weight_min — should survive at baseline cost factor
         let mut syn = Synapse::new(params.weight_min);
         syn.age = 200;
         syn.usage_count = 0;
-        assert!(!should_prune_with_cost(&syn, &params, 0.0),
-            "at exactly weight_min with zero cost, should not prune");
+        assert!(!should_prune_with_cost(&syn, &params, 1.0),
+            "at exactly weight_min with baseline factor, should not prune");
 
-        // Same synapse with high maintenance cost — now the effective threshold is higher
-        assert!(should_prune_with_cost(&syn, &params, 0.01),
-            "high maintenance cost should raise threshold and trigger pruning");
+        // Same synapse with high cost factor (long distance) — threshold raised
+        // cost_factor=2.0 → effective_weight_min = 0.002 > 0.001 = weight → prune
+        assert!(should_prune_with_cost(&syn, &params, 2.0),
+            "high cost factor should raise threshold and trigger pruning");
     }
 
     #[test]
@@ -692,7 +702,7 @@ mod tests {
         syn.age = 200;
         syn.usage_count = 0;
         syn.consolidated = true;
-        assert!(!should_prune_with_cost(&syn, &params, 1.0),
+        assert!(!should_prune_with_cost(&syn, &params, 10.0),
             "consolidated synapses are always protected");
     }
 }

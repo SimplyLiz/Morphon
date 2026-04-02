@@ -39,6 +39,13 @@ pub struct Synapse {
     /// Incremented on post-spike, decays exponentially with tau_trace.
     pub post_trace: f64,
 
+    /// Slow-decaying activity trace for myelination gating (τ ~ 200 steps).
+    /// Bumped in apply_weight_update (medium path), read in update_myelination (slow path).
+    /// Solves the timing mismatch where fast traces (eligibility τ=20, pre/post τ=10)
+    /// decay to zero between slow ticks.
+    #[serde(default)]
+    pub activity_trace: f64,
+
     /// Activity-dependent myelination level (0.0 = unmyelinated, 1.0 = fully myelinated).
     /// Increases with consolidation × usage on slow timescale. Reduces effective signal
     /// delay, giving established pathways a temporal advantage in local competition.
@@ -64,6 +71,7 @@ impl Synapse {
             usage_count: 0,
             pre_trace: 0.0,
             post_trace: 0.0,
+            activity_trace: 0.0,
             myelination: 0.0,
             justification: None,
         }
@@ -91,10 +99,11 @@ impl Synapse {
 
     /// Update myelination level based on consolidation and recent activity.
     /// Myelination is very slow (τ ~ 5000 steps) — tracks proven, consolidated pathways.
-    /// `recently_active`: whether this synapse carried signal recently (usage_count increased).
+    /// Uses `activity_trace` (bumped in apply_weight_update on medium tick) as the
+    /// activity signal — it decays slowly enough (τ=200) to survive between slow ticks.
     pub fn update_myelination(&mut self, dt: f64) {
-        let activity = if self.usage_count > 0 && self.eligibility.abs() > 0.01 { 1.0 } else { 0.0 };
-        let target = self.consolidation_level * activity;
+        let active = if self.activity_trace > 0.1 { 1.0 } else { 0.0 };
+        let target = self.consolidation_level * active;
         let tau_myelin = 5000.0;
         self.myelination += (target - self.myelination) * (dt / tau_myelin);
         self.myelination = self.myelination.clamp(0.0, 1.0);
@@ -646,8 +655,7 @@ mod tests {
     fn myelination_increases_with_consolidation_and_activity() {
         let mut syn = Synapse::new(0.5);
         syn.consolidation_level = 0.8;
-        syn.usage_count = 10;
-        syn.eligibility = 0.5; // above 0.01 threshold
+        syn.activity_trace = 1.0; // above 0.1 gate
 
         for _ in 0..1000 {
             syn.update_myelination(1.0);
@@ -661,8 +669,7 @@ mod tests {
     fn myelination_stays_zero_without_consolidation() {
         let mut syn = Synapse::new(0.5);
         syn.consolidation_level = 0.0;
-        syn.usage_count = 100;
-        syn.eligibility = 0.5;
+        syn.activity_trace = 1.0;
 
         for _ in 0..1000 {
             syn.update_myelination(1.0);
@@ -701,7 +708,7 @@ mod tests {
         let mut syn = Synapse::new(0.5);
         syn.myelination = 0.5;
         syn.consolidation_level = 0.8;
-        syn.eligibility = 0.0; // inactive
+        syn.activity_trace = 0.0; // inactive — no recent signal
 
         for _ in 0..2000 {
             syn.update_myelination(1.0);

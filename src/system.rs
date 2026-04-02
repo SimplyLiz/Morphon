@@ -1044,7 +1044,6 @@ impl System {
                 self.field.as_ref(),
                 self.config.governance.max_connectivity_per_morphon,
                 self.step_count,
-                self.config.metabolic.synapse_cost,
             );
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
