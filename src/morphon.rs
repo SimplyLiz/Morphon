@@ -39,6 +39,12 @@ pub struct Synapse {
     /// Incremented on post-spike, decays exponentially with tau_trace.
     pub post_trace: f64,
 
+    /// Activity-dependent myelination level (0.0 = unmyelinated, 1.0 = fully myelinated).
+    /// Increases with consolidation × usage on slow timescale. Reduces effective signal
+    /// delay, giving established pathways a temporal advantage in local competition.
+    #[serde(default)]
+    pub myelination: f64,
+
     /// V3: Provenance record — why this synapse was formed and what reinforced it.
     #[serde(default)]
     pub justification: Option<SynapticJustification>,
@@ -58,6 +64,7 @@ impl Synapse {
             usage_count: 0,
             pre_trace: 0.0,
             post_trace: 0.0,
+            myelination: 0.0,
             justification: None,
         }
     }
@@ -73,6 +80,24 @@ impl Synapse {
     pub fn with_delay(mut self, delay: f64) -> Self {
         self.delay = delay;
         self
+    }
+
+    /// Effective signal delay accounting for myelination.
+    /// Fully myelinated synapses deliver up to 5× faster than unmyelinated ones.
+    pub fn effective_delay(&self) -> f64 {
+        let speed_factor = 1.0 + self.myelination * 4.0; // 1× to 5× faster
+        (self.delay / speed_factor).max(0.5) // minimum 0.5 tick delay
+    }
+
+    /// Update myelination level based on consolidation and recent activity.
+    /// Myelination is very slow (τ ~ 5000 steps) — tracks proven, consolidated pathways.
+    /// `recently_active`: whether this synapse carried signal recently (usage_count increased).
+    pub fn update_myelination(&mut self, dt: f64) {
+        let activity = if self.usage_count > 0 && self.eligibility.abs() > 0.01 { 1.0 } else { 0.0 };
+        let target = self.consolidation_level * activity;
+        let tau_myelin = 5000.0;
+        self.myelination += (target - self.myelination) * (dt / tau_myelin);
+        self.myelination = self.myelination.clamp(0.0, 1.0);
     }
 }
 
@@ -328,9 +353,11 @@ impl Morphon {
 
     /// Process accumulated input and determine if the Morphon fires.
     ///
-    /// `synapse_count`: number of outgoing synapses (for metabolic maintenance cost).
+    /// `synapse_maintenance_cost`: total maintenance cost for this morphon's outgoing
+    /// synapses, precomputed by the caller. Includes distance-dependent and myelination
+    /// maintenance factors.
     /// `metabolic`: V3 metabolic budget configuration.
-    pub fn step(&mut self, dt: f64, synapse_count: usize, metabolic: &MetabolicConfig, frustration_config: &FrustrationConfig, threshold_bias: f64) {
+    pub fn step(&mut self, dt: f64, synapse_maintenance_cost: f64, metabolic: &MetabolicConfig, frustration_config: &FrustrationConfig, threshold_bias: f64) {
         self.age += 1;
 
         // Refractory period
@@ -448,8 +475,10 @@ impl Morphon {
             metabolic.base_cost
         };
         self.energy -= effective_base_cost;
-        // 2. Per-synapse maintenance cost (connections are expensive)
-        self.energy -= synapse_count as f64 * metabolic.synapse_cost;
+        // 2. Per-synapse maintenance cost (connections are expensive).
+        // Cost includes distance-dependent and myelination maintenance factors
+        // precomputed by the caller.
+        self.energy -= synapse_maintenance_cost;
         // 3. Utility reward: earn energy by reducing prediction error
         //    PE decrease means the morphon is doing useful work.
         let pe_delta = self.prev_potential.abs() - self.prediction_error;
@@ -542,7 +571,7 @@ mod tests {
         // Feed constant input — PE delta will be small, frustration should build.
         for _ in 0..300 {
             m.input_accumulator = 0.5;
-            m.step(1.0, 0, &metabolic, &fc, 0.0);
+            m.step(1.0, 0.0, &metabolic, &fc, 0.0);
         }
 
         assert!(m.frustration.stagnation_counter > 0, "stagnation counter should grow");
@@ -560,7 +589,7 @@ mod tests {
         // Build up frustration
         for _ in 0..200 {
             m.input_accumulator = 0.5;
-            m.step(1.0, 0, &metabolic, &fc, 0.0);
+            m.step(1.0, 0.0, &metabolic, &fc, 0.0);
         }
         let frustrated_level = m.frustration.frustration_level;
         assert!(frustrated_level > 0.0);
@@ -568,7 +597,7 @@ mod tests {
         // Now inject varying input — PE changes, stagnation counter should decay
         for i in 0..100 {
             m.input_accumulator = (i as f64) * 0.1;
-            m.step(1.0, 0, &metabolic, &fc, 0.0);
+            m.step(1.0, 0.0, &metabolic, &fc, 0.0);
         }
 
         assert!(
@@ -604,10 +633,81 @@ mod tests {
         // Motor morphons have noise_scale = 0.0 regardless of frustration
         let potential_before = m.potential;
         m.input_accumulator = 0.0;
-        m.step(1.0, 0, &metabolic, &fc, 0.0);
+        m.step(1.0, 0.0, &metabolic, &fc, 0.0);
         // Motor has full leak (leak_rate=1.0), so potential = 0*(1-1) + 0 + 0 = 0
         // No noise should be added
         assert!((m.potential - 0.0).abs() < f64::EPSILON,
             "motor morphon potential should not have noise");
+    }
+
+    // === Myelination ===
+
+    #[test]
+    fn myelination_increases_with_consolidation_and_activity() {
+        let mut syn = Synapse::new(0.5);
+        syn.consolidation_level = 0.8;
+        syn.usage_count = 10;
+        syn.eligibility = 0.5; // above 0.01 threshold
+
+        for _ in 0..1000 {
+            syn.update_myelination(1.0);
+        }
+
+        assert!(syn.myelination > 0.0, "myelination should increase: {}", syn.myelination);
+        assert!(syn.myelination < 0.3, "myelination should be slow: {}", syn.myelination);
+    }
+
+    #[test]
+    fn myelination_stays_zero_without_consolidation() {
+        let mut syn = Synapse::new(0.5);
+        syn.consolidation_level = 0.0;
+        syn.usage_count = 100;
+        syn.eligibility = 0.5;
+
+        for _ in 0..1000 {
+            syn.update_myelination(1.0);
+        }
+
+        assert!((syn.myelination - 0.0).abs() < 1e-10,
+            "unmyelinated without consolidation: {}", syn.myelination);
+    }
+
+    #[test]
+    fn effective_delay_decreases_with_myelination() {
+        let mut syn = Synapse::new(0.5).with_delay(3.0);
+        let base_delay = syn.effective_delay();
+        assert!((base_delay - 3.0).abs() < 1e-10, "no myelination = base delay");
+
+        syn.myelination = 0.5;
+        let mid_delay = syn.effective_delay();
+        assert!(mid_delay < base_delay, "partial myelination reduces delay");
+
+        syn.myelination = 1.0;
+        let full_delay = syn.effective_delay();
+        assert!((full_delay - 0.6).abs() < 1e-10,
+            "full myelination: 3.0 / 5.0 = 0.6, got {}", full_delay);
+    }
+
+    #[test]
+    fn effective_delay_has_minimum() {
+        let mut syn = Synapse::new(0.5).with_delay(1.0);
+        syn.myelination = 1.0;
+        assert!((syn.effective_delay() - 0.5).abs() < 1e-10,
+            "effective delay floor is 0.5: {}", syn.effective_delay());
+    }
+
+    #[test]
+    fn myelination_decays_without_activity() {
+        let mut syn = Synapse::new(0.5);
+        syn.myelination = 0.5;
+        syn.consolidation_level = 0.8;
+        syn.eligibility = 0.0; // inactive
+
+        for _ in 0..2000 {
+            syn.update_myelination(1.0);
+        }
+
+        assert!(syn.myelination < 0.5,
+            "myelination should decay without activity: {}", syn.myelination);
     }
 }

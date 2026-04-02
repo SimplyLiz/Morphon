@@ -63,12 +63,15 @@ impl ResonanceEngine {
         let spike_gen = |&source_id: &MorphonId| -> Vec<SpikeEvent> {
             topology.outgoing(source_id)
                 .into_iter()
-                .map(|(target_id, synapse)| SpikeEvent {
-                    source: source_id,
-                    target: target_id,
-                    strength: synapse.weight,
-                    delay: synapse.delay,
-                    initial_delay: synapse.delay,
+                .map(|(target_id, synapse)| {
+                    let eff_delay = synapse.effective_delay();
+                    SpikeEvent {
+                        source: source_id,
+                        target: target_id,
+                        strength: synapse.weight,
+                        delay: eff_delay,
+                        initial_delay: eff_delay,
+                    }
                 })
                 .collect()
         };

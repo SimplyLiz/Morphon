@@ -164,6 +164,15 @@ impl Topology {
             .collect()
     }
 
+    /// Apply a function to every synapse in the topology.
+    pub fn update_all_synapses(&mut self, mut f: impl FnMut(&mut Synapse)) {
+        for ei in self.graph.edge_indices() {
+            if let Some(synapse) = self.graph.edge_weight_mut(ei) {
+                f(synapse);
+            }
+        }
+    }
+
     /// Get the number of connections (in + out) for a Morphon.
     pub fn degree(&self, id: MorphonId) -> usize {
         let Some(&idx) = self.id_to_node.get(&id) else {

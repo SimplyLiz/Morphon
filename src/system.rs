@@ -109,6 +109,8 @@ impl Default for SystemConfig {
 pub struct SystemStats {
     /// Effective morphon cap (auto-derived or explicitly set).
     pub max_morphons: usize,
+    /// Whether the system has reached its morphon cap (division blocked).
+    pub at_morphon_cap: bool,
     pub total_morphons: usize,
     pub total_synapses: usize,
     pub fused_clusters: usize,
@@ -560,18 +562,35 @@ impl System {
         let metabolic = &self.config.metabolic;
         let frustration_config = &self.config.morphogenesis.frustration;
         let threshold_bias = self.endo.channels.threshold_bias as f64;
-        let degree_map: HashMap<MorphonId, usize> = self.morphons.keys()
-            .map(|&id| (id, self.topology.degree(id)))
+        // Precompute per-morphon synapse maintenance cost with distance + myelination factors.
+        let synapse_cost_base = metabolic.synapse_cost;
+        let maintenance_cost_map: HashMap<MorphonId, f64> = self.morphons.keys()
+            .map(|&id| {
+                let total_cost: f64 = self.topology.outgoing(id)
+                    .into_iter()
+                    .map(|(target_id, synapse)| {
+                        let distance_factor = self.morphons.get(&target_id)
+                            .map(|target| {
+                                let dist = self.morphons[&id].position.distance(&target.position);
+                                1.0 + dist * 0.5 // 50% more cost per unit hyperbolic distance
+                            })
+                            .unwrap_or(1.0);
+                        let myelination_cost = synapse.myelination * 0.002; // myelin maintenance
+                        synapse_cost_base * distance_factor + myelination_cost
+                    })
+                    .sum();
+                (id, total_cost)
+            })
             .collect();
         #[cfg(feature = "parallel")]
         self.morphons.par_iter_mut().for_each(|(id, m)| {
-            let sc = degree_map.get(id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic, frustration_config, threshold_bias);
+            let cost = maintenance_cost_map.get(id).copied().unwrap_or(0.0);
+            m.step(dt, cost, metabolic, frustration_config, threshold_bias);
         });
         #[cfg(not(feature = "parallel"))]
         self.morphons.values_mut().for_each(|m| {
-            let sc = degree_map.get(&m.id).copied().unwrap_or(0);
-            m.step(dt, sc, metabolic, frustration_config, threshold_bias);
+            let cost = maintenance_cost_map.get(&m.id).copied().unwrap_or(0.0);
+            m.step(dt, cost, metabolic, frustration_config, threshold_bias);
         });
 
         // V3: Cluster overhead — fused morphons pay extra maintenance cost.
@@ -1025,6 +1044,7 @@ impl System {
                 self.field.as_ref(),
                 self.config.governance.max_connectivity_per_morphon,
                 self.step_count,
+                self.config.metabolic.synapse_cost,
             );
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
@@ -1053,6 +1073,13 @@ impl System {
                     0.001,
                 );
             }
+
+            // Activity-dependent myelination: consolidated, active synapses
+            // get faster signal delivery. Very slow τ (5000 steps) — only proven
+            // pathways myelinate. Gives temporal advantage in local competition.
+            self.topology.update_all_synapses(|synapse| {
+                synapse.update_myelination(1.0);
+            });
         }
 
         // === GLACIAL PATH (with checkpoint/rollback protection) ===
@@ -2237,6 +2264,7 @@ impl System {
 
         SystemStats {
             max_morphons: self.effective_max_morphons,
+            at_morphon_cap: self.morphons.len() >= self.effective_max_morphons,
             total_morphons: self.morphons.len(),
             total_synapses: self.topology.synapse_count(),
             fused_clusters: self.clusters.len(),

@@ -138,7 +138,8 @@ fn bench_pruning(c: &mut Criterion) {
                 topo
             },
             |mut topo| {
-                morphogenesis::pruning(&mut topo, &lp);
+                let morphons = std::collections::HashMap::new();
+                morphogenesis::pruning(&mut topo, &lp, &morphons, 0.0001);
             },
             criterion::BatchSize::SmallInput,
         );

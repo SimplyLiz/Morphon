@@ -216,12 +216,25 @@ pub fn apply_weight_update(
 }
 
 /// Determine if a synapse should be pruned based on activity.
+/// `maintenance_cost` is the distance-dependent cost of this synapse (higher = more
+/// expensive to maintain). Expensive synapses get a lower weight threshold for pruning,
+/// meaning they need to be stronger to justify their metabolic cost.
 pub fn should_prune(synapse: &Synapse, params: &LearningParams) -> bool {
+    should_prune_with_cost(synapse, params, 0.0)
+}
+
+/// Distance-aware pruning: expensive long-distance synapses must carry more weight
+/// to avoid being pruned. `maintenance_cost` > 0 raises the effective weight threshold.
+pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, maintenance_cost: f64) -> bool {
     // Old synapses with very low weight and low usage
     // Consolidated synapses are protected from pruning
+    // Expensive synapses (long-distance or myelinated) need proportionally
+    // higher weight to justify their cost.
+    let cost_factor = 1.0 + maintenance_cost * 10.0; // 10× amplification for sensitivity
+    let effective_weight_min = params.weight_min * cost_factor;
     !synapse.consolidated
         && synapse.age > 100
-        && synapse.weight.abs() < params.weight_min
+        && synapse.weight.abs() < effective_weight_min
         && synapse.usage_count < 5
 }
 
@@ -655,5 +668,31 @@ mod tests {
 
         let new_sens = sensitivity[&ModulatorType::Reward];
         assert!(new_sens > 1.0, "sensitivity should increase on positive correlation: {new_sens}");
+    }
+
+    #[test]
+    fn distance_cost_raises_pruning_threshold() {
+        let params = LearningParams::default();
+        // Synapse at weight_min — should survive with zero cost
+        let mut syn = Synapse::new(params.weight_min);
+        syn.age = 200;
+        syn.usage_count = 0;
+        assert!(!should_prune_with_cost(&syn, &params, 0.0),
+            "at exactly weight_min with zero cost, should not prune");
+
+        // Same synapse with high maintenance cost — now the effective threshold is higher
+        assert!(should_prune_with_cost(&syn, &params, 0.01),
+            "high maintenance cost should raise threshold and trigger pruning");
+    }
+
+    #[test]
+    fn consolidated_synapse_survives_high_cost() {
+        let params = LearningParams::default();
+        let mut syn = Synapse::new(0.0001);
+        syn.age = 200;
+        syn.usage_count = 0;
+        syn.consolidated = true;
+        assert!(!should_prune_with_cost(&syn, &params, 1.0),
+            "consolidated synapses are always protected");
     }
 }

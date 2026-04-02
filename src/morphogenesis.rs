@@ -224,21 +224,30 @@ pub fn synaptogenesis(
 }
 
 /// Run pruning — remove weak, unused synapses.
+/// Uses distance-dependent cost: expensive long-distance synapses are pruned more
+/// aggressively when they carry little weight.
 pub fn pruning(
     topology: &mut Topology,
     learning_params: &LearningParams,
+    morphons: &HashMap<MorphonId, Morphon>,
+    synapse_cost: f64,
 ) -> usize {
     let edges_to_remove: Vec<_> = topology
         .all_edges()
         .into_iter()
-        .filter(|(_, _, ei)| {
-            if let Some((_, syn)) = topology.graph.edge_endpoints(*ei).map(|(s, _t)| {
-                (s, &topology.graph[*ei])
-            }) {
-                learning::should_prune(syn, learning_params)
-            } else {
-                false
-            }
+        .filter(|(src_id, tgt_id, ei)| {
+            let syn = &topology.graph[*ei];
+            // Compute distance-dependent maintenance cost for this synapse
+            let maintenance_cost = match (morphons.get(src_id), morphons.get(tgt_id)) {
+                (Some(src), Some(tgt)) => {
+                    let dist = src.position.distance(&tgt.position);
+                    let distance_factor = 1.0 + dist * 0.5;
+                    let myelination_cost = syn.myelination * 0.002;
+                    synapse_cost * distance_factor + myelination_cost
+                }
+                _ => synapse_cost,
+            };
+            learning::should_prune_with_cost(syn, learning_params, maintenance_cost)
         })
         .map(|(_, _, ei)| ei)
         .collect();
@@ -1099,11 +1108,12 @@ pub fn step_slow(
     field: Option<&crate::field::MorphonField>,
     max_connectivity: usize,
     step_count: u64,
+    synapse_cost: f64,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
     report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
-    report.synapses_pruned = pruning(topology, learning_params);
+    report.synapses_pruned = pruning(topology, learning_params, morphons, synapse_cost);
 
     if lifecycle.migration {
         report.migrations = migration(morphons, topology, params, homeostasis_level, field);
@@ -1285,7 +1295,8 @@ mod tests {
         topo.add_synapse(1, 2, weak_syn);
 
         let params = LearningParams::default();
-        let pruned = pruning(&mut topo, &params);
+        let morphons = HashMap::new();
+        let pruned = pruning(&mut topo, &params, &morphons, 0.0001);
         assert_eq!(pruned, 1);
         assert_eq!(topo.synapse_count(), 0);
     }
@@ -1302,7 +1313,8 @@ mod tests {
         topo.add_synapse(1, 2, strong_syn);
 
         let params = LearningParams::default();
-        let pruned = pruning(&mut topo, &params);
+        let morphons = HashMap::new();
+        let pruned = pruning(&mut topo, &params, &morphons, 0.0001);
         assert_eq!(pruned, 0);
         assert_eq!(topo.synapse_count(), 1);
     }
@@ -1744,7 +1756,7 @@ mod tests {
         let lp = LearningParams::default();
         let lifecycle = LifecycleConfig::default();
 
-        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50, 0);
+        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50, 0, 0.0001);
         // Just verify it runs and returns a valid report
         // Report is valid (fields are populated)
         let _ = report.synapses_created;
