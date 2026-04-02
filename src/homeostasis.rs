@@ -31,9 +31,21 @@ pub struct HomeostasisParams {
     /// destabilizing structural changes.
     pub rollback_pe_threshold: f64,
     /// Fraction of associative morphons that win the k-WTA competition each step.
+    /// Used as fallback when local_kwta_radius is 0.0 (global competition).
     /// CartPole: 0.15 (15%) for diverse representations.
     /// MNIST: 0.02-0.05 (1-5 winners) for class-selective feature detectors.
     pub kwta_fraction: f64,
+    /// Hyperbolic distance radius for local k-WTA neighborhoods.
+    /// When > 0, each morphon competes only with neighbors within this radius
+    /// in the Poincare ball. Different neighborhoods compete independently,
+    /// allowing diverse feature specialization across spatial regions.
+    /// 0.0 = global k-WTA (legacy behavior).
+    #[serde(default)]
+    pub local_kwta_radius: f64,
+    /// Number of winners per local neighborhood.
+    /// Only used when local_kwta_radius > 0.
+    #[serde(default = "default_local_kwta_k")]
+    pub local_kwta_k: usize,
 }
 
 impl Default for HomeostasisParams {
@@ -45,9 +57,13 @@ impl Default for HomeostasisParams {
             migration_cooldown_duration: 20.0,
             rollback_pe_threshold: 0.2,
             kwta_fraction: 0.15,
+            local_kwta_radius: 0.0,
+            local_kwta_k: 3,
         }
     }
 }
+
+fn default_local_kwta_k() -> usize { 3 }
 
 // === A) Synaptic Scaling ===
 

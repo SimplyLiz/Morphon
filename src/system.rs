@@ -470,31 +470,82 @@ impl System {
         //    Suppress non-winners' input_accumulator so they never fire.
         //    No "unfiring" — spikes that happen are real.
         {
-            // Rank associative/stem morphons by input_accumulator (pre-firing potential)
-            let mut assoc_inputs: Vec<(MorphonId, f64)> = self.morphons.values()
+            let local_radius = self.config.homeostasis.local_kwta_radius;
+
+            // Collect associative/stem morphons with their input and position
+            let assoc_data: Vec<(MorphonId, f64)> = self.morphons.values()
                 .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
                 .map(|m| (m.id, m.input_accumulator))
                 .collect();
 
-            if !assoc_inputs.is_empty() {
-                let k = (assoc_inputs.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
-                let k = k.max(3).min(20).min(assoc_inputs.len());
+            if !assoc_data.is_empty() {
+                let winners = if local_radius > 0.0 {
+                    // === LOCAL k-WTA: spatial neighborhoods in Poincare ball ===
+                    // For each morphon, find neighbors within radius, compete locally.
+                    // A morphon can participate in multiple neighborhoods — biologically
+                    // correct (neurons receive inhibition from multiple local circuits).
+                    let local_k = self.config.homeostasis.local_kwta_k;
+                    let mut global_winners: std::collections::HashSet<MorphonId> =
+                        std::collections::HashSet::new();
 
-                // Sort by input descending — top-k keep their input
-                assoc_inputs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    // Cache positions to avoid repeated borrow
+                    let positions: Vec<(MorphonId, f64, crate::types::HyperbolicPoint)> = assoc_data.iter()
+                        .filter_map(|&(id, input)| {
+                            self.morphons.get(&id).map(|m| (id, input, m.position.clone()))
+                        })
+                        .collect();
 
-                // Zero out losers' input — they won't fire this step
-                for &(id, _) in &assoc_inputs[k..] {
-                    if let Some(m) = self.morphons.get_mut(&id) {
-                        m.input_accumulator = 0.0;
+                    for i in 0..positions.len() {
+                        let (center_id, _, ref center_pos) = positions[i];
+
+                        // Find neighbors within radius (including self)
+                        let mut neighborhood: Vec<(MorphonId, f64)> = positions.iter()
+                            .filter(|(_, _, pos)| center_pos.distance(pos) < local_radius)
+                            .map(|&(id, input, _)| (id, input))
+                            .collect();
+
+                        if neighborhood.len() <= local_k {
+                            // Everyone wins in tiny neighborhoods
+                            for &(id, _) in &neighborhood {
+                                global_winners.insert(id);
+                            }
+                            continue;
+                        }
+
+                        // Top-k by input in this neighborhood
+                        neighborhood.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                        for &(id, _) in &neighborhood[..local_k.min(neighborhood.len())] {
+                            global_winners.insert(id);
+                        }
                     }
-                }
 
-                // Collect winner IDs for threshold boost after step()
-                let winners: Vec<MorphonId> = assoc_inputs[..k]
-                    .iter().map(|(id, _)| *id).collect();
+                    // Suppress non-winners
+                    for &(id, _) in &assoc_data {
+                        if !global_winners.contains(&id) {
+                            if let Some(m) = self.morphons.get_mut(&id) {
+                                m.input_accumulator = 0.0;
+                            }
+                        }
+                    }
 
-                // Store for post-step threshold update
+                    global_winners.into_iter().collect::<Vec<_>>()
+                } else {
+                    // === GLOBAL k-WTA (legacy) ===
+                    let mut sorted = assoc_data.clone();
+                    let k = (sorted.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
+                    let k = k.max(3).min(20).min(sorted.len());
+
+                    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+                    for &(id, _) in &sorted[k..] {
+                        if let Some(m) = self.morphons.get_mut(&id) {
+                            m.input_accumulator = 0.0;
+                        }
+                    }
+
+                    sorted[..k].iter().map(|(id, _)| *id).collect()
+                };
+
                 self.kwta_winners = winners;
             }
         }
