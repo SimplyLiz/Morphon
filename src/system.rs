@@ -472,10 +472,16 @@ impl System {
         {
             let local_radius = self.config.homeostasis.local_kwta_radius;
 
-            // Collect associative/stem morphons with their input and position
+            // Collect associative/stem morphons with degree-normalized input.
+            // Without normalization, high-degree morphons dominate k-WTA by
+            // accumulating more raw input, creating hub neurons that fire
+            // identically for every input and contribute no discriminative signal.
             let assoc_data: Vec<(MorphonId, f64)> = self.morphons.values()
                 .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
-                .map(|m| (m.id, m.input_accumulator))
+                .map(|m| {
+                    let in_degree = self.topology.degree(m.id).max(1);
+                    (m.id, m.input_accumulator / in_degree as f64)
+                })
                 .collect();
 
             if !assoc_data.is_empty() {
