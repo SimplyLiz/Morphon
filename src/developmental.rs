@@ -11,6 +11,7 @@ use crate::morphon::{Morphon, Synapse};
 use crate::topology::Topology;
 use crate::types::*;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -179,27 +180,25 @@ pub fn develop(
         let motor: Vec<MorphonId> = morphons.values()
             .filter(|m| m.cell_type == CellType::Motor).map(|m| m.id).collect();
 
-        // Fan-out from sensory → associative: each sensory connects to many associative.
-        // Target: each associative receives from ~30% of sensory (wide receptive field).
+        // Fan-in from sensory → associative: each associative receives from ~30% of sensory.
+        // Use fan-IN perspective (iterate over associative, sample sensory) to ensure
+        // uniform receptive field sizes. The old fan-OUT approach created uneven
+        // distributions where some associative morphons received 2-3x more input,
+        // seeding hub dominance from initialization.
         let sens_per_assoc = (sensory.len() as f64 * 0.3).ceil() as usize;
-        let conns_per_sens = if !associative.is_empty() {
-            (sens_per_assoc * associative.len() / sensory.len().max(1)).max(1).min(associative.len())
-        } else { 0 };
 
-        // Xavier-like scaling: weight magnitude = 1/sqrt(fan_in)
-        // Sensory → Associative: EXCITATORY only. These must be positive and strong
-        // enough to cross the associative morphon's threshold (~0.3) with a single spike.
-        // Mixed-sign initialization here creates dead pathways that never activate.
-        for (i, &s) in sensory.iter().enumerate() {
-            for j in 0..conns_per_sens.min(associative.len()) {
-                let t = associative[(i.wrapping_mul(7) + j) % associative.len()];
-                if !topology.has_connection(s, t) {
+        for &a in &associative {
+            // Shuffle sensory and take first sens_per_assoc
+            let mut sens_shuffled = sensory.clone();
+            sens_shuffled.shuffle(rng);
+            for &s in sens_shuffled.iter().take(sens_per_assoc) {
+                if !topology.has_connection(s, a) {
                     let w = rng.random_range(0.3..0.8); // positive, above threshold
                     let j = crate::justification::SynapticJustification::new(
                         crate::justification::FormationCause::External { source: "developmental".into() },
                         0,
                     );
-                    topology.add_synapse(s, t, Synapse::new_justified(w, j).with_delay(0.1));
+                    topology.add_synapse(s, a, Synapse::new_justified(w, j).with_delay(0.1));
                 }
             }
         }

@@ -146,6 +146,15 @@ pub fn synaptogenesis(
         return 0;
     }
 
+    // Median degree for anti-hub gating (computed once, not per sample).
+    let median_degree = {
+        let mut degrees: Vec<usize> = active.iter()
+            .map(|&id| topology.degree(id))
+            .collect();
+        degrees.sort();
+        degrees[degrees.len() / 2].max(1)
+    };
+
     // Sample O(N) random pairs. For small N this exceeds total pairs,
     // giving equivalent coverage to the exhaustive scan.
     let total_pairs = active.len() * (active.len() - 1) / 2;
@@ -188,6 +197,17 @@ pub fn synaptogenesis(
             if !crate::governance::check_connectivity(topology, from.id, max_connectivity)
                 || !crate::governance::check_connectivity(topology, to.id, max_connectivity)
             {
+                continue;
+            }
+            // Anti-hub: reduce synaptogenesis probability for high-degree nodes.
+            // Morphons with >2x median degree get exponentially less likely to gain
+            // new connections, preventing rich-get-richer feedback.
+            let from_ratio = topology.degree(from.id) as f64 / median_degree as f64;
+            let to_ratio = topology.degree(to.id) as f64 / median_degree as f64;
+            if from_ratio > 2.0 && rng.random_range(0.0..1.0) < (from_ratio - 2.0) * 0.5 {
+                continue;
+            }
+            if to_ratio > 2.0 && rng.random_range(0.0..1.0) < (to_ratio - 2.0) * 0.5 {
                 continue;
             }
             let weight = rng.random_range(-0.5..0.5);

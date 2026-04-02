@@ -99,6 +99,56 @@ pub fn synaptic_scaling(
     }
 }
 
+// === A2) Anti-Hub Scaling ===
+
+/// Suppress indiscriminate hub morphons — those that fire for nearly every input.
+/// A morphon with firing rate >80% of the maximum observed rate is not selective;
+/// it fires regardless of input content. Scale its incoming weights DOWN harder
+/// than proportional homeostatic scaling would, breaking the hub's dominance.
+///
+/// Biology: homeostatic plasticity with an anti-correlation term. Neurons that
+/// fire indiscriminately receive stronger LTD-like depression.
+pub fn anti_hub_scaling(
+    morphons: &HashMap<MorphonId, Morphon>,
+    topology: &mut Topology,
+) {
+    // Find the max firing rate among associative morphons
+    let max_rate = morphons.values()
+        .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+        .map(|m| m.activity_history.mean())
+        .fold(0.0_f64, f64::max);
+
+    if max_rate < 0.01 {
+        return; // no meaningful activity
+    }
+
+    let hub_threshold = max_rate * 0.8;
+
+    for morphon in morphons.values() {
+        if morphon.cell_type != CellType::Associative && morphon.cell_type != CellType::Stem {
+            continue;
+        }
+
+        let rate = morphon.activity_history.mean();
+        if rate <= hub_threshold {
+            continue;
+        }
+
+        // How much above the hub threshold: 0.0 at threshold, 1.0 at max_rate
+        let excess = (rate - hub_threshold) / (max_rate - hub_threshold).max(1e-10);
+        // Scale factor: 0.7 at threshold, 0.3 at max — aggressive depression
+        let scale = 1.0 - excess * 0.7;
+        let scale = scale.clamp(0.3, 0.95);
+
+        let incoming = topology.incoming_synapses_mut(morphon.id);
+        for (_, edge_idx) in incoming {
+            if let Some(syn) = topology.synapse_mut(edge_idx) {
+                syn.weight *= scale;
+            }
+        }
+    }
+}
+
 // === B) Inhibitory Inter-Cluster Morphons ===
 
 /// Activate inhibitory inter-cluster Morphons proportional to cluster synchrony.

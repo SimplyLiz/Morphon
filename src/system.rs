@@ -1190,6 +1190,7 @@ impl System {
         // === HOMEOSTASIS ===
         if tick.homeostasis {
             homeostasis::synaptic_scaling(&self.morphons, &mut self.topology);
+            homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
             homeostasis::inter_cluster_inhibition(
                 &mut self.morphons,
                 &self.clusters,
