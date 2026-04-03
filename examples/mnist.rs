@@ -50,9 +50,9 @@ fn poisson_frame(rates: &[f64], rng: &mut impl Rng) -> Vec<f64> {
 /// Resets associative+motor potentials first (Diehl & Cook: 50ms rest between images).
 /// This ensures each image competes fresh — otherwise the same neurons
 /// win every image due to accumulated potential from previous inputs.
-/// Returns the set of Associative morphon IDs that fired during this presentation.
+/// Returns spike counts per Associative morphon (MorphonId → fire count).
 fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut impl Rng)
-    -> Vec<morphon_core::MorphonId>
+    -> std::collections::HashMap<morphon_core::MorphonId, usize>
 {
     // Inter-image reset — clear the slate so k-WTA selects based on THIS image.
     // Thresholds are NOT reset — adaptive thresholds persist across images
@@ -68,13 +68,29 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
     }
     system.resonance.clear();
 
-    // Track which associative morphons fired during this image presentation.
-    let mut fired_set: std::collections::HashSet<morphon_core::MorphonId> =
-        std::collections::HashSet::new();
+    // Reset synapse traces — prevents eligibility/STDP traces from the previous
+    // image bleeding into this one. With tau_eligibility=5.0, traces from 5 steps
+    // ago are still at 37% — enough to contaminate cross-image credit assignment.
+    system.topology.update_all_synapses(|syn| {
+        syn.eligibility = 0.0;
+        syn.pre_trace = 0.0;
+        syn.post_trace = 0.0;
+    });
+
+    // Track spike counts per associative morphon during this image presentation.
+    // Counts (not binary) give graded labeling — a neuron that fires 40/50 steps
+    // contributes more than one that fires 1/50 from Poisson noise.
+    let mut spike_counts: std::collections::HashMap<morphon_core::MorphonId, usize> =
+        std::collections::HashMap::new();
 
     for _ in 0..steps {
         let frame = poisson_frame(rates, rng);
         system.feed_input(&frame);
+        // Continuous novelty injection — keeps modulation alive throughout presentation.
+        // With novelty_decay=0.90/step, steady-state ≈ 0.03/0.10 = 0.3.
+        // Without this, novelty (injected after the previous image) decays to ~0.002
+        // by step 5, making three-factor weight updates near-zero.
+        system.inject_novelty(0.03);
         system.step();
 
         // Record firings
@@ -82,7 +98,7 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
             if m.fired && (m.cell_type == morphon_core::CellType::Associative
                 || m.cell_type == morphon_core::CellType::Stem)
             {
-                fired_set.insert(m.id);
+                *spike_counts.entry(m.id).or_insert(0) += 1;
             }
         }
     }
@@ -101,7 +117,7 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
         }
     }
 
-    fired_set.into_iter().collect()
+    spike_counts
 }
 
 fn create_system() -> System {
@@ -116,7 +132,7 @@ fn create_system() -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 5,   // STDP every 5 steps — traces smooth over Poisson noise
+            medium_period: 1,   // STDP every step — Poisson needs per-spike coincidence detection
             slow_period: 1000,  // structural changes very infrequent
             glacial_period: 5000,
             homeostasis_period: 50, // normalization once per image
@@ -246,6 +262,20 @@ fn main() {
     println!("Train: {}, Test: {}\n", train_images.len(), test_images.len());
 
     let mut system = create_system();
+
+    // Align homeostatic setpoint with k-WTA fraction (0.05 = 5% winners).
+    // Default setpoint is 0.15 (15%), which causes synaptic_scaling to inflate
+    // all weights 2× every homeostasis tick (scaling_factor = 0.15/0.05, clamped to 2.0).
+    // It also makes the internal threshold adaptation in Morphon::step() fight
+    // the Diehl & Cook adaptive threshold mechanism.
+    for m in system.morphons.values_mut() {
+        if m.cell_type == morphon_core::CellType::Associative
+            || m.cell_type == morphon_core::CellType::Stem
+        {
+            m.homeostatic_setpoint = 0.05;
+        }
+    }
+
     let s = system.inspect();
     println!("Initial: {} morphons, {} synapses, {} in, {} out",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
@@ -266,12 +296,10 @@ fn main() {
         indices.shuffle(&mut rng);
 
         for (bi, &idx) in indices.iter().take(phase1_samples).enumerate() {
-            // Present image as Poisson spike trains — k-WTA selects winners
+            // Present image as Poisson spike trains — k-WTA selects winners.
+            // Novelty is injected continuously inside present_image() to keep
+            // three-factor modulation alive throughout the 50-step presentation.
             let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
-
-            // Inject novelty to drive plasticity — stronger burst to ensure
-            // three-factor rule has meaningful modulation signal
-            system.inject_novelty(0.5);
 
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();
@@ -297,8 +325,13 @@ fn main() {
     // =========================================================================
     println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
-    // Freeze hidden layer
+    // Freeze hidden layer — disable all plasticity mechanisms for evaluation.
+    // medium_period: disables STDP weight updates, L1 normalization, DFA.
+    // homeostasis_period: disables synaptic scaling (would drift weights during eval).
+    // winner_boost=0: disables k-WTA threshold ratcheting (labels must match test dynamics).
     system.config.scheduler.medium_period = 999999;
+    system.config.scheduler.homeostasis_period = 999999;
+    system.config.homeostasis.winner_boost = 0.0;
 
     // Collect associative morphon IDs
     let assoc_ids: Vec<morphon_core::MorphonId> = system.morphons.values()
@@ -320,12 +353,11 @@ fn main() {
         let fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
         let label = train_labels[idx];
 
-        // Record which hidden neurons actually fired during this image presentation.
-        // Using the direct fired set from present_image() instead of activity_history,
-        // which smears across images and produces noisy labels.
-        for &aid in &fired {
+        // Record spike-count-weighted class responses. A neuron that fires 40/50 steps
+        // contributes 40× more to its class count than one that fires 1/50 (noise).
+        for (&aid, &spikes) in &fired {
             if let Some(counts) = neuron_class_counts.get_mut(&aid) {
-                counts[label] += 1;
+                counts[label] += spikes;
             }
         }
 
@@ -360,14 +392,12 @@ fn main() {
     for i in 0..test_images.len().min(test_n) {
         let fired = present_image(&mut system, &test_images[i], STEPS_PER_IMAGE, &mut rng);
 
-        // Vote: count how many neurons assigned to each class fired.
-        // Binary voting (fired/not-fired) is cleaner than graded activity
-        // for post-hoc labeling — it matches how labels were assigned.
+        // Spike-count-weighted voting: each fired neuron's vote is proportional
+        // to how many steps it fired, matching the graded labeling scheme.
         let mut class_votes = vec![0usize; NUM_CLASSES];
-        let fired_set: std::collections::HashSet<_> = fired.into_iter().collect();
         for (&aid, &assigned_class) in &neuron_labels {
-            if fired_set.contains(&aid) {
-                class_votes[assigned_class] += 1;
+            if let Some(&spikes) = fired.get(&aid) {
+                class_votes[assigned_class] += spikes;
             }
         }
 
