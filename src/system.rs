@@ -882,9 +882,12 @@ impl System {
         // This breaks the circular dependency where critic and actor share learning rules.
         let mut captures_this_step = 0_u64;
         if tick.medium {
-            // Apply Endo's tau_eligibility_mult to learning params for this tick.
+            // Apply Endo's tau_eligibility_mult (reactive, capture-speed) and
+            // slow_trace_leak (stage-dependent baseline) to learning params.
+            // slow_trace_leak > 1 = faster decay = divide tau. Both compose multiplicatively.
             let mut learning_params = self.config.learning.clone();
-            learning_params.tau_eligibility *= self.endo.channels.tau_eligibility_mult as f64;
+            let trace_leak = self.endo.channels.slow_trace_leak.max(0.1) as f64;
+            learning_params.tau_eligibility *= self.endo.channels.tau_eligibility_mult as f64 / trace_leak;
 
             let critic_set: std::collections::HashSet<MorphonId> =
                 self.critic_ports.iter().copied().collect();
@@ -1148,14 +1151,18 @@ impl System {
 
         // === SLOW PATH ===
         if tick.slow {
-            // Apply Endo Phase B lever: pruning_threshold_mult scales weight_min.
+            // Apply Endo Phase B levers to slow-path parameters.
             let mut slow_learning = self.config.learning.clone();
             slow_learning.weight_min *= self.endo.channels.pruning_threshold_mult as f64;
+
+            let mut slow_params = self.config.morphogenesis.clone();
+            slow_params.migration_rate *= self.endo.channels.migration_rate_mult as f64;
+            slow_params.synaptogenesis_threshold *= self.endo.channels.synaptogenesis_threshold_mult as f64;
 
             let slow_report = morphogenesis::step_slow(
                 &mut self.morphons,
                 &mut self.topology,
-                &self.config.morphogenesis,
+                &slow_params,
                 &slow_learning,
                 self.modulation.homeostasis,
                 &self.config.lifecycle,

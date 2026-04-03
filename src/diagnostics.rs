@@ -36,6 +36,9 @@ pub struct Diagnostics {
     pub active_tags: usize,
     /// Capture events this step.
     pub captures_this_step: u64,
+    /// Episode-gated captures pending endo consumption.
+    /// Written by `report_episode_end()`, read+cleared by `sense_vitals()`.
+    pub episode_captures_pending: u64,
     /// Cumulative capture events since system creation.
     pub total_captures: u64,
 

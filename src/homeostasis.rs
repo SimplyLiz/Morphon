@@ -178,6 +178,15 @@ pub fn synaptic_scaling(
 ///
 /// Biology: homeostatic plasticity with an anti-correlation term. Neurons that
 /// fire indiscriminately receive stronger LTD-like depression.
+/// Selectivity-aware anti-hub scaling.
+///
+/// Depresses weights of high-firing morphons that are NOT selective (hubs),
+/// while protecting high-firing morphons that ARE selective (feature detectors).
+///
+/// A feature detector fires strongly for specific inputs and weakly otherwise
+/// (high variance in activity_history). A hub fires moderately for everything
+/// (low variance). Both can have the same mean firing rate — the distinction
+/// is in the variance of responses.
 pub fn anti_hub_scaling(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
@@ -204,11 +213,25 @@ pub fn anti_hub_scaling(
             continue;
         }
 
-        // How much above the hub threshold: 0.0 at threshold, 1.0 at max_rate
+        // Selectivity check: high variance = feature detector, low variance = hub.
+        // Coefficient of variation (CV = std/mean) is dimensionless and comparable
+        // across morphons with different baseline rates.
+        let variance = morphon.activity_history.variance();
+        let cv = if rate > 1e-6 { variance.sqrt() / rate } else { 0.0 };
+
+        // CV > 0.5 means the morphon's response varies substantially across inputs.
+        // This is a selective feature detector — protect it from depression.
+        if cv > 0.5 {
+            continue;
+        }
+
+        // This morphon fires a lot AND with low variance — it's an indiscriminate hub.
+        // Apply weight depression proportional to how far above threshold it is.
         let excess = (rate - hub_threshold) / (max_rate - hub_threshold).max(1e-10);
-        // Scale factor: 0.7 at threshold, 0.3 at max — aggressive depression
-        let scale = 1.0 - excess * 0.7;
-        let scale = scale.clamp(0.3, 0.95);
+        // Gentler scaling than before: 0.85 at threshold, 0.6 at max.
+        // The old 0.3× was too aggressive — even hubs carry some useful connectivity.
+        let scale = 1.0 - excess * 0.4;
+        let scale = scale.clamp(0.6, 0.95);
 
         let incoming = topology.incoming_synapses_mut(morphon.id);
         for (_, edge_idx) in incoming {

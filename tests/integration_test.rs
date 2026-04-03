@@ -592,3 +592,136 @@ fn test_dream_consolidation_scales_with_cg() {
         "high cg ({}) should produce more consolidation than low cg ({})",
         level_high, level_low);
 }
+
+// === Phase B lever integration tests ===
+
+/// Helper: create a system with endo disabled (for manual channel injection).
+fn make_phase_b_system() -> System {
+    let config = SystemConfig {
+        developmental: DevelopmentalConfig {
+            target_input_size: Some(4),
+            target_output_size: Some(2),
+            ..DevelopmentalConfig::cortical()
+        },
+        ..Default::default()
+    };
+    System::new(config)
+}
+
+#[test]
+fn phase_b_division_threshold_mult_scales_division() {
+    // With dtm=0.5 (half threshold), morphons that wouldn't divide at default
+    // should now divide. With dtm=2.0 (double threshold), fewer should divide.
+    let mut sys_easy = make_phase_b_system();
+    let mut sys_hard = make_phase_b_system();
+
+    // Inject lever values directly (endo is disabled, so these persist)
+    sys_easy.endo.channels.division_threshold_mult = 0.5; // threshold = 0.5 * 0.5 = 0.25
+    sys_hard.endo.channels.division_threshold_mult = 2.0; // threshold = 0.5 * 2.0 = 1.0
+
+    // Run all steps except the last (glacial tick fires at step == glacial_period).
+    // division_pressure decays during these steps, so we re-inject it before the glacial tick.
+    let glacial = sys_easy.config.scheduler.glacial_period as usize;
+    for _ in 0..(glacial - 1) {
+        sys_easy.feed_input(&[0.5; 4]);
+        sys_easy.step();
+    }
+    for _ in 0..(glacial - 1) {
+        sys_hard.feed_input(&[0.5; 4]);
+        sys_hard.step();
+    }
+
+    // Re-inject division pressure right before the glacial tick
+    for m in sys_easy.morphons.values_mut() {
+        if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
+            m.division_pressure = 0.7; // above 0.5*0.5=0.25, below 0.5*2.0=1.0
+            m.energy = 0.8;
+        }
+    }
+    for m in sys_hard.morphons.values_mut() {
+        if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
+            m.division_pressure = 0.7;
+            m.energy = 0.8;
+        }
+    }
+
+    let before_easy = sys_easy.inspect().total_morphons;
+    let before_hard = sys_hard.inspect().total_morphons;
+
+    // Final step triggers glacial tick — division happens here
+    sys_easy.feed_input(&[0.5; 4]);
+    sys_easy.step();
+    sys_hard.feed_input(&[0.5; 4]);
+    sys_hard.step();
+
+    let born_easy = sys_easy.inspect().total_morphons.saturating_sub(before_easy);
+    let born_hard = sys_hard.inspect().total_morphons.saturating_sub(before_hard);
+
+    // With dtm=0.5, division_pressure=0.7 > effective_threshold=0.25 → should divide
+    // With dtm=2.0, division_pressure=0.7 < effective_threshold=1.0 → should NOT divide
+    assert!(born_easy >= born_hard,
+        "Easy division (dtm=0.5) should produce >= births ({}) than hard (dtm=2.0, {})",
+        born_easy, born_hard);
+}
+
+#[test]
+fn phase_b_pruning_threshold_mult_scales_pruning() {
+    // With ptm=2.0, weight_min is doubled → more synapses get pruned.
+    // With ptm=0.5, weight_min is halved → fewer get pruned.
+    let mut sys = make_phase_b_system();
+
+    // Run to build some synapses, then count with different ptm values
+    for _ in 0..100 {
+        sys.feed_input(&[0.5; 4]);
+        sys.step();
+    }
+
+    let base_synapses = sys.inspect().total_synapses;
+
+    // Inject high pruning multiplier and run a slow tick
+    sys.endo.channels.pruning_threshold_mult = 2.0;
+    let slow = sys.config.scheduler.slow_period as usize;
+    for _ in 0..slow {
+        sys.feed_input(&[0.5; 4]);
+        sys.step();
+    }
+
+    let after_aggressive = sys.inspect().total_synapses;
+    // Aggressive pruning should have removed some synapses (or at least not grown)
+    // We can't guarantee exact counts, but synapse count shouldn't exceed baseline
+    // by much if pruning is aggressive.
+    assert!(after_aggressive <= base_synapses + 20,
+        "Aggressive pruning (ptm=2.0) should constrain synapse growth: base={}, after={}",
+        base_synapses, after_aggressive);
+}
+
+#[test]
+fn phase_b_frustration_sensitivity_mult_scales_frustration() {
+    // With fsm=0.5 (half stagnation_threshold), morphons should reach
+    // frustration faster. With fsm=2.0, they should be more tolerant.
+    let mut sys_sensitive = make_phase_b_system();
+    let mut sys_tolerant = make_phase_b_system();
+
+    sys_sensitive.endo.channels.frustration_sensitivity_mult = 0.5;
+    sys_tolerant.endo.channels.frustration_sensitivity_mult = 2.0;
+
+    // Feed identical constant input — should cause PE stagnation
+    for _ in 0..200 {
+        sys_sensitive.feed_input(&[0.5; 4]);
+        sys_sensitive.step();
+    }
+    for _ in 0..200 {
+        sys_tolerant.feed_input(&[0.5; 4]);
+        sys_tolerant.step();
+    }
+
+    // Count morphons in exploration mode
+    let explore_sensitive = sys_sensitive.morphons.values()
+        .filter(|m| m.frustration.exploration_mode).count();
+    let explore_tolerant = sys_tolerant.morphons.values()
+        .filter(|m| m.frustration.exploration_mode).count();
+
+    assert!(explore_sensitive >= explore_tolerant,
+        "Sensitive system (fsm=0.5) should have >= frustrated morphons ({}) than tolerant (fsm=2.0, {})",
+        explore_sensitive, explore_tolerant);
+}

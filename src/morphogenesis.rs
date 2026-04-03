@@ -128,7 +128,7 @@ pub struct MorphogenesisReport {
 pub fn synaptogenesis(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
-    _params: &MorphogenesisParams,
+    params: &MorphogenesisParams,
     rng: &mut impl Rng,
     max_connectivity: usize,
     step_count: u64,
@@ -137,10 +137,11 @@ pub fn synaptogenesis(
 
     // Pre-filter: only morphons with recent activity are candidates.
     // InhibitoryInterneurons are excluded — their connectivity is managed by iSTDP.
+    let activity_threshold = params.synaptogenesis_threshold * 0.5; // scale: 0.6 * 0.5 = 0.3 at default
     let active: Vec<MorphonId> = morphons
         .values()
         .filter(|m| m.cell_type != CellType::InhibitoryInterneuron
-            && m.activity_history.mean() >= 0.3)
+            && m.activity_history.mean() >= activity_threshold)
         .map(|m| m.id)
         .collect();
 

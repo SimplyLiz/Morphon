@@ -111,11 +111,6 @@ pub struct VitalSigns {
     /// Rolling reward/performance metric (task-agnostic, set by caller).
     /// For CartPole: episode steps. For MNIST: classification accuracy.
     pub reward_avg: f32,
-    /// Per-cluster winner counts: (cluster_id, winners_this_step).
-    /// Exposed as a vec, not a mean — temporal processing will create clusters
-    /// with very different firing dynamics (persistent state vs transient processing).
-    #[serde(default)]
-    pub winners_per_cluster: Vec<(u64, u32)>,
 }
 
 impl Default for VitalSigns {
@@ -136,7 +131,6 @@ impl Default for VitalSigns {
             energy_utilization: 0.5,
             prediction_error_mean: 0.1,
             reward_avg: 0.0,
-            winners_per_cluster: Vec::new(),
         }
     }
 }
@@ -195,26 +189,13 @@ pub fn sense_vitals(
         eligibility_density,
         weight_entropy,
         tag_count: diag.active_tags as u32,
-        capture_count: diag.captures_this_step as u32,
+        capture_count: (diag.captures_this_step + diag.episode_captures_pending) as u32,
         cell_type_fractions: fractions,
         total_morphons: morphons.len() as u32,
         total_synapses: diag.total_synapses as u32,
         energy_utilization,
         prediction_error_mean: pe_sum / n,
         reward_avg: reward_avg as f32,
-        winners_per_cluster: {
-            // Count fired morphons per cluster (fused_with).
-            // Unclustered morphons are not included — their competition
-            // is either global k-WTA or via local inhibitory interneurons.
-            let mut cluster_fires: HashMap<u64, u32> = HashMap::new();
-            for m in morphons.values() {
-                if let Some(cid) = m.fused_with {
-                    let entry = cluster_fires.entry(cid).or_insert(0);
-                    if m.fired { *entry += 1; }
-                }
-            }
-            cluster_fires.into_iter().collect()
-        },
     }
 }
 
@@ -309,6 +290,27 @@ pub struct ChannelState {
     /// no regulation rule yet, just the lever slot.
     #[serde(default = "default_channel_one")]
     pub slow_trace_leak: f32,
+    // === Endo V2 Phase B levers (structural plasticity) ===
+    /// Scales morphogenesis division threshold. <1 = easier division (Proliferating),
+    /// >1 = harder division (Mature). Multiplied into params.division_threshold.
+    #[serde(default = "default_channel_one")]
+    pub division_threshold_mult: f32,
+    /// Scales pruning weight_min threshold. <1 = harder to prune (Proliferating),
+    /// >1 = easier to prune (Consolidating). Multiplied into params.weight_min.
+    #[serde(default = "default_channel_one")]
+    pub pruning_threshold_mult: f32,
+    /// Scales frustration sensitivity thresholds. <1 = more sensitive (Mature),
+    /// >1 = more tolerant (Proliferating). Multiplied into stagnation_threshold.
+    #[serde(default = "default_channel_one")]
+    pub frustration_sensitivity_mult: f32,
+    /// Scales migration rate in hyperbolic space. >1 = more migration (Proliferating),
+    /// <1 = less migration (Mature/Consolidating). Multiplied into params.migration_rate.
+    #[serde(default = "default_channel_one")]
+    pub migration_rate_mult: f32,
+    /// Scales synaptogenesis activity threshold. <1 = easier new connections (Proliferating),
+    /// >1 = harder (Mature). Multiplied into the activity threshold for synaptogenesis.
+    #[serde(default = "default_channel_one")]
+    pub synaptogenesis_threshold_mult: f32,
 }
 
 fn default_channel_one() -> f32 { 1.0 }
@@ -328,6 +330,11 @@ impl Default for ChannelState {
             rollback_pe_threshold_mult: 1.0,
             tau_eligibility_mult: 1.0,
             slow_trace_leak: 1.0,
+            division_threshold_mult: 1.0,
+            pruning_threshold_mult: 1.0,
+            frustration_sensitivity_mult: 1.0,
+            migration_rate_mult: 1.0,
+            synaptogenesis_threshold_mult: 1.0,
         }
     }
 }
@@ -347,6 +354,11 @@ impl ChannelState {
         self.rollback_pe_threshold_mult = self.rollback_pe_threshold_mult.clamp(0.25, 2.0);
         self.tau_eligibility_mult = self.tau_eligibility_mult.clamp(0.5, 2.0);
         self.slow_trace_leak = self.slow_trace_leak.clamp(0.1, 3.0);
+        self.division_threshold_mult = self.division_threshold_mult.clamp(0.5, 2.0);
+        self.pruning_threshold_mult = self.pruning_threshold_mult.clamp(0.5, 2.0);
+        self.frustration_sensitivity_mult = self.frustration_sensitivity_mult.clamp(0.5, 2.0);
+        self.migration_rate_mult = self.migration_rate_mult.clamp(0.3, 2.0);
+        self.synaptogenesis_threshold_mult = self.synaptogenesis_threshold_mult.clamp(0.5, 2.0);
     }
 }
 
@@ -773,16 +785,30 @@ impl Endoquilibrium {
         }
 
         // ── Rule 4: Cell Type Balance ──
+        // Detect overrepresented types and apply structural pressure:
+        // raise division threshold (slow growth) and pruning threshold (trim excess).
+        let mut max_excess: f32 = 0.0;
         for (i, &fraction) in vitals.cell_type_fractions.iter().enumerate() {
             let target = sp.type_targets[i];
-            if fraction > target + 0.15 {
+            let excess = fraction - target;
+            if excess > 0.15 {
                 interventions.push(Intervention {
                     rule: "type_imbalance".into(), vital: "cell_type_fraction".into(),
                     actual: fraction, setpoint: target,
-                    lever: "logged_only".into(),
-                    adjustment: fraction - target,
+                    lever: "division_threshold_mult/pruning_threshold_mult".into(),
+                    adjustment: excess,
                 });
+                if excess > max_excess {
+                    max_excess = excess;
+                }
             }
+        }
+        if max_excess > 0.0 {
+            // Scale proportionally to imbalance severity (max +0.4 each).
+            // This stacks with the stage-dependent Rules 12-13, applied later.
+            let pressure = (max_excess / 0.30).min(1.0); // normalize: 0.30 excess = full pressure
+            ch.division_threshold_mult *= 1.0 + pressure * 0.4;
+            ch.pruning_threshold_mult *= 1.0 + pressure * 0.4;
         }
 
         // ── Rule 5: Tag-and-Capture Health ──
@@ -937,9 +963,127 @@ impl Endoquilibrium {
             });
         }
 
-        // slow_trace_leak: no regulation rule yet — plumbing for temporal processing.
-        // Default 1.0 (no-op). Wire a rule when temporal processing lands.
-        ch.slow_trace_leak = 1.0;
+        // ── Rule 15: Slow Trace Leak (stage-dependent) ──
+        // Controls eligibility trace decay rate: >1 = faster decay (tighter credit window),
+        // <1 = slower decay (broader credit window).
+        // Proliferating: broad credit assignment (explore), Mature: precise (exploit).
+        let stl = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 0.6,
+            DevelopmentalStage::Differentiating => 0.8,
+            DevelopmentalStage::Consolidating => 1.0,
+            DevelopmentalStage::Mature => 1.4,
+            DevelopmentalStage::Stressed => 0.7,
+        };
+        ch.slow_trace_leak = stl;
+        if (stl - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_slow_trace_leak".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "slow_trace_leak".into(),
+                adjustment: stl - 1.0,
+            });
+        }
+
+        // ── Rule 12: Division Threshold Multiplier (stage-dependent) ──
+        // Proliferating: low threshold → easier division (explore topology).
+        // Consolidating/Mature: high threshold → protect structure.
+        // Stressed: moderate → allow some structural escape.
+        let dtm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 0.6,
+            DevelopmentalStage::Differentiating => 0.8,
+            DevelopmentalStage::Consolidating => 1.3,
+            DevelopmentalStage::Mature => 1.8,
+            DevelopmentalStage::Stressed => 0.9,
+        };
+        ch.division_threshold_mult = dtm;
+        if (dtm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_division_threshold".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "division_threshold_mult".into(),
+                adjustment: dtm - 1.0,
+            });
+        }
+
+        // ── Rule 13: Pruning Threshold Multiplier (stage-dependent) ──
+        // Proliferating: low → harder to prune (keep new connections).
+        // Consolidating/Mature: high → aggressively prune weak connections.
+        let ptm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 0.6,
+            DevelopmentalStage::Differentiating => 0.8,
+            DevelopmentalStage::Consolidating => 1.3,
+            DevelopmentalStage::Mature => 1.5,
+            DevelopmentalStage::Stressed => 1.0,
+        };
+        ch.pruning_threshold_mult = ptm;
+        if (ptm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_pruning_threshold".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "pruning_threshold_mult".into(),
+                adjustment: ptm - 1.0,
+            });
+        }
+
+        // ── Rule 14: Frustration Sensitivity Multiplier (stage-dependent) ──
+        // Proliferating: high → more tolerant (failures expected during exploration).
+        // Mature: low → more sensitive (something broke).
+        let fsm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 1.5,
+            DevelopmentalStage::Differentiating => 1.2,
+            DevelopmentalStage::Consolidating => 1.0,
+            DevelopmentalStage::Mature => 0.7,
+            DevelopmentalStage::Stressed => 0.5,
+        };
+        ch.frustration_sensitivity_mult = fsm;
+        if (fsm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_frustration_sensitivity".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "frustration_sensitivity_mult".into(),
+                adjustment: fsm - 1.0,
+            });
+        }
+
+        // ── Rule 16: Migration Rate Multiplier (stage-dependent) ──
+        // Proliferating: high migration (explore topology space).
+        // Mature: low migration (protect spatial organization).
+        let mrm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 1.5,
+            DevelopmentalStage::Differentiating => 1.2,
+            DevelopmentalStage::Consolidating => 0.7,
+            DevelopmentalStage::Mature => 0.4,
+            DevelopmentalStage::Stressed => 1.0,
+        };
+        ch.migration_rate_mult = mrm;
+        if (mrm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_migration_rate".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "migration_rate_mult".into(),
+                adjustment: mrm - 1.0,
+            });
+        }
+
+        // ── Rule 17: Synaptogenesis Threshold Multiplier (stage-dependent) ──
+        // Proliferating: low threshold (form connections easily, explore).
+        // Mature: high threshold (only strong correlations warrant new connections).
+        let stm = match self.predictor.stage {
+            DevelopmentalStage::Proliferating => 0.7,
+            DevelopmentalStage::Differentiating => 0.85,
+            DevelopmentalStage::Consolidating => 1.0,
+            DevelopmentalStage::Mature => 1.3,
+            DevelopmentalStage::Stressed => 0.8,
+        };
+        ch.synaptogenesis_threshold_mult = stm;
+        if (stm - 1.0).abs() > 0.01 {
+            interventions.push(Intervention {
+                rule: "stage_synaptogenesis_threshold".into(), vital: "developmental_stage".into(),
+                actual: 0.0, setpoint: 1.0,
+                lever: "synaptogenesis_threshold_mult".into(),
+                adjustment: stm - 1.0,
+            });
+        }
 
         (ch, interventions)
     }
@@ -959,6 +1103,11 @@ impl Endoquilibrium {
         self.channels.rollback_pe_threshold_mult = lerp(self.channels.rollback_pe_threshold_mult, raw.rollback_pe_threshold_mult, a);
         self.channels.tau_eligibility_mult = lerp(self.channels.tau_eligibility_mult, raw.tau_eligibility_mult, a);
         self.channels.slow_trace_leak = lerp(self.channels.slow_trace_leak, raw.slow_trace_leak, a);
+        self.channels.division_threshold_mult = lerp(self.channels.division_threshold_mult, raw.division_threshold_mult, a);
+        self.channels.pruning_threshold_mult = lerp(self.channels.pruning_threshold_mult, raw.pruning_threshold_mult, a);
+        self.channels.frustration_sensitivity_mult = lerp(self.channels.frustration_sensitivity_mult, raw.frustration_sensitivity_mult, a);
+        self.channels.migration_rate_mult = lerp(self.channels.migration_rate_mult, raw.migration_rate_mult, a);
+        self.channels.synaptogenesis_threshold_mult = lerp(self.channels.synaptogenesis_threshold_mult, raw.synaptogenesis_threshold_mult, a);
         self.channels.clamp();
     }
 
@@ -1216,5 +1365,129 @@ mod tests {
         assert!(endo.channels.plasticity_mult >= 0.1,
             "plasticity should stay within bounds, got {}", endo.channels.plasticity_mult);
         assert!(endo.last_diag.health_score > 0.7);
+    }
+
+    // === Phase B lever tests ===
+
+    /// Helper: drive endo into a specific stage and return the channel state.
+    /// Patterns match the passing stage detection tests exactly (with jitter).
+    fn drive_to_stage(stage: DevelopmentalStage) -> ChannelState {
+        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        match stage {
+            DevelopmentalStage::Proliferating => {
+                for _ in 0..15 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 10.0;
+                    endo.tick(v);
+                }
+            }
+            DevelopmentalStage::Differentiating => {
+                for i in 0..100 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 10.0 + i as f32 * 0.5;
+                    endo.tick(v);
+                }
+            }
+            DevelopmentalStage::Mature => {
+                for i in 0..200 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 195.0 + (i as f32) * 0.001;
+                    endo.tick(v);
+                }
+            }
+            DevelopmentalStage::Stressed => {
+                for i in 0..100 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 150.0 + (i as f32) * 0.001;
+                    endo.tick(v);
+                }
+                for i in 0..100 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 80.0 - (i as f32) * 0.001;
+                    endo.tick(v);
+                }
+            }
+            DevelopmentalStage::Consolidating => {
+                // Rising reward then plateau near ceiling
+                for i in 0..100 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 50.0 + i as f32 * 1.0;
+                    endo.tick(v);
+                }
+                for i in 0..50 {
+                    let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
+                    v.reward_avg = 148.0 + (i as f32) * 0.001;
+                    endo.tick(v);
+                }
+            }
+        }
+        assert_eq!(endo.stage(), stage, "failed to drive to {:?}", stage);
+        endo.channels.clone()
+    }
+
+    #[test]
+    fn phase_b_division_threshold_mult_by_stage() {
+        let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
+        let mature = drive_to_stage(DevelopmentalStage::Mature);
+
+        assert!(prolif.division_threshold_mult < 1.0,
+            "Proliferating should lower division threshold, got {}", prolif.division_threshold_mult);
+        assert!(mature.division_threshold_mult > 1.0,
+            "Mature should raise division threshold, got {}", mature.division_threshold_mult);
+        assert!(mature.division_threshold_mult > prolif.division_threshold_mult,
+            "Mature dtm ({}) should be higher than Proliferating ({})",
+            mature.division_threshold_mult, prolif.division_threshold_mult);
+    }
+
+    #[test]
+    fn phase_b_pruning_threshold_mult_by_stage() {
+        let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
+        let mature = drive_to_stage(DevelopmentalStage::Mature);
+
+        assert!(prolif.pruning_threshold_mult < 1.0,
+            "Proliferating should make pruning harder, got {}", prolif.pruning_threshold_mult);
+        assert!(mature.pruning_threshold_mult > 1.0,
+            "Mature should make pruning easier, got {}", mature.pruning_threshold_mult);
+    }
+
+    #[test]
+    fn phase_b_frustration_sensitivity_mult_by_stage() {
+        let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
+        let mature = drive_to_stage(DevelopmentalStage::Mature);
+
+        assert!(prolif.frustration_sensitivity_mult > 1.0,
+            "Proliferating should be more tolerant, got {}", prolif.frustration_sensitivity_mult);
+        assert!(mature.frustration_sensitivity_mult < 1.0,
+            "Mature should be more sensitive, got {}", mature.frustration_sensitivity_mult);
+    }
+
+    #[test]
+    fn phase_b_stressed_allows_structural_escape() {
+        let stressed = drive_to_stage(DevelopmentalStage::Stressed);
+
+        // Stressed: division slightly easier than default (0.9 < 1.0),
+        // frustration very sensitive (0.5), pruning neutral (1.0).
+        assert!(stressed.division_threshold_mult < 1.0,
+            "Stressed should allow some division for escape, got {}", stressed.division_threshold_mult);
+        assert!(stressed.frustration_sensitivity_mult < 1.0,
+            "Stressed should be frustration-sensitive, got {}", stressed.frustration_sensitivity_mult);
+    }
+
+    #[test]
+    fn phase_b_levers_stay_in_clamp_range() {
+        for stage in [
+            DevelopmentalStage::Proliferating,
+            DevelopmentalStage::Differentiating,
+            DevelopmentalStage::Mature,
+            DevelopmentalStage::Stressed,
+        ] {
+            let ch = drive_to_stage(stage);
+            assert!(ch.division_threshold_mult >= 0.5 && ch.division_threshold_mult <= 2.0,
+                "{:?}: dtm {} out of range", stage, ch.division_threshold_mult);
+            assert!(ch.pruning_threshold_mult >= 0.5 && ch.pruning_threshold_mult <= 2.0,
+                "{:?}: ptm {} out of range", stage, ch.pruning_threshold_mult);
+            assert!(ch.frustration_sensitivity_mult >= 0.5 && ch.frustration_sensitivity_mult <= 2.0,
+                "{:?}: fsm {} out of range", stage, ch.frustration_sensitivity_mult);
+        }
     }
 }
