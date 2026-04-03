@@ -65,16 +65,17 @@
     padding: 14px 16px;
     transition: border-color 0.4s, box-shadow 0.4s;
     position: relative;
-    overflow: hidden;
   }
   .panel::before {
     content: '';
     position: absolute;
-    top: 0; left: 0; right: 0;
+    top: 0; left: 12px; right: 12px;
     height: 1px;
     background: linear-gradient(90deg, transparent, rgba(80, 140, 255, 0.15), transparent);
     opacity: 0;
     transition: opacity 0.4s;
+    pointer-events: none;
+    z-index: 1;
   }
   .panel:hover {
     border-color: var(--panel-border-hover);
