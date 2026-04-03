@@ -598,7 +598,12 @@ impl System {
 
         // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
-        let frustration_config = &self.config.morphogenesis.frustration;
+        // Apply Endo Phase B lever: frustration_sensitivity_mult scales stagnation_threshold.
+        // Higher mult → higher threshold → more tolerant (Proliferating).
+        // Lower mult → lower threshold → more sensitive (Mature).
+        let mut frustration_config = self.config.morphogenesis.frustration.clone();
+        frustration_config.stagnation_threshold *= self.endo.channels.frustration_sensitivity_mult as f64;
+        let frustration_config = &frustration_config;
         let threshold_bias = self.endo.channels.threshold_bias as f64;
         // Recompute maintenance costs only on slow ticks (topology changes)
         // or on the very first step (cache empty). Avoids O(N×M) hyperbolic
@@ -806,6 +811,8 @@ impl System {
                 self.recent_performance,
             );
             self.endo.tick(vitals);
+            // Clear episode-gated capture count now that endo has consumed it.
+            self.diag.episode_captures_pending = 0;
         }
 
         // === ASTROCYTIC GATE UPDATE (medium path) ===
@@ -1141,11 +1148,15 @@ impl System {
 
         // === SLOW PATH ===
         if tick.slow {
+            // Apply Endo Phase B lever: pruning_threshold_mult scales weight_min.
+            let mut slow_learning = self.config.learning.clone();
+            slow_learning.weight_min *= self.endo.channels.pruning_threshold_mult as f64;
+
             let slow_report = morphogenesis::step_slow(
                 &mut self.morphons,
                 &mut self.topology,
                 &self.config.morphogenesis,
-                &self.config.learning,
+                &slow_learning,
                 self.modulation.homeostasis,
                 &self.config.lifecycle,
                 &mut rng,
@@ -1200,13 +1211,17 @@ impl System {
                 &self.topology,
             );
 
+            // Apply Endo Phase B lever: division_threshold_mult scales division_threshold.
+            let mut glacial_params = self.config.morphogenesis.clone();
+            glacial_params.division_threshold *= self.endo.channels.division_threshold_mult as f64;
+
             let glacial_report = morphogenesis::step_glacial(
                 &mut self.morphons,
                 &mut self.topology,
                 &mut self.clusters,
                 &mut self.next_morphon_id,
                 &mut self.next_cluster_id,
-                &self.config.morphogenesis,
+                &glacial_params,
                 self.effective_max_morphons,
                 self.config.governance.max_cluster_size_fraction,
                 self.config.governance.max_unverified_fraction,
@@ -1342,10 +1357,7 @@ impl System {
         // === HOMEOSTASIS ===
         if tick.homeostasis {
             homeostasis::synaptic_scaling(&self.morphons, &mut self.topology);
-            // anti_hub_scaling disabled: it can't distinguish learned feature detectors
-            // (which fire reliably for specific inputs) from indiscriminate hubs.
-            // The 0.3-0.95× weight scaling erodes learned representations in RL tasks.
-            // TODO: replace with selectivity-aware version that checks response variance.
+            homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
             homeostasis::inter_cluster_inhibition(
                 &mut self.morphons,
                 &self.clusters,
@@ -1427,6 +1439,7 @@ impl System {
             let rollback_triggered = self.diag.rollback_triggered;
             let prev_field_pe_max = self.diag.field_pe_max;
             let prev_field_pe_mean = self.diag.field_pe_mean;
+            let prev_episode_captures = self.diag.episode_captures_pending;
             self.diag = Diagnostics::snapshot(&self.morphons, &self.topology);
             self.diag.spikes_delivered_this_step = spikes_delivered;
             self.diag.spikes_pending = self.resonance.pending_count();
@@ -1436,6 +1449,7 @@ impl System {
             self.diag.rollback_triggered = rollback_triggered;
             self.diag.field_pe_max = prev_field_pe_max;
             self.diag.field_pe_mean = prev_field_pe_mean;
+            self.diag.episode_captures_pending = prev_episode_captures;
 
             // V3: Populate epistemic diagnostic counts from cluster state
             {
@@ -1825,22 +1839,23 @@ impl System {
             // Biology: PRP availability gates how much a good episode consolidates.
             let cg = self.endo.channels.consolidation_gain as f64;
             let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
-            let mut captured_any = false;
+            let mut capture_count = 0_u64;
             for ei in self.topology.graph.edge_indices() {
                 if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
                     if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
                         let delta_level = strength * syn.tag_strength.min(1.0) * 0.1 * cg;
                         syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
                         syn.tag *= 0.5;
-                        captured_any = true;
+                        capture_count += 1;
                     }
                 }
             }
-            // Signal to Endo that captures happened — without this, the episode-gated
-            // capture path is invisible to Endo's ticks_since_last_capture counter,
-            // which keeps widening tau_eligibility even when captures are healthy.
-            if captured_any {
+            // Signal to Endo that captures happened — both the direct counter reset
+            // AND the pending count so sense_vitals() sees episode-gated captures
+            // in Rule 5 and Rule 11 (not just the ticks_since counter).
+            if capture_count > 0 {
                 self.endo.ticks_since_last_capture = 0;
+                self.diag.episode_captures_pending += capture_count;
             }
         } else if delta < 0.0 {
             // Below average — decay tags, don't consolidate
