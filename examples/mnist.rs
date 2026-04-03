@@ -27,8 +27,9 @@ use std::fs;
 const IMG_PIXELS: usize = 28 * 28; // 784
 const NUM_CLASSES: usize = 10;
 /// Simulation steps per image — Poisson spike trains need time for k-WTA
-/// to select winners. Diehl & Cook use 350ms; we use 50 steps as a start.
-const STEPS_PER_IMAGE: usize = 30; // reduced — fewer steps = sharper k-WTA selection
+/// to select winners. Diehl & Cook use 350ms; we use 50 steps which gives
+/// ~25 spikes per 50%-intensity pixel — enough for STDP coincidence detection.
+const STEPS_PER_IMAGE: usize = 50;
 
 /// Convert raw pixels to firing rate probabilities [0, 1].
 /// Each pixel's value becomes the probability of spiking on any given step.
@@ -49,8 +50,13 @@ fn poisson_frame(rates: &[f64], rng: &mut impl Rng) -> Vec<f64> {
 /// Resets associative+motor potentials first (Diehl & Cook: 50ms rest between images).
 /// This ensures each image competes fresh — otherwise the same neurons
 /// win every image due to accumulated potential from previous inputs.
-fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut impl Rng) {
-    // Inter-image reset — clear the slate so k-WTA selects based on THIS image
+/// Returns the set of Associative morphon IDs that fired during this presentation.
+fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut impl Rng)
+    -> Vec<morphon_core::MorphonId>
+{
+    // Inter-image reset — clear the slate so k-WTA selects based on THIS image.
+    // Thresholds are NOT reset — adaptive thresholds persist across images
+    // (Diehl & Cook: θ accumulates with firing, decays exponentially).
     for m in system.morphons.values_mut() {
         if m.cell_type != morphon_core::CellType::Sensory {
             m.potential = 0.0;
@@ -62,11 +68,40 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
     }
     system.resonance.clear();
 
+    // Track which associative morphons fired during this image presentation.
+    let mut fired_set: std::collections::HashSet<morphon_core::MorphonId> =
+        std::collections::HashSet::new();
+
     for _ in 0..steps {
         let frame = poisson_frame(rates, rng);
         system.feed_input(&frame);
         system.step();
+
+        // Record firings
+        for m in system.morphons.values() {
+            if m.fired && (m.cell_type == morphon_core::CellType::Associative
+                || m.cell_type == morphon_core::CellType::Stem)
+            {
+                fired_set.insert(m.id);
+            }
+        }
     }
+
+    // Adaptive threshold decay (Diehl & Cook: τ_θ = 10^7ms, here simplified
+    // to a per-image decay toward base threshold). Without this, thresholds
+    // ratchet up forever and neurons that win early get permanently silenced.
+    let theta_decay = 0.99; // ~1% decay per image → τ ≈ 100 images
+    for m in system.morphons.values_mut() {
+        if m.cell_type == morphon_core::CellType::Associative
+            || m.cell_type == morphon_core::CellType::Stem
+        {
+            // Decay toward base threshold (0.5 is the default initial threshold)
+            let base = 0.5;
+            m.threshold = base + (m.threshold - base) * theta_decay;
+        }
+    }
+
+    fired_set.into_iter().collect()
 }
 
 fn create_system() -> System {
@@ -81,10 +116,10 @@ fn create_system() -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 1,   // STDP every step — Poisson needs frequent updates
+            medium_period: 5,   // STDP every 5 steps — traces smooth over Poisson noise
             slow_period: 1000,  // structural changes very infrequent
             glacial_period: 5000,
-            homeostasis_period: 30, // normalization once per image
+            homeostasis_period: 50, // normalization once per image
             memory_period: 100,
         },
         learning: LearningParams {
@@ -112,10 +147,11 @@ fn create_system() -> System {
         },
         homeostasis: HomeostasisParams {
             competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-                fraction: 0.01, // ~3-5 winners — forces class-selective specialization
+                fraction: 0.05, // ~15-18 winners — each neuron wins ~50 images in 1000
                 local_radius: 0.0,
                 local_k: 3,
             },
+            winner_boost: 0.04, // stronger adaptive threshold — faster winner rotation
             ..Default::default()
         },
         lifecycle: LifecycleConfig {
@@ -136,7 +172,7 @@ fn create_system() -> System {
 
 /// Classify using the analog readout (weighted sum of hidden potentials).
 fn classify(system: &mut System, rates: &[f64], rng: &mut impl Rng) -> usize {
-    present_image(system, rates, STEPS_PER_IMAGE, rng);
+    let _fired = present_image(system, rates, STEPS_PER_IMAGE, rng);
     let outputs = system.read_output();
     if outputs.len() < NUM_CLASSES { return 0; }
     outputs.iter()
@@ -231,10 +267,11 @@ fn main() {
 
         for (bi, &idx) in indices.iter().take(phase1_samples).enumerate() {
             // Present image as Poisson spike trains — k-WTA selects winners
-            present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
+            let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
 
-            // Inject novelty to drive plasticity
-            system.inject_novelty(0.2);
+            // Inject novelty to drive plasticity — stronger burst to ensure
+            // three-factor rule has meaningful modulation signal
+            system.inject_novelty(0.5);
 
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();
@@ -280,17 +317,15 @@ fn main() {
 
     println!("  Labeling {} samples...", label_samples);
     for (bi, &idx) in indices.iter().take(label_samples).enumerate() {
-        present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
+        let fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
         let label = train_labels[idx];
 
-        // Record which hidden neurons fired during this image
-        for &aid in &assoc_ids {
-            if let Some(m) = system.morphons.get(&aid) {
-                if m.fired || m.activity_history.mean() > 0.05 {
-                    if let Some(counts) = neuron_class_counts.get_mut(&aid) {
-                        counts[label] += 1;
-                    }
-                }
+        // Record which hidden neurons actually fired during this image presentation.
+        // Using the direct fired set from present_image() instead of activity_history,
+        // which smears across images and produces noisy labels.
+        for &aid in &fired {
+            if let Some(counts) = neuron_class_counts.get_mut(&aid) {
+                counts[label] += 1;
             }
         }
 
@@ -323,19 +358,21 @@ fn main() {
     let mut cc = vec![0usize; NUM_CLASSES];
     let mut ct = vec![0usize; NUM_CLASSES];
     for i in 0..test_images.len().min(test_n) {
-        present_image(&mut system, &test_images[i], STEPS_PER_IMAGE, &mut rng);
+        let fired = present_image(&mut system, &test_images[i], STEPS_PER_IMAGE, &mut rng);
 
-        // Vote: sum activity of neurons assigned to each class
-        let mut class_votes = vec![0.0f64; NUM_CLASSES];
+        // Vote: count how many neurons assigned to each class fired.
+        // Binary voting (fired/not-fired) is cleaner than graded activity
+        // for post-hoc labeling — it matches how labels were assigned.
+        let mut class_votes = vec![0usize; NUM_CLASSES];
+        let fired_set: std::collections::HashSet<_> = fired.into_iter().collect();
         for (&aid, &assigned_class) in &neuron_labels {
-            if let Some(m) = system.morphons.get(&aid) {
-                let activity = if m.fired { 1.0 } else { m.activity_history.mean() };
-                class_votes[assigned_class] += activity;
+            if fired_set.contains(&aid) {
+                class_votes[assigned_class] += 1;
             }
         }
 
         let pred = class_votes.iter().enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by_key(|&(_, count)| count)
             .map(|(i, _)| i)
             .unwrap_or(0);
 
