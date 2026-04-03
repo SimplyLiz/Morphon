@@ -725,3 +725,133 @@ fn phase_b_frustration_sensitivity_mult_scales_frustration() {
         "Sensitive system (fsm=0.5) should have >= frustrated morphons ({}) than tolerant (fsm=2.0, {})",
         explore_sensitive, explore_tolerant);
 }
+
+// === Axonal property integration tests ===
+
+#[test]
+fn test_distance_dependent_delay_in_running_system() {
+    // Bootstrap creates all synapses at delay=0.1 (fast I/O paths).
+    // Synaptogenesis (slow path) creates new synapses with distance-dependent
+    // delays: 0.5 + dist*0.75. After enough steps for synaptogenesis to fire,
+    // the system should contain synapses at multiple distinct delay values.
+    let config = SystemConfig {
+        scheduler: SchedulerConfig {
+            slow_period: 20,   // synaptogenesis fires more often
+            glacial_period: 200,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut system = System::new(config);
+
+    let initial_synapses = system.inspect().total_synapses;
+
+    // All bootstrap synapses should be delay=0.1
+    for (_, _, ei) in system.topology.all_edges() {
+        assert!((system.topology.graph[ei].delay - 0.1).abs() < 1e-6,
+            "Bootstrap synapse delay should be 0.1, got {}", system.topology.graph[ei].delay);
+    }
+
+    // Stimulate to trigger synaptogenesis on slow ticks
+    for _ in 0..400 {
+        system.inject_reward(0.3);
+        system.inject_novelty(0.5);
+        system.feed_input(&[1.0, 0.5, 0.3, 0.8]);
+        system.step();
+    }
+
+    let stats = system.inspect();
+
+    // Collect distinct delay values
+    let mut delays: Vec<f64> = Vec::new();
+    for (_, _, ei) in system.topology.all_edges() {
+        let d = system.topology.graph[ei].delay;
+        if delays.iter().all(|&existing| (existing - d).abs() > 1e-3) {
+            delays.push(d);
+        }
+    }
+
+    // If synaptogenesis created new synapses, they should have different delays
+    // than the 0.1 bootstrap default
+    if stats.total_synapses > initial_synapses {
+        assert!(delays.len() >= 2,
+            "With new synapses from synaptogenesis, should have varied delays. \
+             Got {} synapses ({} new), delays: {:?}",
+            stats.total_synapses, stats.total_synapses - initial_synapses, delays);
+        assert!(stats.max_base_delay > 0.1 + 0.01,
+            "New synapses should have distance-dependent delays > 0.1: max={}",
+            stats.max_base_delay);
+    } else {
+        // Synaptogenesis didn't fire — still verify the stat pipeline works
+        println!("NOTE: No new synapses created in 400 steps (topology may be saturated). \
+                  Delay variance from synaptogenesis not testable here.");
+    }
+
+    // Stat pipeline should always work
+    assert!(stats.avg_effective_delay > 0.0);
+    assert!(stats.min_base_delay <= 0.1 + 1e-6,
+        "min delay should include bootstrap 0.1: {}", stats.min_base_delay);
+}
+
+#[test]
+fn test_delay_variance_affects_spike_timing() {
+    // E2E test: two identical systems, one with natural delays (0.1 from bootstrap),
+    // one with delays inflated to 3.0 (30× slower spike delivery).
+    // With different delays, spikes arrive at different times →
+    // different accumulator state → different potential → different output.
+    let config = SystemConfig::default();
+
+    let mut sys_fast = System::new(config.clone());
+    let mut sys_slow = System::new(config);
+
+    // Inflate all delays in sys_slow to 3.0 (vs 0.1 in sys_fast)
+    for (_, _, ei) in sys_slow.topology.all_edges() {
+        sys_slow.topology.graph[ei].delay = 3.0;
+    }
+
+    // Confirm the inflation actually changed something
+    let fast_stats = sys_fast.inspect();
+    let slow_stats = sys_slow.inspect();
+    assert!(fast_stats.avg_effective_delay < slow_stats.avg_effective_delay,
+        "Fast system should have lower avg delay: {} vs {}",
+        fast_stats.avg_effective_delay, slow_stats.avg_effective_delay);
+
+    // Drive both systems with strong input to force firing and spike propagation.
+    // With delay=0.1, spikes arrive on the same step in sys_fast.
+    // With delay=3.0, spikes take 3 steps to arrive in sys_slow.
+    // By step 3+, the accumulator state (and thus potential) must differ.
+    let mut differ = false;
+    for i in 0..50 {
+        let input = vec![1.0, 0.8, 0.6];
+        sys_fast.inject_reward(0.5);
+        sys_fast.feed_input(&input);
+        sys_fast.step();
+
+        sys_slow.inject_reward(0.5);
+        sys_slow.feed_input(&input);
+        sys_slow.step();
+
+        let out_f = sys_fast.read_output();
+        let out_s = sys_slow.read_output();
+
+        // Different output port count already proves divergence
+        if out_f.len() != out_s.len() {
+            differ = true;
+            break;
+        }
+
+        if !out_f.is_empty() {
+            let max_diff: f64 = out_f.iter().zip(out_s.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            if max_diff > 1e-10 {
+                differ = true;
+                break;
+            }
+        }
+    }
+
+    assert!(differ,
+        "Systems with fast (0.1) vs slow (3.0) delays should produce different outputs, \
+         proving delay affects spike timing and behavior");
+}

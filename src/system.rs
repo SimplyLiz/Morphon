@@ -150,6 +150,12 @@ pub struct SystemStats {
     /// Axonal properties: mean effective delay across all synapses.
     #[serde(default)]
     pub avg_effective_delay: f64,
+    /// Axonal properties: minimum base delay across all synapses (before myelination).
+    #[serde(default)]
+    pub min_base_delay: f64,
+    /// Axonal properties: maximum base delay across all synapses (before myelination).
+    #[serde(default)]
+    pub max_base_delay: f64,
 }
 
 /// The Morphogenic Intelligence System.
@@ -558,11 +564,17 @@ impl System {
                         }
                     }
 
-                    // Suppress non-winners
+                    // Suppress non-winners + anti-Hebbian LTD signal
                     for &(id, _) in &assoc_data {
                         if !global_winners.contains(&id) {
                             if let Some(m) = self.morphons.get_mut(&id) {
                                 m.input_accumulator = 0.0;
+                            }
+                            let incoming = self.topology.incoming_synapses_mut(id);
+                            for (_, edge_idx) in incoming {
+                                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                    syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                                }
                             }
                         }
                     }
@@ -581,9 +593,27 @@ impl System {
                         });
                     }
 
-                    for &(id, _) in &assoc_data[k..] {
+                    // Suppress non-winners AND inject anti-Hebbian LTD signal.
+                    // Biology: lateral inhibition hyperpolarizes losers, driving LTD
+                    // on their active incoming synapses. Without this, non-winners
+                    // get zero learning signal and never specialize away from shared
+                    // initial weight patterns → mode collapse on classification tasks.
+                    let suppressed_ids: Vec<MorphonId> = assoc_data[k..].iter()
+                        .map(|(id, _)| *id).collect();
+                    for &id in &suppressed_ids {
                         if let Some(m) = self.morphons.get_mut(&id) {
                             m.input_accumulator = 0.0;
+                        }
+                    }
+                    // Inject post_trace on suppressed neurons' incoming synapses so
+                    // that pre-fired sensory neurons drive LTD (a_minus × post_trace).
+                    // This teaches suppressed neurons "this input is not yours."
+                    for &id in &suppressed_ids {
+                        let incoming = self.topology.incoming_synapses_mut(id);
+                        for (_, edge_idx) in incoming {
+                            if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                            }
                         }
                     }
 
@@ -641,6 +671,21 @@ impl System {
                 let cost = cached_maintenance_costs.get(&m.id).copied().unwrap_or(0.0);
                 m.step(dt, cost, metabolic, frustration_config, threshold_bias);
             });
+        }
+
+        // Reward-correlated energy: morphons that fire when reward arrives earn energy.
+        // Hubs fire for all inputs → reward ±symmetric → net zero income.
+        // Specialists fire for correct class → mostly positive → positive income.
+        let reward_energy_coeff = self.config.metabolic.reward_energy_coefficient;
+        if reward_energy_coeff > 0.0 {
+            let reward = self.modulation.reward_delta();
+            if reward > 0.0 {
+                for m in self.morphons.values_mut() {
+                    if m.fired {
+                        m.energy = (m.energy + reward * reward_energy_coeff).min(1.0);
+                    }
+                }
+            }
         }
 
         // V3: Cluster overhead — fused morphons pay extra maintenance cost.
@@ -1199,11 +1244,23 @@ impl System {
                 );
             }
 
-            // Activity-dependent myelination: consolidated, active synapses
-            // get faster signal delivery. Very slow τ (5000 steps) — only proven
-            // pathways myelinate. Gives temporal advantage in local competition.
+            // Activity-dependent myelination with neuromodulatory gating.
+            // Treadmilling dynamics (Auer 2019): wrapping vs removal equilibrium.
+            // Arousal gates OPC sensitivity, reward biases toward tagged pathways,
+            // energy pressure suppresses wrapping under metabolic stress.
+            // Energy pressure from Associative morphons only — Sensory/Motor energy
+            // isn't meaningful for myelination stress (they don't fire competitively).
+            let (assoc_energy_sum, assoc_count) = self.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                .fold((0.0_f64, 0usize), |(sum, n), m| (sum + m.energy, n + 1));
+            let avg_energy = if assoc_count > 0 { assoc_energy_sum / assoc_count as f64 } else { 1.0 };
+            let myelin_ctx = crate::morphon::MyelinationContext {
+                arousal: self.modulation.arousal,
+                reward: self.modulation.reward,
+                energy_pressure: (1.0 - avg_energy).clamp(0.0, 1.0),
+            };
             self.topology.update_all_synapses(|synapse| {
-                synapse.update_myelination(1.0);
+                synapse.update_myelination(1.0, &myelin_ctx);
             });
         }
 
@@ -1363,7 +1420,7 @@ impl System {
 
         // === HOMEOSTASIS ===
         if tick.homeostasis {
-            homeostasis::synaptic_scaling(&self.morphons, &mut self.topology);
+            homeostasis::synaptic_scaling(&self.morphons, &mut self.topology, self.config.learning.weight_max);
             homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
             homeostasis::inter_cluster_inhibition(
                 &mut self.morphons,
@@ -1923,7 +1980,9 @@ impl System {
                 syn.consolidation_level = 0.0;
                 syn.tag = 0.0; // reset tag for fresh accumulation
                 syn.activity_trace = 0.0;
-                syn.myelination = 0.0; // strip myelin — must re-earn speed advantage
+                // Halve myelination — treadmill removal will erode the rest
+                // now that consolidation_level is zero (wrapping target drops).
+                syn.myelination *= 0.5;
             }
         }
     }
@@ -2055,6 +2114,12 @@ impl System {
         reward_strength: f64,
         inhibit_strength: f64,
     ) {
+        // Broadcast reward into the global modulation channel so that
+        // reward-correlated energy (metabolic) and learning (three-factor)
+        // both see the signal. Without this, classification tasks that only
+        // use reward_contrastive() never set modulation.reward.
+        self.modulation.inject_reward(reward_strength);
+
         let n_outputs = self.output_ports.len();
         for i in 0..n_outputs {
             if i == correct_index {
@@ -2194,19 +2259,19 @@ impl System {
             let motor_id = self.output_ports[j];
             let incoming = self.topology.incoming_synapses_mut(motor_id);
             for (pre_id, edge_idx) in incoming {
-                // Pre-synaptic activity: binary (fired or not in recent history).
-                // Using sigmoid(potential) fails because cold morphons have sigmoid≈0.
-                // Using a floor erases class discrimination.
-                // Binary firing is the clearest signal: this sensory neuron was active
-                // for this input, so its connection to the correct output should strengthen.
+                // Pre-synaptic activity: continuous sigmoid of potential.
+                // Binary gate (fired || activity_history > 0.05) caused a cold-start
+                // deadlock: neurons can't learn because they don't fire, and they
+                // don't fire because they haven't learned. Sigmoid gives a gradient
+                // signal even for cold neurons (sigmoid(0) = 0.5).
                 let pre_act = self.morphons.get(&pre_id)
-                    .map(|m| if m.fired || m.activity_history.mean() > 0.05 { 1.0 } else { 0.0 })
+                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
                     .unwrap_or(0.0);
 
-                if pre_act < 0.01 { continue; } // skip inactive pre-synaptic neurons
+                if pre_act < 0.01 { continue; } // skip only truly dead neurons
 
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    let delta_w = learning_rate * error_j; // pre_act is binary gate, not multiplier
+                    let delta_w = learning_rate * pre_act * error_j;
                     syn.weight += delta_w;
                     syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
                 }
@@ -2300,8 +2365,8 @@ impl System {
                 };
 
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    // Delta rule + L2 weight decay to prevent drift to ±clamp
-                    let weight_decay = 0.01 * syn.weight; // pulls toward zero (10x stronger)
+                    // Delta rule + mild L2 weight decay
+                    let weight_decay = 0.001 * syn.weight;
                     let delta_w = learning_rate * pre_act * error_j - weight_decay;
                     syn.weight += delta_w;
                     syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
@@ -2486,6 +2551,7 @@ impl System {
         let synapse_count = self.topology.synapse_count();
         let (mut total_myelin, mut max_myelin, mut myelinated, mut total_eff_delay) =
             (0.0, 0.0_f64, 0usize, 0.0);
+        let (mut min_base_delay, mut max_base_delay) = (f64::MAX, 0.0_f64);
         for (_, _, ei) in self.topology.all_edges() {
             let syn = &self.topology.graph[ei];
             total_myelin += syn.myelination;
@@ -2494,6 +2560,11 @@ impl System {
                 myelinated += 1;
             }
             total_eff_delay += syn.effective_delay();
+            min_base_delay = min_base_delay.min(syn.delay);
+            max_base_delay = max_base_delay.max(syn.delay);
+        }
+        if synapse_count == 0 {
+            min_base_delay = 0.0;
         }
         let s = synapse_count.max(1) as f64;
 
@@ -2529,6 +2600,8 @@ impl System {
             max_myelination: max_myelin,
             myelinated_synapses: myelinated,
             avg_effective_delay: total_eff_delay / s,
+            min_base_delay,
+            max_base_delay,
         }
     }
 

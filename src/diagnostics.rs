@@ -185,13 +185,13 @@ impl Diagnostics {
             }
             energy_sum += m.energy;
 
-            // Apoptosis eligibility tracking
+            // Apoptosis eligibility tracking — thresholds match morphogenesis::apoptosis()
             if m.age > 1000 {
                 apoptosis_age_eligible += 1;
-                if m.activity_history.mean() < 0.005 {
+                if m.activity_history.mean() < 0.001 {
                     apoptosis_silent += 1;
                 }
-                if m.energy < 0.1 {
+                if m.ticks_below_energy_threshold > 500 {
                     apoptosis_energy_low += 1;
                 }
             }

@@ -145,6 +145,7 @@ fn default_eta_f() -> f64 { 0.2 }
 pub fn synaptic_scaling(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
+    weight_max: f64,
 ) {
     for morphon in morphons.values() {
         let actual_rate = morphon.activity_history.mean();
@@ -164,6 +165,7 @@ pub fn synaptic_scaling(
         for (_, edge_idx) in incoming {
             if let Some(syn) = topology.synapse_mut(edge_idx) {
                 syn.weight *= scaling_factor;
+                syn.weight = syn.weight.clamp(-weight_max, weight_max);
             }
         }
     }
@@ -480,7 +482,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(1.0));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         // Activity (0.5) > setpoint (0.1), so scaling_factor = 0.1/0.5 = 0.2
@@ -504,7 +506,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         assert!(
@@ -526,7 +528,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         assert!(
@@ -550,7 +552,7 @@ mod tests {
         topo.add_synapse(0, 1, Synapse::new(1.0));
         topo.add_synapse(2, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, s1) = topo.synapse_between(0, 1).unwrap();
         let (_, s2) = topo.synapse_between(2, 1).unwrap();
