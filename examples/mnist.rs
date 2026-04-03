@@ -120,7 +120,27 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
     spike_counts
 }
 
-fn create_system() -> System {
+fn create_system(local_inh: bool) -> System {
+    let competition_mode = if local_inh {
+        // LocalInhibition: real inhibitory interneurons provide biological lateral
+        // inhibition. Winners fire first, activate interneurons, which suppress
+        // the rest via negative-weight synapses. This naturally generates the
+        // anti-Hebbian LTD signal that non-winners need to specialize.
+        morphon_core::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.10,     // 10% of associative budget → ~36 interneurons
+            istdp_rate: 0.005,           // Vogels et al. — slow adaptation
+            initial_inh_weight: -0.5,    // strong initial inhibition for MNIST competition
+            inhibition_radius: 0.0,      // 0.0 = global groups (all-to-all inhibition)
+            target_rate: Some(0.05),     // match k-WTA fraction — ~5% firing rate target
+        }
+    } else {
+        morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
+            fraction: 0.05,
+            local_radius: 0.0,
+            local_k: 3,
+        }
+    };
+
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
             seed_size: 500,
@@ -155,6 +175,9 @@ fn create_system() -> System {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.0005, // gentler for large network
             heterosynaptic_depression: 0.001, tag_accumulation_rate: 0.3,
+            multi_timescale_traces: false,
+            tau_eligibility_slow: 200.0,
+            slow_trace_leak: 0.15,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.05,
@@ -162,11 +185,7 @@ fn create_system() -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-                fraction: 0.05, // ~15-18 winners — each neuron wins ~50 images in 1000
-                local_radius: 0.0,
-                local_k: 3,
-            },
+            competition_mode,
             winner_boost: 0.04, // stronger adaptive threshold — faster winner rotation
             ..Default::default()
         },
@@ -174,10 +193,14 @@ fn create_system() -> System {
             division: false,     // fixed topology for STDP self-organization
             differentiation: true,
             fusion: false,
-            apoptosis: false,    // keep all neurons — we need diversity
+            apoptosis: false,    // OFF during Phase 1 — enabled at Phase 2 transition
             migration: false,
         },
-        metabolic: MetabolicConfig::default(),
+        metabolic: MetabolicConfig {
+            reward_energy_coefficient: 0.0,    // OFF during Phase 1 (no reward signal)
+            superlinear_firing_factor: 0.0,    // OFF during Phase 1 (would kill indiscriminately)
+            ..MetabolicConfig::default()
+        },
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
@@ -231,6 +254,10 @@ fn parse_profile() -> &'static str {
     else { "quick" }
 }
 
+fn use_local_inhibition() -> bool {
+    std::env::args().any(|a| a == "--local-inh")
+}
+
 fn main() {
     let profile = parse_profile();
     let (phase1_epochs, phase1_samples, phase2_epochs, phase2_samples, test_n) = match profile {
@@ -239,7 +266,9 @@ fn main() {
         _          => (1, 1000, 1, 1000, 200),
     };
 
-    println!("=== MORPHON MNIST Benchmark — Two-Phase Learning [{}] ===\n", profile);
+    let local_inh = use_local_inhibition();
+    let competition = if local_inh { "LocalInhibition" } else { "GlobalKWTA" };
+    println!("=== MORPHON MNIST Benchmark — Two-Phase Learning [{}, {}] ===\n", profile, competition);
     println!("Loading MNIST from ./data/ ...");
 
     let mnist = MnistBuilder::new()
@@ -261,7 +290,7 @@ fn main() {
 
     println!("Train: {}, Test: {}\n", train_images.len(), test_images.len());
 
-    let mut system = create_system();
+    let mut system = create_system(local_inh);
 
     // Align homeostatic setpoint with k-WTA fraction (0.05 = 5% winners).
     // Default setpoint is 0.15 (15%), which causes synaptic_scaling to inflate
@@ -301,6 +330,12 @@ fn main() {
             // three-factor modulation alive throughout the 50-step presentation.
             let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
 
+            // Contrastive reward: correct output gets reward, others get inhibited.
+            // This drives reward_energy_coefficient — specialists earn energy,
+            // hubs that fire for everything get ±symmetric reward → net zero income.
+            let label = train_labels[idx];
+            system.reward_contrastive(label, 0.5, 0.3);
+
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();
                 let diag = system.diagnostics();
@@ -317,6 +352,55 @@ fn main() {
     }
 
     // =========================================================================
+    // PHASE 1.5: Metabolic pruning — supervised reward drives hub death.
+    // Enable metabolic pressure NOW that features exist from Phase 1.
+    // Hubs fire for all classes → ±symmetric reward → zero energy income.
+    // Specialists fire for one class → positive reward → energy income.
+    // Superlinear firing cost starves hubs. Apoptosis kills them.
+    // STDP stays ON so surviving morphons can refine features.
+    // =========================================================================
+    println!("--- PHASE 1.5: Metabolic pruning (reward-gated hub death) ---\n");
+
+    system.config.metabolic.reward_energy_coefficient = 0.01;
+    system.config.metabolic.superlinear_firing_factor = 2.0;
+    system.config.lifecycle.apoptosis = true;
+
+    // Enable analog readout for reward signal
+    system.enable_analog_readout();
+
+    let prune_samples = phase1_samples / 2; // half of Phase 1 budget
+    let mut indices: Vec<usize> = (0..train_images.len()).collect();
+    indices.shuffle(&mut rng);
+
+    let s_before = system.inspect();
+    for (bi, &idx) in indices.iter().take(prune_samples).enumerate() {
+        let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
+        let label = train_labels[idx];
+
+        // Contrastive reward: injects into modulation.reward via inject_reward()
+        // This is what makes reward_energy_coefficient work — specialists that
+        // fire for the correct class earn energy, hubs don't.
+        system.reward_contrastive(label, 0.5, 0.2);
+        system.train_readout(label, 0.005);
+        system.inject_novelty(0.3);
+
+        if (bi + 1) % 500 == 0 || bi == 0 {
+            let s = system.inspect();
+            let diag = system.diagnostics();
+            let deaths = s_before.total_morphons - s.total_morphons;
+            println!("  Phase1.5 [{:>4}/{}] m={} s={} fr={:.3} deaths={} | {}",
+                bi + 1, prune_samples,
+                s.total_morphons, s.total_synapses, s.firing_rate, deaths,
+                diag.summary());
+        }
+    }
+
+    let s_after = system.inspect();
+    let total_deaths = s_before.total_morphons - s_after.total_morphons;
+    println!("Phase1.5 complete | m={} s={} fr={:.3} | {} morphons pruned\n",
+        s_after.total_morphons, s_after.total_synapses, s_after.firing_rate, total_deaths);
+
+    // =========================================================================
     // PHASE 2: Post-hoc labeling (Diehl & Cook 2015)
     // Present labeled images, record which hidden neurons fire for each class.
     // Assign each neuron to the class it responds to most frequently.
@@ -326,12 +410,10 @@ fn main() {
     println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
     // Freeze hidden layer — disable all plasticity mechanisms for evaluation.
-    // medium_period: disables STDP weight updates, L1 normalization, DFA.
-    // homeostasis_period: disables synaptic scaling (would drift weights during eval).
-    // winner_boost=0: disables k-WTA threshold ratcheting (labels must match test dynamics).
     system.config.scheduler.medium_period = 999999;
     system.config.scheduler.homeostasis_period = 999999;
     system.config.homeostasis.winner_boost = 0.0;
+    system.config.lifecycle.apoptosis = false; // stop killing during eval
 
     // Collect associative morphon IDs
     let assoc_ids: Vec<morphon_core::MorphonId> = system.morphons.values()
@@ -424,10 +506,40 @@ fn main() {
         }
     }
 
+    // === Analog Readout Evaluation ===
+    // When contrastive reward is used, it trains the Motor readout weights.
+    // Evaluate using the analog readout (system.read_output()) which is what
+    // the contrastive reward actually optimizes.
+    println!("\n=== Analog Readout Test ===");
+    let mut ar_cc = vec![0usize; NUM_CLASSES];
+    let mut ar_ct = vec![0usize; NUM_CLASSES];
+    for i in 0..test_images.len().min(test_n) {
+        let _fired = present_image(&mut system, &test_images[i], STEPS_PER_IMAGE, &mut rng);
+        let outputs = system.read_output();
+        let pred = if outputs.len() >= NUM_CLASSES {
+            outputs.iter().take(NUM_CLASSES).enumerate()
+                .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i).unwrap_or(0)
+        } else { 0 };
+        ar_ct[test_labels[i]] += 1;
+        if pred == test_labels[i] { ar_cc[test_labels[i]] += 1; }
+    }
+    let ar_total_correct: usize = ar_cc.iter().sum();
+    let ar_total_tested: usize = ar_ct.iter().sum();
+    let ar_acc = if ar_total_tested > 0 { ar_total_correct as f64 / ar_total_tested as f64 * 100.0 } else { 0.0 };
+    for c in 0..NUM_CLASSES {
+        if ar_ct[c] > 0 {
+            let class_acc = ar_cc[c] as f64 / ar_ct[c] as f64 * 100.0;
+            println!("  {}: {:.1}% ({}/{})", c, class_acc, ar_cc[c], ar_ct[c]);
+        }
+    }
+    println!("Analog readout accuracy: {:.1}%", ar_acc);
+
     println!("\n=== Final ===");
     let s = system.inspect();
     let diag = system.diagnostics();
-    println!("Test accuracy: {:.1}%", test_acc);
+    println!("Post-hoc accuracy: {:.1}%", test_acc);
+    println!("Readout accuracy:  {:.1}%", ar_acc);
     println!("Morphons: {} | Synapses: {} | Clusters: {} | Gen: {} | FR: {:.3}",
         s.total_morphons, s.total_synapses, s.fused_clusters, s.max_generation, s.firing_rate);
     println!("Learning: {}", diag.summary());
@@ -437,7 +549,7 @@ fn main() {
     let results = json!({
         "benchmark": "mnist",
         "profile": profile,
-        "method": "two-phase (unsupervised STDP + supervised readout)",
+        "method": format!("two-phase (unsupervised STDP + {})", competition),
         "version": version,
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
