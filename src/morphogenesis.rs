@@ -617,7 +617,20 @@ pub fn fusion(
     topology: &mut Topology,
     params: &MorphogenesisParams,
     effective_max_morphons: usize,
+    max_cluster_size_fraction: f64,
+    max_unverified_fraction: f64,
 ) -> usize {
+    // V3 Governor: block new fusion when too many clusters are unverified.
+    // Prevents unbounded cluster creation before existing ones are validated.
+    if !clusters.is_empty() {
+        let unverified = clusters.values()
+            .filter(|c| matches!(c.epistemic_state, crate::epistemic::EpistemicState::Hypothesis { .. }))
+            .count();
+        if unverified as f64 / clusters.len() as f64 > max_unverified_fraction {
+            return 0;
+        }
+    }
+
     // Find groups of tightly connected, correlated morphons
     // Simple heuristic: look at groups of neighbors that all fire together
     let mut fused = 0;
@@ -673,6 +686,13 @@ pub fn fusion(
             // Prediction error must be trending down (current PE < long-term average)
             if mean_pe >= mean_desire && mean_desire > 0.01 {
                 continue; // no evidence of prediction error reduction — deny fusion
+            }
+
+            // V3 Governor: cluster size check — no cluster may exceed max fraction
+            let candidate_size = members.len();
+            let total = morphons.len();
+            if total > 0 && (candidate_size as f64 / total as f64) > max_cluster_size_fraction {
+                continue;
             }
 
             let cluster_id = *next_cluster_id;
@@ -1182,6 +1202,8 @@ pub fn step_glacial(
     next_cluster_id: &mut ClusterId,
     params: &MorphogenesisParams,
     effective_max_morphons: usize,
+    max_cluster_size_fraction: f64,
+    max_unverified_fraction: f64,
     arousal_level: f64,
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
@@ -1201,7 +1223,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.fusion {
-        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons);
+        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction);
         report.defusions = defusion(morphons, clusters, topology);
     }
 
@@ -1611,9 +1633,17 @@ mod tests {
             for _ in 0..100 { m.activity_history.push(0.5); }
             morphons.insert(i, m);
         }
+        // Add bystander morphons so the fusion candidate (3/13 ≈ 23%) passes
+        // the max_cluster_size_fraction check (30% cap).
+        for i in 10..20 {
+            let far_pos = HyperbolicPoint { coords: vec![0.5, 0.5, 0.0], curvature: 1.0 };
+            let mut m = Morphon::new(i, far_pos);
+            m.cell_type = CellType::Associative;
+            morphons.insert(i, m);
+        }
 
         let mut topo = Topology::new();
-        for i in 0..3 { topo.add_morphon(i); }
+        for &id in morphons.keys() { topo.add_morphon(id); }
         topo.add_synapse(0, 1, Synapse::new(0.5));
         topo.add_synapse(0, 2, Synapse::new(0.3));
 
@@ -1624,7 +1654,7 @@ mod tests {
 
         let fused = fusion(
             &mut morphons, &mut clusters, &mut next_cluster_id,
-            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS,
+            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         assert_eq!(fused, 1, "should form one cluster");
@@ -1834,7 +1864,7 @@ mod tests {
         let lifecycle = LifecycleConfig { division: false, ..Default::default() };
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
-            &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.0, &lifecycle, &mut rng, None, 0,
+            &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, 0.0, &lifecycle, &mut rng, None, 0,
         );
         assert_eq!(report.morphons_born, 0);
     }
@@ -1948,7 +1978,7 @@ mod tests {
         let mut clusters = HashMap::new();
         let fused = fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params, DEFAULT_MAX_MORPHONS,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         if fused > 0 {
@@ -1980,7 +2010,7 @@ mod tests {
         let mut clusters = HashMap::new();
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params, DEFAULT_MAX_MORPHONS,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         if !clusters.is_empty() {

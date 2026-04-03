@@ -168,7 +168,7 @@ impl Default for MetabolicConfig {
             firing_cost: 0.002,    // reduced 2× — firing should be cheap
             cluster_overhead_per_tick: 0.0005,
             reward_for_successful_output: 0.05,
-            reward_for_verification: 0.0, // Phase 2 placeholder
+            reward_for_verification: 0.02, // energy bonus when cluster reaches Supported
             cluster_base_cost_reduction: 0.4,
             cluster_energy_draw_per_tick: 0.0003,
         }
@@ -286,7 +286,7 @@ pub struct Morphon {
     pub intrinsic_noise: f64,
 }
 
-fn default_astrocytic_state() -> f64 { 0.5 }
+fn default_astrocytic_state() -> f64 { 1.0 }
 fn default_intrinsic_noise() -> f64 { 0.1 }
 
 impl Morphon {
@@ -323,7 +323,7 @@ impl Morphon {
             receptor_sensitivity: default_receptor_sensitivity(CellType::Stem),
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
-            astrocytic_state: 0.5,
+            astrocytic_state: 1.0,
             intrinsic_noise: crate::types::intrinsic_noise_for(CellType::Stem),
         }
     }

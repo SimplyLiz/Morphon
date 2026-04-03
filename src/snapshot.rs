@@ -128,6 +128,7 @@ impl System {
             field: None, // field is ephemeral, not persisted in snapshots
             endo: snapshot.endo,
             effective_max_morphons,
+            cached_maintenance_costs: std::collections::HashMap::new(),
         }
     }
 

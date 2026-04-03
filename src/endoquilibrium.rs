@@ -629,7 +629,7 @@ pub struct Endoquilibrium {
     /// Stage-dependent setpoints.
     setpoints: DevelopmentalSetpoints,
     /// Ticks since the last tag-capture event.
-    ticks_since_last_capture: u64,
+    pub(crate) ticks_since_last_capture: u64,
     /// Last diagnostics snapshot.
     pub last_diag: EndoDiagnostics,
 }
