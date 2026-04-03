@@ -15,7 +15,7 @@
 
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::endoquilibrium::EndoConfig;
-use morphon_core::homeostasis::HomeostasisParams;
+use morphon_core::homeostasis::{CompetitionMode, HomeostasisParams};
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
 use morphon_core::morphon::MetabolicConfig;
@@ -205,7 +205,7 @@ fn default_learning() -> LearningParams {
 fn create_system(input_size: usize, output_size: usize, tier: usize) -> System {
     let (developmental, scheduler, learning) = match tier {
         0 => (
-            // Tier 0: 27-dim bag-of-chars — small, classify_tiny-scale
+            // Tier 0: 27-dim bag-of-chars — LocalInhibition + full pipeline
             DevelopmentalConfig {
                 seed_size: 40,
                 dimensions: 4,
@@ -216,8 +216,8 @@ fn create_system(input_size: usize, output_size: usize, tier: usize) -> System {
                 ..DevelopmentalConfig::cortical()
             },
             SchedulerConfig {
-                medium_period: 99999, // three-factor OFF — pure delta rule
-                slow_period: 99999,
+                medium_period: 1,     // three-factor ON — iSTDP needs medium path
+                slow_period: 100,
                 glacial_period: 99999,
                 homeostasis_period: 10,
                 memory_period: 99999,
@@ -299,7 +299,17 @@ fn create_system(input_size: usize, output_size: usize, tier: usize) -> System {
             max_morphons: Some(800),
             ..Default::default()
         },
-        homeostasis: HomeostasisParams::default(),
+        homeostasis: HomeostasisParams {
+            competition_mode: CompetitionMode::LocalInhibition {
+                interneuron_ratio: 0.1,
+                istdp_rate: 0.005,
+                initial_inh_weight: -0.3,
+                inhibition_radius: 0.0, // all-to-all within group
+                target_rate: Some(0.1),
+            },
+            winner_boost: 0.02,
+            ..HomeostasisParams::default()
+        },
         lifecycle: LifecycleConfig {
             division: false,
             differentiation: false,
@@ -379,14 +389,15 @@ fn evaluate(
 // ── Tier runners ─────────────────────────────────────────────────────────────
 
 /// Tier 0: Bag-of-characters — vowel-heavy vs consonant-heavy (27-dim).
-/// Same approach as classify_tiny: process_steps + teach_supervised + step.
+/// Uses analog readout (Purkinje-style bypass) — proven classification path.
 fn run_tier0(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
     let t0 = Instant::now();
     let mut system = create_system(ALPHABET_SIZE, 2, 0);
+    system.enable_analog_readout();
     let mut data_rng = StdRng::seed_from_u64(42);
 
     let s = system.inspect();
-    println!("  System: {} morphons, {} synapses, {} in, {} out",
+    println!("  System: {} morphons, {} synapses, {} in, {} out (analog readout)",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
 
     for epoch in 0..params.epochs_flat {
@@ -394,7 +405,9 @@ fn run_tier0(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
             let (input, label) = gen_tier0_sample(&mut data_rng);
             system.reset_voltages();
             let _pred = classify(&mut system, &input, 2);
-            system.teach_supervised(label, 0.01);
+            system.train_readout(label, 0.01);
+            system.reward_contrastive(label, 0.3, 0.15);
+            system.inject_novelty(0.3);
             system.step();
         }
         if (epoch + 1) % 10 == 0 || epoch == 0 {
@@ -418,10 +431,11 @@ fn run_tier0(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
 fn run_tier1(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
     let t0 = Instant::now();
     let mut system = create_system(ONEHOT_DIM, 2, 1);
+    system.enable_analog_readout();
     let mut data_rng = StdRng::seed_from_u64(43);
 
     let s = system.inspect();
-    println!("  System: {} morphons, {} synapses, {} in, {} out",
+    println!("  System: {} morphons, {} synapses, {} in, {} out (analog readout)",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
 
     for epoch in 0..params.epochs_flat {
@@ -429,8 +443,7 @@ fn run_tier1(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
             let (input, label) = gen_tier1_sample(&mut data_rng);
             system.reset_voltages();
             let _pred = classify(&mut system, &input, 2);
-            // Full pipeline: delta rule with raw input values + contrastive + novelty
-            system.teach_supervised_with_input(&input, label, 0.01);
+            system.train_readout(label, 0.01);
             system.reward_contrastive(label, 0.3, 0.15);
             system.inject_novelty(0.3);
             system.step();
@@ -456,10 +469,11 @@ fn run_tier1(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
 fn run_tier2(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
     let t0 = Instant::now();
     let mut system = create_system(ALPHABET_SIZE, 2, 2);
+    system.enable_analog_readout();
     let mut data_rng = StdRng::seed_from_u64(44);
 
     let s = system.inspect();
-    println!("  System: {} morphons, {} synapses, {} in, {} out",
+    println!("  System: {} morphons, {} synapses, {} in, {} out (analog readout)",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
 
     for epoch in 0..params.epochs_seq {
@@ -474,7 +488,7 @@ fn run_tier2(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
                 system.process_steps(&last_input, STEPS_PER_PROCESS);
             }
 
-            system.teach_supervised_with_input(&last_input, label, 0.01);
+            system.train_readout(label, 0.01);
             system.reward_contrastive(label, 0.3, 0.15);
             system.inject_novelty(0.3);
             system.step();
@@ -530,10 +544,11 @@ fn run_tier2(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
 fn run_tier3(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
     let t0 = Instant::now();
     let mut system = create_system(TIER3_INPUT_DIM, 2, 3);
+    system.enable_analog_readout();
     let mut data_rng = StdRng::seed_from_u64(45);
 
     let s = system.inspect();
-    println!("  System: {} morphons, {} synapses, {} in, {} out",
+    println!("  System: {} morphons, {} synapses, {} in, {} out (analog readout)",
         s.total_morphons, s.total_synapses, system.input_size(), system.output_size());
 
     for epoch in 0..params.epochs_comp {
@@ -542,7 +557,7 @@ fn run_tier3(params: &ProfileParams) -> (f64, serde_json::Value, u64) {
             system.reset_voltages();
             let _pred = classify(&mut system, &input, 2);
 
-            system.teach_supervised_with_input(&input, label, 0.02);
+            system.train_readout(label, 0.02);
             system.reward_contrastive(label, 0.3, 0.15);
             system.inject_novelty(0.3);
             system.step();
