@@ -123,6 +123,7 @@ const ARENA_CLASS_NAMES = ['A', 'B', 'C', 'D'];
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
 let nodesMesh, glowMesh, edgesMesh, diskMesh, fresnelBall;
+let ambientParticles; // floating dust motes inside the ball
 let nodePositions = new Float32Array(MAX_NODES * 3);
 let nodeData = [];
 let nodeMap = new Map();
@@ -508,6 +509,40 @@ function initScene() {
   );
   spikesMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   scene.add(spikesMesh);
+
+  // === AMBIENT PARTICLES — floating dust motes inside the Poincaré ball ===
+  {
+    const PARTICLE_COUNT = 600;
+    const pPos = new Float32Array(PARTICLE_COUNT * 3);
+    const pSizes = new Float32Array(PARTICLE_COUNT);
+    const pPhase = new Float32Array(PARTICLE_COUNT); // random phase for drift
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      // Random position inside the ball
+      const r = Math.pow(Math.random(), 0.33) * BALL_RADIUS * 0.92;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      pPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      pPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      pPos[i * 3 + 2] = r * Math.cos(phi);
+      pSizes[i] = 0.4 + Math.random() * 1.2;
+      pPhase[i] = Math.random() * Math.PI * 2;
+    }
+    const pGeo = new THREE.BufferGeometry();
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3).setUsage(THREE.DynamicDrawUsage));
+    pGeo.setAttribute('size', new THREE.BufferAttribute(pSizes, 1));
+    const pMat = new THREE.PointsMaterial({
+      color: 0x4466aa,
+      size: 0.06,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.25,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    ambientParticles = new THREE.Points(pGeo, pMat);
+    ambientParticles.userData = { basePositions: pPos.slice(), phases: pPhase };
+    scene.add(ambientParticles);
+  }
 
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
@@ -2706,10 +2741,39 @@ function animate() {
     diskMesh.rotation.x = elapsed * 0.008;
   }
 
-  // Dynamic bloom
+  // Ambient particle drift — gentle Brownian-like motion
+  if (ambientParticles) {
+    const base = ambientParticles.userData.basePositions;
+    const phases = ambientParticles.userData.phases;
+    const pos = ambientParticles.geometry.attributes.position.array;
+    const activity = Math.min(frameFired.size / 30, 1.0);
+    // Particles drift more when the system is active
+    const driftAmp = 0.15 + activity * 0.3;
+    const speed = 0.3 + activity * 0.5;
+    for (let i = 0; i < phases.length; i++) {
+      const p = phases[i];
+      const i3 = i * 3;
+      pos[i3] = base[i3] + Math.sin(elapsed * speed + p) * driftAmp;
+      pos[i3 + 1] = base[i3 + 1] + Math.cos(elapsed * speed * 0.7 + p * 1.3) * driftAmp;
+      pos[i3 + 2] = base[i3 + 2] + Math.sin(elapsed * speed * 0.5 + p * 0.7) * driftAmp * 0.6;
+    }
+    ambientParticles.geometry.attributes.position.needsUpdate = true;
+    // Brightness pulses with activity
+    ambientParticles.material.opacity = 0.18 + activity * 0.15;
+  }
+
+  // Dynamic bloom — pulses with network activity
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
     bloomPass.strength = 0.34 + activity * 0.22;
+  }
+
+  // Panel activity pulse — light up panels when system is very active
+  if (frameCount % 10 === 0 && frameFired.size > 15) {
+    document.querySelectorAll('#left-panel .panel, #right-panel .panel').forEach(p => {
+      p.classList.add('active-pulse');
+      setTimeout(() => p.classList.remove('active-pulse'), 800);
+    });
   }
 
   // Update camera BEFORE raycast so matrices match the rendered frame
@@ -3205,9 +3269,24 @@ async function main() {
   rebuildMorphonOrder();
   updatePanels();
 
+  // Dramatic reveal: start camera further out, zoom in as loading fades
+  camera.position.set(0, 12, 38);
   const loading = document.getElementById('loading');
   loading.classList.add('hidden');
-  setTimeout(() => loading.remove(), 600);
+  setTimeout(() => loading.remove(), 800);
+  // Smooth camera zoom-in over ~2 seconds
+  const startPos = { y: 12, z: 38 };
+  const endPos = { y: 8, z: 22 };
+  const zoomStart = performance.now();
+  const zoomDuration = 2000;
+  function zoomIn() {
+    const t = Math.min((performance.now() - zoomStart) / zoomDuration, 1);
+    const ease = 1 - Math.pow(1 - t, 3); // cubic ease-out
+    camera.position.y = startPos.y + (endPos.y - startPos.y) * ease;
+    camera.position.z = startPos.z + (endPos.z - startPos.z) * ease;
+    if (t < 1) requestAnimationFrame(zoomIn);
+  }
+  zoomIn();
 
   addEvent(0, 'System initialized [cortical, 60 seed, 3D]', 'event-diff');
 

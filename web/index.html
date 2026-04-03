@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MORPHON — 3D Topology Visualizer</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -35,7 +35,7 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     overflow: hidden;
     height: 100vh;
     width: 100vw;
@@ -63,9 +63,24 @@
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     padding: 14px 16px;
-    transition: border-color 0.3s;
+    transition: border-color 0.4s, box-shadow 0.4s;
+    position: relative;
+    overflow: hidden;
   }
-  .panel:hover { border-color: var(--panel-border-hover); }
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(80, 140, 255, 0.15), transparent);
+    opacity: 0;
+    transition: opacity 0.4s;
+  }
+  .panel:hover {
+    border-color: var(--panel-border-hover);
+    box-shadow: 0 0 24px rgba(80, 140, 255, 0.04), inset 0 1px 0 rgba(80, 140, 255, 0.06);
+  }
+  .panel:hover::before { opacity: 1; }
 
   /* === HEADER === */
   #header {
@@ -82,20 +97,27 @@
     gap: 10px;
   }
   .logo-mark {
-    width: 28px; height: 28px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--sensory), var(--accent) 50%, var(--associative));
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
+    font-size: 13px;
     color: #fff;
     font-weight: 600;
+    animation: logo-breathe 4s ease-in-out infinite;
+    box-shadow: 0 0 12px rgba(80, 140, 255, 0.25);
+  }
+  @keyframes logo-breathe {
+    0%, 100% { box-shadow: 0 0 12px rgba(80, 140, 255, 0.2); }
+    50% { box-shadow: 0 0 20px rgba(80, 140, 255, 0.4), 0 0 40px rgba(80, 140, 255, 0.1); }
   }
   .logo h1 {
-    font-size: 15px;
-    font-weight: 500;
-    letter-spacing: 2.5px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 16px;
+    font-weight: 300;
+    letter-spacing: 4px;
     color: var(--text-bright);
   }
   .logo h1 span { color: var(--accent); font-weight: 600; }
@@ -118,28 +140,41 @@
 
   /* === BUTTONS === */
   button {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     font-size: 11px;
     font-weight: 500;
-    background: rgba(80, 140, 255, 0.08);
-    border: 1px solid rgba(80, 140, 255, 0.15);
+    background: rgba(80, 140, 255, 0.06);
+    border: 1px solid rgba(80, 140, 255, 0.12);
     color: var(--text);
     border-radius: 6px;
     padding: 5px 12px;
     cursor: pointer;
-    transition: all 0.2s;
-    letter-spacing: 0.3px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    letter-spacing: 0.4px;
+    position: relative;
+    overflow: hidden;
   }
+  button::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(80, 140, 255, 0.12), transparent 60%);
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+  button:hover::after { opacity: 1; }
   button:hover {
-    background: rgba(80, 140, 255, 0.15);
-    border-color: rgba(80, 140, 255, 0.3);
+    background: rgba(80, 140, 255, 0.12);
+    border-color: rgba(80, 140, 255, 0.28);
     color: var(--text-bright);
+    transform: translateY(-1px);
   }
+  button:active { transform: translateY(0); }
   button.active {
-    background: rgba(80, 140, 255, 0.2);
+    background: rgba(80, 140, 255, 0.18);
     border-color: var(--accent);
     color: #fff;
-    box-shadow: 0 0 12px rgba(80, 140, 255, 0.15);
+    box-shadow: 0 0 16px rgba(80, 140, 255, 0.2), inset 0 0 12px rgba(80, 140, 255, 0.06);
   }
   button.signal {
     font-family: 'JetBrains Mono', monospace;
@@ -148,12 +183,14 @@
     text-transform: uppercase;
     letter-spacing: 0.8px;
   }
-  button.signal.reward { border-color: rgba(251, 191, 36, 0.3); color: var(--reward-color); }
-  button.signal.reward:hover { background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 14px rgba(251, 191, 36, 0.1); }
-  button.signal.novelty { border-color: rgba(0, 212, 255, 0.3); color: var(--novelty-color); }
-  button.signal.novelty:hover { background: rgba(0, 212, 255, 0.12); box-shadow: 0 0 14px rgba(0, 212, 255, 0.1); }
-  button.signal.arousal { border-color: rgba(239, 68, 68, 0.3); color: var(--arousal-color); }
-  button.signal.arousal:hover { background: rgba(239, 68, 68, 0.12); box-shadow: 0 0 14px rgba(239, 68, 68, 0.1); }
+  button.signal.reward { border-color: rgba(251, 191, 36, 0.25); color: var(--reward-color); }
+  button.signal.reward:hover { background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 20px rgba(251, 191, 36, 0.15), inset 0 0 20px rgba(251, 191, 36, 0.04); }
+  button.signal.novelty { border-color: rgba(0, 212, 255, 0.25); color: var(--novelty-color); }
+  button.signal.novelty:hover { background: rgba(0, 212, 255, 0.12); box-shadow: 0 0 20px rgba(0, 212, 255, 0.15), inset 0 0 20px rgba(0, 212, 255, 0.04); }
+  button.signal.arousal { border-color: rgba(239, 68, 68, 0.25); color: var(--arousal-color); }
+  button.signal.arousal:hover { background: rgba(239, 68, 68, 0.12); box-shadow: 0 0 20px rgba(239, 68, 68, 0.15), inset 0 0 20px rgba(239, 68, 68, 0.04); }
+  button.signal:active { animation: signal-flash 0.3s ease; }
+  @keyframes signal-flash { 0% { filter: brightness(1.5); } 100% { filter: brightness(1); } }
 
   /* === LEFT PANEL === */
   #left-panel {
@@ -173,12 +210,15 @@
   #left-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
   .section-title {
+    font-family: 'Outfit', sans-serif;
     font-size: 9px;
-    font-weight: 600;
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
+    letter-spacing: 2px;
     color: var(--text-dim);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(80, 140, 255, 0.05);
   }
 
   .stat-grid {
@@ -294,8 +334,10 @@
   .mod-bar-fill {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.15s ease;
+    transition: width 0.15s ease, box-shadow 0.3s;
     width: 0%;
+    position: relative;
+    box-shadow: 0 0 6px currentColor;
   }
   .mod-value {
     font-family: 'JetBrains Mono', monospace;
@@ -483,6 +525,7 @@
   #bottom-panel .tab-btn.active {
     color: var(--text-bright);
     border-bottom-color: var(--accent);
+    text-shadow: 0 0 10px rgba(80, 140, 255, 0.3);
   }
   #bottom-panel .tab-actions {
     margin-left: auto;
@@ -755,7 +798,7 @@
 
   /* === PROGRAM SELECTOR === */
   select {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     font-size: 11px;
     background: rgba(80, 140, 255, 0.08);
     border: 1px solid rgba(80, 140, 255, 0.15);
@@ -864,24 +907,93 @@
     align-items: center;
     justify-content: center;
     background: var(--bg);
-    transition: opacity 0.6s;
+    transition: opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1);
   }
   #loading.hidden { opacity: 0; pointer-events: none; }
-  #loading h2 {
-    font-size: 14px;
-    font-weight: 400;
+  .loader-wrap {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .loader-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    animation: orbit linear infinite;
+  }
+  .loader-ring:nth-child(1) {
+    width: 100%; height: 100%;
+    border-top-color: var(--sensory);
+    border-bottom-color: rgba(0, 212, 255, 0.15);
+    animation-duration: 2.4s;
+    filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.4));
+  }
+  .loader-ring:nth-child(2) {
+    width: 72%; height: 72%;
+    border-right-color: var(--associative);
+    border-left-color: rgba(167, 139, 250, 0.1);
+    animation-duration: 1.8s;
+    animation-direction: reverse;
+    filter: drop-shadow(0 0 5px rgba(167, 139, 250, 0.35));
+  }
+  .loader-ring:nth-child(3) {
+    width: 44%; height: 44%;
+    border-top-color: var(--motor);
+    border-bottom-color: rgba(255, 107, 53, 0.1);
+    animation-duration: 1.2s;
+    filter: drop-shadow(0 0 4px rgba(255, 107, 53, 0.3));
+  }
+  .loader-core {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+    animation: pulse-core 1.5s ease-in-out infinite;
+  }
+  @keyframes orbit { to { transform: rotate(360deg); } }
+  @keyframes pulse-core { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.6); opacity: 1; } }
+  #loading .load-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 28px;
+    font-weight: 200;
+    letter-spacing: 12px;
+    color: var(--text-bright);
+    margin-top: 36px;
+    opacity: 0;
+    transform: translateY(8px);
+    animation: load-title-in 0.8s 0.3s ease forwards;
+  }
+  #loading .load-title span { font-weight: 500; color: var(--accent); }
+  #loading .load-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
     letter-spacing: 3px;
     color: var(--text-dim);
+    margin-top: 12px;
+    opacity: 0;
+    animation: load-title-in 0.6s 0.7s ease forwards;
+  }
+  #loading .load-bar-track {
+    width: 200px;
+    height: 2px;
+    background: rgba(80, 140, 255, 0.08);
+    border-radius: 1px;
     margin-top: 20px;
+    overflow: hidden;
+    opacity: 0;
+    animation: load-title-in 0.4s 1s ease forwards;
   }
-  .loader {
-    width: 40px; height: 40px;
-    border: 2px solid rgba(80, 140, 255, 0.1);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+  #loading .load-bar-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--sensory), var(--accent), var(--associative));
+    border-radius: 1px;
+    animation: load-bar-sweep 2s 1.2s ease-in-out forwards;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes load-title-in { to { opacity: 1; transform: translateY(0); } }
+  @keyframes load-bar-sweep { to { width: 100%; } }
 
   /* Cell type row clickable */
   .cell-type-row { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
@@ -920,7 +1032,7 @@
     border-radius: 16px; padding: 28px 32px; max-width: 520px; width: 90%;
     max-height: 80vh; overflow-y: auto;
   }
-  #help-content h2 { font-size: 16px; font-weight: 500; color: var(--text-bright); margin-bottom: 16px; letter-spacing: 1px; }
+  #help-content h2 { font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 300; color: var(--text-bright); margin-bottom: 16px; letter-spacing: 4px; }
   #help-content h3 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-dim); margin: 14px 0 6px; }
   #help-content p, #help-content li { font-size: 12px; color: var(--text); line-height: 1.6; }
   #help-content ul { padding-left: 16px; }
@@ -1009,6 +1121,79 @@
     letter-spacing: 0.3px;
   }
 
+  /* === ATMOSPHERIC GRAIN OVERLAY === */
+  #scene-container::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.015'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    opacity: 0.4;
+    mix-blend-mode: overlay;
+  }
+
+  /* === ACTIVITY PULSE on panels (driven by JS class) === */
+  .panel.active-pulse {
+    border-color: rgba(80, 140, 255, 0.18);
+    box-shadow: 0 0 30px rgba(80, 140, 255, 0.06);
+  }
+  .panel.active-pulse::before { opacity: 1; }
+
+  /* === STAT VALUE TRANSITIONS === */
+  .stat-item .value, .mod-value, .endo-channel-row .value {
+    transition: color 0.3s;
+  }
+
+  /* === HEADER GLASS EFFECT === */
+  #header {
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    background: linear-gradient(180deg, rgba(6, 8, 15, 0.85) 0%, rgba(6, 8, 15, 0.65) 100%);
+    border-bottom: 1px solid rgba(80, 140, 255, 0.06);
+  }
+
+  /* === BOTTOM PANEL GLASS === */
+  #bottom-panel {
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    background: linear-gradient(0deg, rgba(6, 8, 15, 0.9) 0%, rgba(10, 15, 28, 0.82) 100%);
+  }
+
+  /* === ENDO STAGE BADGE GLOW === */
+  .endo-stage-badge {
+    transition: all 0.3s;
+  }
+  .endo-stage-badge.stressed {
+    animation: stress-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes stress-pulse {
+    0%, 100% { box-shadow: 0 0 0 rgba(239, 68, 68, 0); }
+    50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.25); }
+  }
+
+  /* === CELL DOT GLOW === */
+  .cell-dot {
+    box-shadow: 0 0 4px currentColor;
+    transition: box-shadow 0.3s;
+  }
+  .cell-type-row:hover .cell-dot {
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* === SPARKLINE CONTAINER ENHANCEMENT === */
+  .sparkline-container {
+    margin-top: 8px;
+    padding: 4px 0;
+  }
+
+  /* === TOOLTIP ENHANCEMENT === */
+  #tooltip {
+    border: 1px solid rgba(80, 140, 255, 0.15);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 1px rgba(80, 140, 255, 0.2);
+  }
+
   /* Occupation selector */
   #occupation-select {
     font-family: 'JetBrains Mono', monospace;
@@ -1036,8 +1221,15 @@
 <body>
 
 <div id="loading">
-  <div class="loader"></div>
-  <h2>INITIALIZING MORPHON ENGINE</h2>
+  <div class="loader-wrap">
+    <div class="loader-ring"></div>
+    <div class="loader-ring"></div>
+    <div class="loader-ring"></div>
+    <div class="loader-core"></div>
+  </div>
+  <div class="load-title">MORPHON<span>ENGINE</span></div>
+  <div class="load-sub">INITIALIZING MORPHOGENIC INTELLIGENCE</div>
+  <div class="load-bar-track"><div class="load-bar-fill"></div></div>
 </div>
 
 <div id="scene-container"></div>
