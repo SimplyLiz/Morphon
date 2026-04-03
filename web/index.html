@@ -44,9 +44,8 @@
   #scene-container {
     position: fixed;
     top: 0; left: 0; right: 0;
-    bottom: 160px;
+    bottom: 0;
     z-index: 0;
-    transition: bottom 0.25s ease;
   }
 
   /* === OVERLAY PANELS === */
@@ -947,6 +946,85 @@
     #bottom-panel { max-height: 30vh; }
   }
 
+  /* === ARENA === */
+  #arena-grid-canvas {
+    width: 96px; height: 96px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    cursor: crosshair;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+  }
+  .arena-class-btns { display: flex; gap: 3px; }
+  .arena-class-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 600;
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.04);
+    border: 2px solid transparent;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .arena-class-btn.selected { border-color: currentColor; box-shadow: 0 0 8px currentColor; }
+
+  .arena-prediction { display: flex; flex-direction: column; gap: 3px; min-width: 140px; }
+  .arena-pred-bar { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+  .arena-pred-bar .bar-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600; width: 14px; text-align: center;
+  }
+  .arena-pred-bar .bar-track {
+    flex: 1; height: 6px; border-radius: 3px;
+    background: rgba(255,255,255,0.04); overflow: hidden; min-width: 60px;
+  }
+  .arena-pred-bar .bar-fill { height: 100%; border-radius: 3px; transition: width 0.15s; }
+  .arena-pred-bar .bar-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; color: var(--text-dim); width: 30px; text-align: right;
+  }
+  .arena-pred-result {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 600; text-align: center;
+    padding: 2px 0; letter-spacing: 1px;
+  }
+
+  .arena-stats { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+  .arena-stat-row {
+    display: flex; justify-content: space-between; font-size: 10px;
+  }
+  .arena-stat-row .label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .arena-stat-row .value { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-bright); }
+  #arena-confusion {
+    width: 72px; height: 72px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    image-rendering: pixelated;
+  }
+  #arena-acc-spark { width: 100%; height: 24px; display: block; }
+  .arena-status-msg {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; color: var(--text-dim);
+    text-align: center; margin-top: 2px;
+    letter-spacing: 0.3px;
+  }
+
+  /* Occupation selector */
+  #occupation-select {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.15);
+    color: var(--reward-color);
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    outline: none;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  #occupation-select:hover { border-color: rgba(251,191,36,0.3); }
+
   /* === V3: Mobile touch === */
   @media (pointer: coarse) {
     button { min-height: 36px; min-width: 36px; }
@@ -986,6 +1064,10 @@
       <option value="cortical">Cortical</option>
       <option value="hippocampal">Hippocampal</option>
       <option value="cerebellar">Cerebellar</option>
+    </select>
+    <select id="occupation-select">
+      <option value="idle">Idle</option>
+      <option value="arena">Sketch Arena</option>
     </select>
     <button id="btn-reset">RESET</button>
     <button id="btn-save" title="Save state">SAVE</button>
@@ -1175,6 +1257,7 @@
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
     <button class="tab-btn" data-tab="tab-learning">LEARNING</button>
+    <button class="tab-btn" data-tab="tab-arena" id="tab-btn-arena" style="display:none">ARENA</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -1249,6 +1332,55 @@
           <span id="wh-min">-1.0</span>
           <span id="wh-stats">μ=0 σ=0</span>
           <span id="wh-max">+1.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 5: SKETCH ARENA -->
+  <div id="tab-arena" class="tab-content">
+    <div style="display:flex; height:100%; gap:12px; padding:4px 12px; align-items:center;">
+      <!-- Grid + class/action buttons side by side -->
+      <div style="display:flex; gap:8px; align-items:center; flex-shrink:0;">
+        <canvas id="arena-grid-canvas" width="96" height="96"></canvas>
+        <div style="display:flex; flex-direction:column; gap:4px; justify-content:center;">
+          <div class="arena-class-btns">
+            <button class="arena-class-btn selected" data-class="0" style="color:#00d4ff">A</button>
+            <button class="arena-class-btn" data-class="1" style="color:#a78bfa">B</button>
+            <button class="arena-class-btn" data-class="2" style="color:#fbbf24">C</button>
+            <button class="arena-class-btn" data-class="3" style="color:#34d399">D</button>
+          </div>
+          <button class="teach-btn" id="arena-teach" style="font-size:10px;padding:4px 10px;color:var(--reward-color);border-color:rgba(251,191,36,0.3)">TEACH</button>
+          <button class="guess-btn" id="arena-guess" style="font-size:10px;padding:4px 10px;color:var(--accent);border-color:rgba(80,140,255,0.3)">GUESS</button>
+          <button id="arena-clear" style="font-size:9px;padding:3px 8px">CLR</button>
+          <div class="arena-status-msg" id="arena-status">Draw a pattern</div>
+        </div>
+      </div>
+      <!-- Separator -->
+      <div style="width:1px; height:80%; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Prediction bars -->
+      <div class="arena-prediction" id="arena-prediction">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:1px;">Prediction</div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#00d4ff">A</span><div class="bar-track"><div class="bar-fill" id="arena-bar-0" style="background:#00d4ff; width:0%"></div></div><span class="bar-val" id="arena-val-0">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#a78bfa">B</span><div class="bar-track"><div class="bar-fill" id="arena-bar-1" style="background:#a78bfa; width:0%"></div></div><span class="bar-val" id="arena-val-1">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#fbbf24">C</span><div class="bar-track"><div class="bar-fill" id="arena-bar-2" style="background:#fbbf24; width:0%"></div></div><span class="bar-val" id="arena-val-2">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#34d399">D</span><div class="bar-track"><div class="bar-fill" id="arena-bar-3" style="background:#34d399; width:0%"></div></div><span class="bar-val" id="arena-val-3">0%</span></div>
+        <div class="arena-pred-result" id="arena-result">&mdash;</div>
+      </div>
+      <!-- Separator -->
+      <div style="width:1px; height:80%; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Stats -->
+      <div style="display:flex; gap:12px; align-items:center;">
+        <div class="arena-stats">
+          <div class="arena-stat-row"><span class="label">Samples</span><span class="value" id="arena-samples">0</span></div>
+          <div class="arena-stat-row"><span class="label">Accuracy</span><span class="value" id="arena-accuracy">—</span></div>
+          <div class="arena-stat-row"><span class="label">Cycles</span><span class="value" id="arena-cycles">0</span></div>
+          <div style="font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px;">Accuracy</div>
+          <canvas id="arena-acc-spark" width="110" height="24"></canvas>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center;">
+          <div style="font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Confusion</div>
+          <canvas id="arena-confusion" width="72" height="72"></canvas>
         </div>
       </div>
     </div>

@@ -69,6 +69,54 @@ mod bindings {
             })
         }
 
+        /// Create a new MI System with explicit input/output sizes.
+        ///
+        /// @param seed_size - Number of initial Morphons
+        /// @param growth_program - "cortical", "hippocampal", or "cerebellar"
+        /// @param dimensions - Dimensionality of information space
+        /// @param input_size - Exact number of sensory (input) ports
+        /// @param output_size - Exact number of motor (output) ports
+        #[wasm_bindgen(js_name = newWithIO)]
+        pub fn new_with_io(
+            seed_size: usize,
+            growth_program: &str,
+            dimensions: usize,
+            input_size: usize,
+            output_size: usize,
+        ) -> Result<WasmSystem, JsError> {
+            let dev_config = match growth_program {
+                "cortical" => DevelopmentalConfig::cortical(),
+                "hippocampal" => DevelopmentalConfig::hippocampal(),
+                "cerebellar" => DevelopmentalConfig::cerebellar(),
+                other => {
+                    return Err(JsError::new(&format!(
+                        "Unknown growth program: '{}'. Use 'cortical', 'hippocampal', or 'cerebellar'.",
+                        other
+                    )));
+                }
+            };
+
+            let config = SystemConfig {
+                developmental: DevelopmentalConfig {
+                    seed_size,
+                    dimensions,
+                    target_input_size: Some(input_size),
+                    target_output_size: Some(output_size),
+                    ..dev_config
+                },
+                field: FieldConfig { enabled: true, ..Default::default() },
+                endoquilibrium: crate::endoquilibrium::EndoConfig {
+                    enabled: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+
+            Ok(WasmSystem {
+                inner: System::new(config),
+            })
+        }
+
         /// Feed input and get output (single inference step with learning).
         /// Returns a Float64Array of motor outputs.
         pub fn process(&mut self, input: &[f64]) -> Vec<f64> {
