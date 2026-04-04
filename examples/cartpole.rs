@@ -450,6 +450,8 @@ fn main() {
     println!("Morphons: {} | Synapses: {} | Clusters: {} | Gen: {} | FR: {:.3}",
         s.total_morphons, s.total_synapses, s.fused_clusters, s.max_generation, s.firing_rate);
     println!("Types: {:?}", s.differentiation_map);
+    println!("Axonal: avg_myelin={:.4} | max_myelin={:.4} | myelinated={}/{} | avg_eff_delay={:.3}",
+        s.avg_myelination, s.max_myelination, s.myelinated_synapses, s.total_synapses, s.avg_effective_delay);
     println!("Learning: {}", diag.summary());
     println!("Endo: {}", system.endo.summary());
 
@@ -465,6 +467,8 @@ fn main() {
             "morphons": s.total_morphons, "synapses": s.total_synapses,
             "clusters": s.fused_clusters, "generation": s.max_generation,
             "firing_rate": s.firing_rate, "prediction_error": s.avg_prediction_error,
+            "avg_myelination": s.avg_myelination, "max_myelination": s.max_myelination,
+            "myelinated_synapses": s.myelinated_synapses, "avg_effective_delay": s.avg_effective_delay,
         },
         "diagnostics": {
             "weight_mean": diag.weight_mean, "weight_std": diag.weight_std,

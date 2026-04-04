@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MORPHON — 3D Topology Visualizer</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@200;300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -35,7 +35,7 @@
   body {
     background: var(--bg);
     color: var(--text);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     overflow: hidden;
     height: 100vh;
     width: 100vw;
@@ -44,9 +44,8 @@
   #scene-container {
     position: fixed;
     top: 0; left: 0; right: 0;
-    bottom: 160px;
+    bottom: 0;
     z-index: 0;
-    transition: bottom 0.25s ease;
   }
 
   /* === OVERLAY PANELS === */
@@ -64,9 +63,25 @@
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     padding: 14px 16px;
-    transition: border-color 0.3s;
+    transition: border-color 0.4s, box-shadow 0.4s;
+    position: relative;
   }
-  .panel:hover { border-color: var(--panel-border-hover); }
+  .panel::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 12px; right: 12px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(80, 140, 255, 0.15), transparent);
+    opacity: 0;
+    transition: opacity 0.4s;
+    pointer-events: none;
+    z-index: 1;
+  }
+  .panel:hover {
+    border-color: var(--panel-border-hover);
+    box-shadow: 0 0 24px rgba(80, 140, 255, 0.04), inset 0 1px 0 rgba(80, 140, 255, 0.06);
+  }
+  .panel:hover::before { opacity: 1; }
 
   /* === HEADER === */
   #header {
@@ -83,20 +98,27 @@
     gap: 10px;
   }
   .logo-mark {
-    width: 28px; height: 28px;
-    border-radius: 8px;
-    background: linear-gradient(135deg, var(--accent), #a78bfa);
+    width: 30px; height: 30px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--sensory), var(--accent) 50%, var(--associative));
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
+    font-size: 13px;
     color: #fff;
     font-weight: 600;
+    animation: logo-breathe 4s ease-in-out infinite;
+    box-shadow: 0 0 12px rgba(80, 140, 255, 0.25);
+  }
+  @keyframes logo-breathe {
+    0%, 100% { box-shadow: 0 0 12px rgba(80, 140, 255, 0.2); }
+    50% { box-shadow: 0 0 20px rgba(80, 140, 255, 0.4), 0 0 40px rgba(80, 140, 255, 0.1); }
   }
   .logo h1 {
-    font-size: 15px;
-    font-weight: 500;
-    letter-spacing: 2.5px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 16px;
+    font-weight: 300;
+    letter-spacing: 4px;
     color: var(--text-bright);
   }
   .logo h1 span { color: var(--accent); font-weight: 600; }
@@ -119,28 +141,41 @@
 
   /* === BUTTONS === */
   button {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     font-size: 11px;
     font-weight: 500;
-    background: rgba(80, 140, 255, 0.08);
-    border: 1px solid rgba(80, 140, 255, 0.15);
+    background: rgba(80, 140, 255, 0.06);
+    border: 1px solid rgba(80, 140, 255, 0.12);
     color: var(--text);
     border-radius: 6px;
     padding: 5px 12px;
     cursor: pointer;
-    transition: all 0.2s;
-    letter-spacing: 0.3px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    letter-spacing: 0.4px;
+    position: relative;
+    overflow: hidden;
   }
+  button::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(80, 140, 255, 0.12), transparent 60%);
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+  button:hover::after { opacity: 1; }
   button:hover {
-    background: rgba(80, 140, 255, 0.15);
-    border-color: rgba(80, 140, 255, 0.3);
+    background: rgba(80, 140, 255, 0.12);
+    border-color: rgba(80, 140, 255, 0.28);
     color: var(--text-bright);
+    transform: translateY(-1px);
   }
+  button:active { transform: translateY(0); }
   button.active {
-    background: rgba(80, 140, 255, 0.2);
+    background: rgba(80, 140, 255, 0.18);
     border-color: var(--accent);
     color: #fff;
-    box-shadow: 0 0 12px rgba(80, 140, 255, 0.15);
+    box-shadow: 0 0 16px rgba(80, 140, 255, 0.2), inset 0 0 12px rgba(80, 140, 255, 0.06);
   }
   button.signal {
     font-family: 'JetBrains Mono', monospace;
@@ -149,12 +184,14 @@
     text-transform: uppercase;
     letter-spacing: 0.8px;
   }
-  button.signal.reward { border-color: rgba(251, 191, 36, 0.3); color: var(--reward-color); }
-  button.signal.reward:hover { background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 14px rgba(251, 191, 36, 0.1); }
-  button.signal.novelty { border-color: rgba(0, 212, 255, 0.3); color: var(--novelty-color); }
-  button.signal.novelty:hover { background: rgba(0, 212, 255, 0.12); box-shadow: 0 0 14px rgba(0, 212, 255, 0.1); }
-  button.signal.arousal { border-color: rgba(239, 68, 68, 0.3); color: var(--arousal-color); }
-  button.signal.arousal:hover { background: rgba(239, 68, 68, 0.12); box-shadow: 0 0 14px rgba(239, 68, 68, 0.1); }
+  button.signal.reward { border-color: rgba(251, 191, 36, 0.25); color: var(--reward-color); }
+  button.signal.reward:hover { background: rgba(251, 191, 36, 0.12); box-shadow: 0 0 20px rgba(251, 191, 36, 0.15), inset 0 0 20px rgba(251, 191, 36, 0.04); }
+  button.signal.novelty { border-color: rgba(0, 212, 255, 0.25); color: var(--novelty-color); }
+  button.signal.novelty:hover { background: rgba(0, 212, 255, 0.12); box-shadow: 0 0 20px rgba(0, 212, 255, 0.15), inset 0 0 20px rgba(0, 212, 255, 0.04); }
+  button.signal.arousal { border-color: rgba(239, 68, 68, 0.25); color: var(--arousal-color); }
+  button.signal.arousal:hover { background: rgba(239, 68, 68, 0.12); box-shadow: 0 0 20px rgba(239, 68, 68, 0.15), inset 0 0 20px rgba(239, 68, 68, 0.04); }
+  button.signal:active { animation: signal-flash 0.3s ease; }
+  @keyframes signal-flash { 0% { filter: brightness(1.5); } 100% { filter: brightness(1); } }
 
   /* === LEFT PANEL === */
   #left-panel {
@@ -174,12 +211,15 @@
   #left-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
   .section-title {
+    font-family: 'Outfit', sans-serif;
     font-size: 9px;
-    font-weight: 600;
+    font-weight: 500;
     text-transform: uppercase;
-    letter-spacing: 1.5px;
+    letter-spacing: 2px;
     color: var(--text-dim);
-    margin-bottom: 8px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(80, 140, 255, 0.05);
   }
 
   .stat-grid {
@@ -295,8 +335,10 @@
   .mod-bar-fill {
     height: 100%;
     border-radius: 3px;
-    transition: width 0.15s ease;
+    transition: width 0.15s ease, box-shadow 0.3s;
     width: 0%;
+    position: relative;
+    box-shadow: 0 0 6px currentColor;
   }
   .mod-value {
     font-family: 'JetBrains Mono', monospace;
@@ -484,6 +526,7 @@
   #bottom-panel .tab-btn.active {
     color: var(--text-bright);
     border-bottom-color: var(--accent);
+    text-shadow: 0 0 10px rgba(80, 140, 255, 0.3);
   }
   #bottom-panel .tab-actions {
     margin-left: auto;
@@ -501,6 +544,51 @@
     display: none;
   }
   .tab-content.active { display: flex; flex-direction: column; }
+
+  /* Learning pipeline */
+  .pipeline-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 16px;
+  }
+  .lp-label {
+    width: 80px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .lp-bar-track {
+    flex: 1;
+    height: 8px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.04);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .lp-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.2s ease;
+    width: 0%;
+    background: var(--accent);
+  }
+  .lp-bar-fill.lp-eligible { background: #508cff; }
+  .lp-bar-fill.lp-tagged { background: #a78bfa; }
+  .lp-bar-fill.lp-captured { background: #fbbf24; }
+  .lp-bar-fill.lp-consolidated { background: #34d399; }
+  .lp-bar-fill.lp-justified { background: #f472b6; }
+  .lp-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-bright);
+    width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
   #tab-raster {
     padding: 4px 8px;
   }
@@ -711,7 +799,7 @@
 
   /* === PROGRAM SELECTOR === */
   select {
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: 'Outfit', system-ui, sans-serif;
     font-size: 11px;
     background: rgba(80, 140, 255, 0.08);
     border: 1px solid rgba(80, 140, 255, 0.15);
@@ -820,24 +908,93 @@
     align-items: center;
     justify-content: center;
     background: var(--bg);
-    transition: opacity 0.6s;
+    transition: opacity 0.8s cubic-bezier(0.4, 0, 0.2, 1);
   }
   #loading.hidden { opacity: 0; pointer-events: none; }
-  #loading h2 {
-    font-size: 14px;
-    font-weight: 400;
+  .loader-wrap {
+    position: relative;
+    width: 120px;
+    height: 120px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .loader-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    animation: orbit linear infinite;
+  }
+  .loader-ring:nth-child(1) {
+    width: 100%; height: 100%;
+    border-top-color: var(--sensory);
+    border-bottom-color: rgba(0, 212, 255, 0.15);
+    animation-duration: 2.4s;
+    filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.4));
+  }
+  .loader-ring:nth-child(2) {
+    width: 72%; height: 72%;
+    border-right-color: var(--associative);
+    border-left-color: rgba(167, 139, 250, 0.1);
+    animation-duration: 1.8s;
+    animation-direction: reverse;
+    filter: drop-shadow(0 0 5px rgba(167, 139, 250, 0.35));
+  }
+  .loader-ring:nth-child(3) {
+    width: 44%; height: 44%;
+    border-top-color: var(--motor);
+    border-bottom-color: rgba(255, 107, 53, 0.1);
+    animation-duration: 1.2s;
+    filter: drop-shadow(0 0 4px rgba(255, 107, 53, 0.3));
+  }
+  .loader-core {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+    animation: pulse-core 1.5s ease-in-out infinite;
+  }
+  @keyframes orbit { to { transform: rotate(360deg); } }
+  @keyframes pulse-core { 0%, 100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.6); opacity: 1; } }
+  #loading .load-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 28px;
+    font-weight: 200;
+    letter-spacing: 12px;
+    color: var(--text-bright);
+    margin-top: 36px;
+    opacity: 0;
+    transform: translateY(8px);
+    animation: load-title-in 0.8s 0.3s ease forwards;
+  }
+  #loading .load-title span { font-weight: 500; color: var(--accent); }
+  #loading .load-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
     letter-spacing: 3px;
     color: var(--text-dim);
+    margin-top: 12px;
+    opacity: 0;
+    animation: load-title-in 0.6s 0.7s ease forwards;
+  }
+  #loading .load-bar-track {
+    width: 200px;
+    height: 2px;
+    background: rgba(80, 140, 255, 0.08);
+    border-radius: 1px;
     margin-top: 20px;
+    overflow: hidden;
+    opacity: 0;
+    animation: load-title-in 0.4s 1s ease forwards;
   }
-  .loader {
-    width: 40px; height: 40px;
-    border: 2px solid rgba(80, 140, 255, 0.1);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+  #loading .load-bar-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--sensory), var(--accent), var(--associative));
+    border-radius: 1px;
+    animation: load-bar-sweep 2s 1.2s ease-in-out forwards;
   }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes load-title-in { to { opacity: 1; transform: translateY(0); } }
+  @keyframes load-bar-sweep { to { width: 100%; } }
 
   /* Cell type row clickable */
   .cell-type-row { cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.2s; }
@@ -876,7 +1033,7 @@
     border-radius: 16px; padding: 28px 32px; max-width: 520px; width: 90%;
     max-height: 80vh; overflow-y: auto;
   }
-  #help-content h2 { font-size: 16px; font-weight: 500; color: var(--text-bright); margin-bottom: 16px; letter-spacing: 1px; }
+  #help-content h2 { font-family: 'Outfit', sans-serif; font-size: 18px; font-weight: 300; color: var(--text-bright); margin-bottom: 16px; letter-spacing: 4px; }
   #help-content h3 { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-dim); margin: 14px 0 6px; }
   #help-content p, #help-content li { font-size: 12px; color: var(--text); line-height: 1.6; }
   #help-content ul { padding-left: 16px; }
@@ -902,6 +1059,158 @@
     #bottom-panel { max-height: 30vh; }
   }
 
+  /* === ARENA === */
+  #arena-grid-canvas {
+    width: 96px; height: 96px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    cursor: crosshair;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+  }
+  .arena-class-btns { display: flex; gap: 3px; }
+  .arena-class-btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; font-weight: 600;
+    width: 22px; height: 22px;
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,0.04);
+    border: 2px solid transparent;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .arena-class-btn.selected { border-color: currentColor; box-shadow: 0 0 8px currentColor; }
+
+  .arena-prediction { display: flex; flex-direction: column; gap: 3px; min-width: 140px; }
+  .arena-pred-bar { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+  .arena-pred-bar .bar-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600; width: 14px; text-align: center;
+  }
+  .arena-pred-bar .bar-track {
+    flex: 1; height: 6px; border-radius: 3px;
+    background: rgba(255,255,255,0.04); overflow: hidden; min-width: 60px;
+  }
+  .arena-pred-bar .bar-fill { height: 100%; border-radius: 3px; transition: width 0.15s; }
+  .arena-pred-bar .bar-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; color: var(--text-dim); width: 30px; text-align: right;
+  }
+  .arena-pred-result {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 600; text-align: center;
+    padding: 2px 0; letter-spacing: 1px;
+  }
+
+  .arena-stats { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+  .arena-stat-row {
+    display: flex; justify-content: space-between; font-size: 10px;
+  }
+  .arena-stat-row .label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .arena-stat-row .value { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-bright); }
+  #arena-confusion {
+    width: 72px; height: 72px;
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    image-rendering: pixelated;
+  }
+  #arena-acc-spark { width: 100%; height: 24px; display: block; }
+  .arena-status-msg {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; color: var(--text-dim);
+    text-align: center; margin-top: 2px;
+    letter-spacing: 0.3px;
+  }
+
+  /* === ATMOSPHERIC GRAIN OVERLAY === */
+  #scene-container::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.015'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    opacity: 0.4;
+    mix-blend-mode: overlay;
+  }
+
+  /* === ACTIVITY PULSE on panels (driven by JS class) === */
+  .panel.active-pulse {
+    border-color: rgba(80, 140, 255, 0.18);
+    box-shadow: 0 0 30px rgba(80, 140, 255, 0.06);
+  }
+  .panel.active-pulse::before { opacity: 1; }
+
+  /* === STAT VALUE TRANSITIONS === */
+  .stat-item .value, .mod-value, .endo-channel-row .value {
+    transition: color 0.3s;
+  }
+
+  /* === HEADER GLASS EFFECT === */
+  #header {
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    background: linear-gradient(180deg, rgba(6, 8, 15, 0.85) 0%, rgba(6, 8, 15, 0.65) 100%);
+    border-bottom: 1px solid rgba(80, 140, 255, 0.06);
+  }
+
+  /* === BOTTOM PANEL GLASS === */
+  #bottom-panel {
+    backdrop-filter: blur(16px) saturate(130%);
+    -webkit-backdrop-filter: blur(16px) saturate(130%);
+    background: linear-gradient(0deg, rgba(6, 8, 15, 0.9) 0%, rgba(10, 15, 28, 0.82) 100%);
+  }
+
+  /* === ENDO STAGE BADGE GLOW === */
+  .endo-stage-badge {
+    transition: all 0.3s;
+  }
+  .endo-stage-badge.stressed {
+    animation: stress-pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes stress-pulse {
+    0%, 100% { box-shadow: 0 0 0 rgba(239, 68, 68, 0); }
+    50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.25); }
+  }
+
+  /* === CELL DOT GLOW === */
+  .cell-dot {
+    box-shadow: 0 0 4px currentColor;
+    transition: box-shadow 0.3s;
+  }
+  .cell-type-row:hover .cell-dot {
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* === SPARKLINE CONTAINER ENHANCEMENT === */
+  .sparkline-container {
+    margin-top: 8px;
+    padding: 4px 0;
+  }
+
+  /* === TOOLTIP ENHANCEMENT === */
+  #tooltip {
+    border: 1px solid rgba(80, 140, 255, 0.15);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 1px rgba(80, 140, 255, 0.2);
+  }
+
+  /* Occupation selector */
+  #occupation-select {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.15);
+    color: var(--reward-color);
+    border-radius: 6px;
+    padding: 4px 8px;
+    cursor: pointer;
+    outline: none;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  #occupation-select:hover { border-color: rgba(251,191,36,0.3); }
+
   /* === V3: Mobile touch === */
   @media (pointer: coarse) {
     button { min-height: 36px; min-width: 36px; }
@@ -913,8 +1222,15 @@
 <body>
 
 <div id="loading">
-  <div class="loader"></div>
-  <h2>INITIALIZING MORPHON ENGINE</h2>
+  <div class="loader-wrap">
+    <div class="loader-ring"></div>
+    <div class="loader-ring"></div>
+    <div class="loader-ring"></div>
+    <div class="loader-core"></div>
+  </div>
+  <div class="load-title">MORPHON<span>ENGINE</span></div>
+  <div class="load-sub">INITIALIZING MORPHOGENIC INTELLIGENCE</div>
+  <div class="load-bar-track"><div class="load-bar-fill"></div></div>
 </div>
 
 <div id="scene-container"></div>
@@ -941,6 +1257,10 @@
       <option value="cortical">Cortical</option>
       <option value="hippocampal">Hippocampal</option>
       <option value="cerebellar">Cerebellar</option>
+    </select>
+    <select id="occupation-select">
+      <option value="idle">Idle</option>
+      <option value="arena">Sketch Arena</option>
     </select>
     <button id="btn-reset">RESET</button>
     <button id="btn-save" title="Save state">SAVE</button>
@@ -1129,7 +1449,8 @@
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
-    <button class="tab-btn" data-tab="tab-lineage">LINEAGE</button>
+    <button class="tab-btn" data-tab="tab-learning">LEARNING</button>
+    <button class="tab-btn" data-tab="tab-arena" id="tab-btn-arena" style="display:none">ARENA</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -1184,10 +1505,77 @@
     </div>
   </div>
 
-  <!-- TAB 4: LINEAGE TREE -->
-  <div id="tab-lineage" class="tab-content">
-    <div id="lineage-canvas-wrap" style="width:100%;height:100%;overflow-x:auto">
-      <canvas id="lineage-canvas" style="width:100%;height:100%"></canvas>
+  <!-- TAB 4: LEARNING PIPELINE -->
+  <div id="tab-learning" class="tab-content">
+    <div style="display:flex; height:100%; gap:16px; padding:8px 12px; overflow:hidden;">
+      <!-- Pipeline flow -->
+      <div style="flex:1; display:flex; flex-direction:column; justify-content:center; gap:4px; min-width:0;">
+        <div class="pipeline-row" id="lp-synapses"><span class="lp-label">Synapses</span><div class="lp-bar-track"><div class="lp-bar-fill" id="lp-syn-bar"></div></div><span class="lp-value" id="lp-syn-v">0</span></div>
+        <div class="pipeline-row" id="lp-eligible"><span class="lp-label">Eligible</span><div class="lp-bar-track"><div class="lp-bar-fill lp-eligible" id="lp-elig-bar"></div></div><span class="lp-value" id="lp-elig-v">0</span></div>
+        <div class="pipeline-row" id="lp-tagged"><span class="lp-label">Tagged</span><div class="lp-bar-track"><div class="lp-bar-fill lp-tagged" id="lp-tag-bar"></div></div><span class="lp-value" id="lp-tag-v">0</span></div>
+        <div class="pipeline-row" id="lp-captured"><span class="lp-label">Captured</span><div class="lp-bar-track"><div class="lp-bar-fill lp-captured" id="lp-cap-bar"></div></div><span class="lp-value" id="lp-cap-v">0</span></div>
+        <div class="pipeline-row" id="lp-consolidated"><span class="lp-label">Consolidated</span><div class="lp-bar-track"><div class="lp-bar-fill lp-consolidated" id="lp-con-bar"></div></div><span class="lp-value" id="lp-con-v">0</span></div>
+        <div class="pipeline-row" id="lp-justified"><span class="lp-label">Justified</span><div class="lp-bar-track"><div class="lp-bar-fill lp-justified" id="lp-jus-bar"></div></div><span class="lp-value" id="lp-jus-v">0%</span></div>
+      </div>
+      <!-- Weight histogram -->
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Weight Distribution</div>
+        <canvas id="weight-histogram" style="flex:1; width:100%;"></canvas>
+        <div style="display:flex; justify-content:space-between; font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--text-dim); margin-top:2px;">
+          <span id="wh-min">-1.0</span>
+          <span id="wh-stats">μ=0 σ=0</span>
+          <span id="wh-max">+1.0</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB 5: SKETCH ARENA -->
+  <div id="tab-arena" class="tab-content">
+    <div style="display:flex; height:100%; gap:12px; padding:4px 12px; align-items:center;">
+      <!-- Grid + class/action buttons side by side -->
+      <div style="display:flex; gap:8px; align-items:center; flex-shrink:0;">
+        <canvas id="arena-grid-canvas" width="96" height="96"></canvas>
+        <div style="display:flex; flex-direction:column; gap:4px; justify-content:center;">
+          <div class="arena-class-btns">
+            <button class="arena-class-btn selected" data-class="0" style="color:#00d4ff">A</button>
+            <button class="arena-class-btn" data-class="1" style="color:#a78bfa">B</button>
+            <button class="arena-class-btn" data-class="2" style="color:#fbbf24">C</button>
+            <button class="arena-class-btn" data-class="3" style="color:#34d399">D</button>
+          </div>
+          <button class="teach-btn" id="arena-teach" style="font-size:10px;padding:4px 10px;color:var(--reward-color);border-color:rgba(251,191,36,0.3)">TEACH</button>
+          <button class="guess-btn" id="arena-guess" style="font-size:10px;padding:4px 10px;color:var(--accent);border-color:rgba(80,140,255,0.3)">GUESS</button>
+          <button id="arena-clear" style="font-size:9px;padding:3px 8px">CLR</button>
+          <div class="arena-status-msg" id="arena-status">Draw a pattern</div>
+        </div>
+      </div>
+      <!-- Separator -->
+      <div style="width:1px; height:80%; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Prediction bars -->
+      <div class="arena-prediction" id="arena-prediction">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:1px;">Prediction</div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#00d4ff">A</span><div class="bar-track"><div class="bar-fill" id="arena-bar-0" style="background:#00d4ff; width:0%"></div></div><span class="bar-val" id="arena-val-0">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#a78bfa">B</span><div class="bar-track"><div class="bar-fill" id="arena-bar-1" style="background:#a78bfa; width:0%"></div></div><span class="bar-val" id="arena-val-1">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#fbbf24">C</span><div class="bar-track"><div class="bar-fill" id="arena-bar-2" style="background:#fbbf24; width:0%"></div></div><span class="bar-val" id="arena-val-2">0%</span></div>
+        <div class="arena-pred-bar"><span class="bar-label" style="color:#34d399">D</span><div class="bar-track"><div class="bar-fill" id="arena-bar-3" style="background:#34d399; width:0%"></div></div><span class="bar-val" id="arena-val-3">0%</span></div>
+        <div class="arena-pred-result" id="arena-result">&mdash;</div>
+      </div>
+      <!-- Separator -->
+      <div style="width:1px; height:80%; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Stats -->
+      <div style="display:flex; gap:12px; align-items:center;">
+        <div class="arena-stats">
+          <div class="arena-stat-row"><span class="label">Samples</span><span class="value" id="arena-samples">0</span></div>
+          <div class="arena-stat-row"><span class="label">Accuracy</span><span class="value" id="arena-accuracy">—</span></div>
+          <div class="arena-stat-row"><span class="label">Cycles</span><span class="value" id="arena-cycles">0</span></div>
+          <div style="font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px;">Accuracy</div>
+          <canvas id="arena-acc-spark" width="110" height="24"></canvas>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:center;">
+          <div style="font-size:8px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Confusion</div>
+          <canvas id="arena-confusion" width="72" height="72"></canvas>
+        </div>
+      </div>
     </div>
   </div>
 </div>

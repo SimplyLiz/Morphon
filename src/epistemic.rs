@@ -237,6 +237,7 @@ pub fn apply_epistemic_effects(
     morphons: &mut HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
     step_count: u64,
+    verification_reward: f64,
 ) {
     for cluster in clusters.values() {
         match &cluster.epistemic_state {
@@ -282,7 +283,15 @@ pub fn apply_epistemic_effects(
                 }
             }
             EpistemicState::Supported { .. } => {
-                // Stable — no special action needed
+                // Reward members for verified knowledge — energy incentive for
+                // forming clusters that pass epistemic scrutiny.
+                if verification_reward > 0.0 {
+                    for &id in &cluster.members {
+                        if let Some(m) = morphons.get_mut(&id) {
+                            m.energy = (m.energy + verification_reward).min(1.0);
+                        }
+                    }
+                }
             }
         }
     }

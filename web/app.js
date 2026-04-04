@@ -102,9 +102,28 @@ let cachedStats = null;
 let savedState = null;
 let systemStartTime = performance.now();
 
+// === ARENA STATE ===
+let occupation = 'idle'; // 'idle' | 'arena'
+const ARENA_GRID = 8;
+const ARENA_CLASSES = 4;
+const arenaPixels = new Float64Array(ARENA_GRID * ARENA_GRID); // current drawing
+let arenaSelectedClass = 0;
+const arenaTrainingSet = []; // [{pixels: Float64Array, label: number}]
+const arenaConfusion = Array.from({length: ARENA_CLASSES}, () => new Array(ARENA_CLASSES).fill(0));
+const arenaAccHistory = [];
+let arenaTrainIdx = 0;
+let arenaCycleCount = 0;
+let arenaTrainSubStep = 0; // sub-step within a training cycle
+let arenaLastOutput = null; // last raw output for display
+let arenaDrawing = false; // mouse-down on grid
+let arenaErasing = false;
+const ARENA_CLASS_COLORS = ['#00d4ff', '#a78bfa', '#fbbf24', '#34d399'];
+const ARENA_CLASS_NAMES = ['A', 'B', 'C', 'D'];
+
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
 let nodesMesh, glowMesh, edgesMesh, diskMesh, fresnelBall;
+let ambientParticles; // floating dust motes inside the ball
 let nodePositions = new Float32Array(MAX_NODES * 3);
 let nodeData = [];
 let nodeMap = new Map();
@@ -229,12 +248,30 @@ function initDOMCache() {
   dom.tooltip = document.getElementById('tooltip');
   // Cluster list
   dom.clusterList = document.getElementById('cluster-list');
+  // Learning pipeline
+  dom.lpSynBar = document.getElementById('lp-syn-bar');
+  dom.lpSynV = document.getElementById('lp-syn-v');
+  dom.lpEligBar = document.getElementById('lp-elig-bar');
+  dom.lpEligV = document.getElementById('lp-elig-v');
+  dom.lpTagBar = document.getElementById('lp-tag-bar');
+  dom.lpTagV = document.getElementById('lp-tag-v');
+  dom.lpCapBar = document.getElementById('lp-cap-bar');
+  dom.lpCapV = document.getElementById('lp-cap-v');
+  dom.lpConBar = document.getElementById('lp-con-bar');
+  dom.lpConV = document.getElementById('lp-con-v');
+  dom.lpJusBar = document.getElementById('lp-jus-bar');
+  dom.lpJusV = document.getElementById('lp-jus-v');
+  dom.weightHistogram = document.getElementById('weight-histogram');
+  dom.whMin = document.getElementById('wh-min');
+  dom.whMax = document.getElementById('wh-max');
+  dom.whStats = document.getElementById('wh-stats');
 }
 
 // Cached parsed JSON — refreshed once per update cycle
 let cachedMod = null;
 let cachedEndo = null;
 let cachedGov = null;
+let cachedLearning = null;
 
 // ============================================================
 // CUSTOM SHADERS
@@ -472,6 +509,40 @@ function initScene() {
   );
   spikesMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
   scene.add(spikesMesh);
+
+  // === AMBIENT PARTICLES — floating dust motes inside the Poincaré ball ===
+  {
+    const PARTICLE_COUNT = 600;
+    const pPos = new Float32Array(PARTICLE_COUNT * 3);
+    const pSizes = new Float32Array(PARTICLE_COUNT);
+    const pPhase = new Float32Array(PARTICLE_COUNT); // random phase for drift
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      // Random position inside the ball
+      const r = Math.pow(Math.random(), 0.33) * BALL_RADIUS * 0.92;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      pPos[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      pPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      pPos[i * 3 + 2] = r * Math.cos(phi);
+      pSizes[i] = 0.4 + Math.random() * 1.2;
+      pPhase[i] = Math.random() * Math.PI * 2;
+    }
+    const pGeo = new THREE.BufferGeometry();
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3).setUsage(THREE.DynamicDrawUsage));
+    pGeo.setAttribute('size', new THREE.BufferAttribute(pSizes, 1));
+    const pMat = new THREE.PointsMaterial({
+      color: 0x4466aa,
+      size: 0.06,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.25,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    ambientParticles = new THREE.Points(pGeo, pMat);
+    ambientParticles.userData = { basePositions: pPos.slice(), phases: pPhase };
+    scene.add(ambientParticles);
+  }
 
   window.addEventListener('resize', onResize);
   renderer.domElement.addEventListener('mousemove', onMouseMove);
@@ -986,8 +1057,16 @@ function updatePanels() {
   // Cache all parsed JSON for this update cycle
   cachedStats = JSON.parse(system.inspect());
   cachedMod = JSON.parse(system.modulation_json());
-  if (system.endo_json) cachedEndo = JSON.parse(system.endo_json());
+  try {
+    cachedEndo = JSON.parse(system.endo_json());
+  } catch(e) {
+    if (!system._endoWarned) {
+      console.error('endo_json failed:', e.message, '— rebuild WASM and hard-refresh (Cmd+Shift+R)');
+      system._endoWarned = true;
+    }
+  }
   if (system.governance_json) cachedGov = JSON.parse(system.governance_json());
+  try { cachedLearning = JSON.parse(system.learning_json()); } catch(_) {}
 
   const stats = cachedStats;
   const mod = cachedMod;
@@ -1029,6 +1108,10 @@ function updatePanels() {
   setModBarEl(dom.modHomeo, dom.modHomeoV, mod.homeostasis);
 
   // Endoquilibrium panel
+  if (!cachedEndo && dom.endoStage) {
+    dom.endoStage.textContent = 'N/A';
+    dom.endoStage.className = 'endo-stage-badge';
+  }
   if (cachedEndo) {
     const endo = cachedEndo;
     if (!endo.enabled) {
@@ -1128,8 +1211,9 @@ function updatePanels() {
   updateGraph(stats);
   if (selectedNodeId !== null) updateDetailPanel();
 
-  // V3: Cluster list + timeline + lineage
+  // V3: Cluster list + timeline
   updateClusterList();
+  updateLearningPanel();
   recordTimelineSnapshot();
 }
 
@@ -1363,6 +1447,381 @@ function makeInput(pattern) {
 }
 
 // ============================================================
+// SKETCH ARENA
+// ============================================================
+function initArena() {
+  const canvas = document.getElementById('arena-grid-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cellW = canvas.width / ARENA_GRID;
+  const cellH = canvas.height / ARENA_GRID;
+
+  function cellFromEvent(e) {
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / rect.width * ARENA_GRID);
+    const y = Math.floor((e.clientY - rect.top) / rect.height * ARENA_GRID);
+    if (x >= 0 && x < ARENA_GRID && y >= 0 && y < ARENA_GRID) return y * ARENA_GRID + x;
+    return -1;
+  }
+
+  function paintCell(e) {
+    const idx = cellFromEvent(e);
+    if (idx < 0) return;
+    arenaPixels[idx] = arenaErasing ? 0 : 1;
+    drawArenaGrid();
+  }
+
+  canvas.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    arenaErasing = e.button === 2 || e.shiftKey;
+    arenaDrawing = true;
+    paintCell(e);
+  });
+  canvas.addEventListener('mousemove', (e) => { if (arenaDrawing) paintCell(e); });
+  canvas.addEventListener('mouseup', () => { arenaDrawing = false; });
+  canvas.addEventListener('mouseleave', () => { arenaDrawing = false; });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // Class buttons
+  document.querySelectorAll('.arena-class-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.arena-class-btn').forEach(b => b.classList.remove('selected'));
+      btn.classList.add('selected');
+      arenaSelectedClass = parseInt(btn.dataset.class);
+    });
+  });
+
+  // Teach
+  document.getElementById('arena-teach').addEventListener('click', () => {
+    if (!system || occupation !== 'arena') return;
+    const hasPixels = arenaPixels.some(v => v > 0);
+    if (!hasPixels) { setArenaStatus('Draw something first'); return; }
+    arenaTrainingSet.push({ pixels: new Float64Array(arenaPixels), label: arenaSelectedClass });
+    // Immediate burst training: feed + reward 20 times
+    for (let i = 0; i < 20; i++) {
+      system.feed_input(arenaPixels);
+      for (let s = 0; s < 5; s++) system.step();
+      system.reward_contrastive(arenaSelectedClass, 0.8, 0.3);
+      system.teach_supervised(arenaSelectedClass, 0.05);
+      for (let s = 0; s < 3; s++) system.step();
+    }
+    setArenaStatus(`Taught class ${ARENA_CLASS_NAMES[arenaSelectedClass]} (${arenaTrainingSet.length} samples)`);
+    addEvent('', `Arena: taught class ${ARENA_CLASS_NAMES[arenaSelectedClass]}`, 'event-birth');
+    updateArenaStats();
+  });
+
+  // Guess
+  document.getElementById('arena-guess').addEventListener('click', () => {
+    if (!system || occupation !== 'arena') return;
+    const hasPixels = arenaPixels.some(v => v > 0);
+    if (!hasPixels) { setArenaStatus('Draw something first'); return; }
+    arenaGuess(arenaPixels);
+  });
+
+  // Clear
+  document.getElementById('arena-clear').addEventListener('click', () => {
+    arenaPixels.fill(0);
+    drawArenaGrid();
+    setArenaStatus('Draw a pattern');
+  });
+
+  drawArenaGrid();
+}
+
+function drawArenaGrid() {
+  const canvas = document.getElementById('arena-grid-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cellW = canvas.width / ARENA_GRID;
+  const cellH = canvas.height / ARENA_GRID;
+  const classColor = ARENA_CLASS_COLORS[arenaSelectedClass];
+
+  ctx.fillStyle = '#0a0f1c';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < ARENA_GRID; y++) {
+    for (let x = 0; x < ARENA_GRID; x++) {
+      const idx = y * ARENA_GRID + x;
+      if (arenaPixels[idx] > 0) {
+        ctx.fillStyle = classColor;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(x * cellW + 0.5, y * cellH + 0.5, cellW - 1, cellH - 1);
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(80,140,255,0.08)';
+  ctx.lineWidth = 0.5;
+  for (let i = 1; i < ARENA_GRID; i++) {
+    ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, canvas.height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, i * cellH); ctx.lineTo(canvas.width, i * cellH); ctx.stroke();
+  }
+}
+
+function arenaGuess(pixels) {
+  if (!system) return;
+  // Feed and propagate
+  system.feed_input(pixels);
+  for (let i = 0; i < 10; i++) system.step();
+  const output = system.read_output();
+  arenaLastOutput = output;
+
+  // Softmax for confidence
+  const max = Math.max(...output);
+  const exps = output.map(v => Math.exp(v - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  const probs = exps.map(v => v / sum);
+
+  // Find winner
+  let best = 0;
+  for (let i = 1; i < probs.length; i++) {
+    if (probs[i] > probs[best]) best = i;
+  }
+
+  // Update prediction bars
+  for (let i = 0; i < ARENA_CLASSES; i++) {
+    const pct = Math.round(probs[i] * 100);
+    const bar = document.getElementById(`arena-bar-${i}`);
+    const val = document.getElementById(`arena-val-${i}`);
+    if (bar) bar.style.width = `${pct}%`;
+    if (val) val.textContent = `${pct}%`;
+  }
+
+  const resultEl = document.getElementById('arena-result');
+  if (resultEl) {
+    resultEl.textContent = ARENA_CLASS_NAMES[best];
+    resultEl.style.color = ARENA_CLASS_COLORS[best];
+  }
+
+  setArenaStatus(`Predicted: ${ARENA_CLASS_NAMES[best]} (${Math.round(probs[best] * 100)}%)`);
+  return best;
+}
+
+function arenaTrainStep() {
+  // Called each frame when arena is active and training set is non-empty.
+  // Cycles through training examples continuously.
+  if (!system || arenaTrainingSet.length === 0) return;
+
+  const sample = arenaTrainingSet[arenaTrainIdx % arenaTrainingSet.length];
+  system.feed_input(sample.pixels);
+  // Let it propagate for a few steps before reward
+  for (let s = 0; s < 3; s++) system.step();
+  system.reward_contrastive(sample.label, 0.6, 0.2);
+  system.teach_supervised(sample.label, 0.03);
+
+  arenaTrainSubStep++;
+  if (arenaTrainSubStep >= 5) {
+    arenaTrainSubStep = 0;
+    arenaTrainIdx++;
+    if (arenaTrainIdx % arenaTrainingSet.length === 0) {
+      arenaCycleCount++;
+      // Every 5 cycles, evaluate accuracy
+      if (arenaCycleCount % 5 === 0) arenaEvaluate();
+    }
+  }
+}
+
+function arenaEvaluate() {
+  if (!system || arenaTrainingSet.length === 0) return;
+  let correct = 0;
+  // Reset confusion
+  for (let i = 0; i < ARENA_CLASSES; i++) arenaConfusion[i].fill(0);
+
+  for (const sample of arenaTrainingSet) {
+    system.feed_input(sample.pixels);
+    for (let s = 0; s < 8; s++) system.step();
+    const output = system.read_output();
+    let best = 0;
+    for (let i = 1; i < output.length; i++) {
+      if (output[i] > output[best]) best = i;
+    }
+    if (best === sample.label) correct++;
+    if (sample.label < ARENA_CLASSES && best < ARENA_CLASSES) {
+      arenaConfusion[sample.label][best]++;
+    }
+  }
+
+  const acc = correct / arenaTrainingSet.length;
+  arenaAccHistory.push(acc);
+  if (arenaAccHistory.length > 120) arenaAccHistory.shift();
+  updateArenaStats();
+}
+
+function updateArenaStats() {
+  const samplesEl = document.getElementById('arena-samples');
+  const accEl = document.getElementById('arena-accuracy');
+  const cyclesEl = document.getElementById('arena-cycles');
+  if (samplesEl) samplesEl.textContent = arenaTrainingSet.length;
+  if (cyclesEl) cyclesEl.textContent = arenaCycleCount;
+  if (accEl) {
+    if (arenaAccHistory.length > 0) {
+      const last = arenaAccHistory[arenaAccHistory.length - 1];
+      accEl.textContent = `${Math.round(last * 100)}%`;
+      accEl.style.color = last > 0.7 ? '#34d399' : last > 0.4 ? '#fbbf24' : '#ef4444';
+    } else {
+      accEl.textContent = '—';
+    }
+  }
+  drawArenaAccSparkline();
+  drawArenaConfusion();
+}
+
+function drawArenaAccSparkline() {
+  const canvas = document.getElementById('arena-acc-spark');
+  if (!canvas || arenaAccHistory.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const data = arenaAccHistory;
+  const step = w / (data.length - 1);
+
+  ctx.beginPath();
+  ctx.moveTo(0, h - data[0] * h);
+  for (let i = 1; i < data.length; i++) {
+    ctx.lineTo(i * step, h - data[i] * h);
+  }
+  ctx.strokeStyle = '#508cff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Fill
+  ctx.lineTo((data.length - 1) * step, h);
+  ctx.lineTo(0, h);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(80,140,255,0.15)');
+  grad.addColorStop(1, 'rgba(80,140,255,0.0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function drawArenaConfusion() {
+  const canvas = document.getElementById('arena-confusion');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const cellW = w / ARENA_CLASSES, cellH = h / ARENA_CLASSES;
+  ctx.clearRect(0, 0, w, h);
+
+  // Find max for normalization
+  let maxVal = 1;
+  for (let i = 0; i < ARENA_CLASSES; i++)
+    for (let j = 0; j < ARENA_CLASSES; j++)
+      maxVal = Math.max(maxVal, arenaConfusion[i][j]);
+
+  for (let row = 0; row < ARENA_CLASSES; row++) {
+    for (let col = 0; col < ARENA_CLASSES; col++) {
+      const v = arenaConfusion[row][col] / maxVal;
+      if (row === col) {
+        // Diagonal: green intensity
+        ctx.fillStyle = `rgba(52,211,153,${0.1 + v * 0.7})`;
+      } else {
+        // Off-diagonal: red intensity
+        ctx.fillStyle = `rgba(239,68,68,${v * 0.6})`;
+      }
+      ctx.fillRect(col * cellW, row * cellH, cellW - 1, cellH - 1);
+
+      // Count label
+      const count = arenaConfusion[row][col];
+      if (count > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.font = '9px JetBrains Mono';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(count, col * cellW + cellW / 2, row * cellH + cellH / 2);
+      }
+    }
+  }
+
+  // Axis labels
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  ctx.font = '8px JetBrains Mono';
+  ctx.textAlign = 'center';
+  for (let i = 0; i < ARENA_CLASSES; i++) {
+    ctx.fillText(ARENA_CLASS_NAMES[i], i * cellW + cellW / 2, h - 1);
+    ctx.textAlign = 'right';
+    ctx.fillText(ARENA_CLASS_NAMES[i], cellW * 0.15, i * cellH + cellH / 2 + 3);
+    ctx.textAlign = 'center';
+  }
+}
+
+function setArenaStatus(msg) {
+  const el = document.getElementById('arena-status');
+  if (el) el.textContent = msg;
+}
+
+function switchOccupation(newOcc) {
+  if (newOcc === occupation) return;
+  occupation = newOcc;
+  const arenaTab = document.getElementById('tab-btn-arena');
+
+  if (occupation === 'arena') {
+    // Create arena-optimized system: 8x8=64 inputs, 4 outputs
+    if (system) { try { system.free(); } catch(_) {} }
+    system = WasmSystem.newWithIO(100, 'cerebellar', 3, 64, 4);
+    system.enable_analog_readout();
+    // Warm up
+    for (let i = 0; i < 30; i++) { makeInput('noise'); system.step(); }
+    // Reset arena state
+    arenaPixels.fill(0);
+    arenaTrainingSet.length = 0;
+    arenaAccHistory.length = 0;
+    for (let i = 0; i < ARENA_CLASSES; i++) arenaConfusion[i].fill(0);
+    arenaTrainIdx = 0; arenaCycleCount = 0; arenaTrainSubStep = 0;
+    arenaLastOutput = null;
+    // Show arena tab, switch to it
+    if (arenaTab) arenaTab.style.display = '';
+    activateTab('tab-arena');
+    drawArenaGrid();
+    updateArenaStats();
+    setArenaStatus('Draw a pattern, pick a class, teach!');
+    addEvent(0, 'Sketch Arena activated [cerebellar, 64in/4out]', 'event-diff');
+  } else {
+    // Back to idle
+    if (system) { try { system.free(); } catch(_) {} }
+    const program = document.getElementById('program-select').value;
+    system = new WasmSystem(60, program, 3);
+    for (let i = 0; i < 20; i++) { makeInput('noise'); system.step(); }
+    if (arenaTab) arenaTab.style.display = 'none';
+    activateTab('tab-log');
+    addEvent(0, 'Returned to idle mode', 'event-diff');
+  }
+
+  // Reset shared visualization state
+  systemStartTime = performance.now();
+  selectedNodeId = null; hoveredNodeId = null;
+  connectedToSelected.clear();
+  nodeDim.clear(); nodeDimTarget.clear(); nodeGlow.clear();
+  lastSpikeCount = 0; stepAccumulator = 0;
+  dyingNodes.length = 0; prevNodeIds.clear(); nodeEpistemicColor.clear(); nodePeSmooth.clear();
+  rasterScrollX = 0; rasterMorphonCount = 0;
+  groupRateHistory = []; heatmapBinAccum = []; heatmapBinSteps = 0;
+  morphonOrder = []; morphonYMap.clear(); rasterGroups = [];
+  firingHistory.length = 0; synapseHistory.length = 0; fieldPeHistory.length = 0; justifiedHistory.length = 0;
+  timelineSnapshots.length = 0; timelineLastStep = 0; timelineScrubbing = false;
+  prevEdgeReinforcementCounts.clear(); learningPulses.length = 0;
+  lastEpistemicKey = null;
+  for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); if (m.fill) scene.remove(m.fill); }
+  clusterHullMeshes.clear(); clusterHullCache.clear();
+  for (const k in graphData) graphData[k].length = 0;
+  lastBorn = 0; lastDied = 0; lastMorphonCount = 0; lastSynapseCount = 0;
+  liveSpikes.length = 0; spikeCooldowns.clear();
+  updateScene(); updatePanels();
+}
+
+function activateTab(tabId) {
+  document.querySelectorAll('#bottom-panel .tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('#bottom-panel .tab-content').forEach(c => c.classList.remove('active'));
+  const btn = document.querySelector(`#bottom-panel .tab-btn[data-tab="${tabId}"]`);
+  if (btn) btn.classList.add('active');
+  const tab = document.getElementById(tabId);
+  if (tab) tab.classList.add('active');
+}
+
+// ============================================================
 // CONTROLS
 // ============================================================
 function setupControls() {
@@ -1396,6 +1855,11 @@ function setupControls() {
 
   // Also clear cell type filter on reset
   function resetSystem() {
+    // If in arena, reset re-creates the arena system
+    if (occupation === 'arena') {
+      switchOccupation('arena'); // re-init arena
+      return;
+    }
     filterCellType = null;
     clearCellTypeActive();
     if (system) { try { system.free(); } catch(_) {} } // free WASM memory
@@ -1418,7 +1882,7 @@ function setupControls() {
     timelineSnapshots.length = 0; timelineLastStep = 0; timelineScrubbing = false;
     prevEdgeReinforcementCounts.clear(); learningPulses.length = 0;
     lastEpistemicKey = null;
-    for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); scene.remove(m.fill); }
+    for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); if (m.fill) scene.remove(m.fill); }
     clusterHullMeshes.clear(); clusterHullCache.clear();
     // Reset graph
     for (const k in graphData) graphData[k].length = 0;
@@ -1432,6 +1896,11 @@ function setupControls() {
 
   document.getElementById('btn-reset').addEventListener('click', resetSystem);
   document.getElementById('program-select').addEventListener('change', resetSystem);
+
+  // Occupation selector
+  document.getElementById('occupation-select').addEventListener('change', (e) => {
+    switchOccupation(e.target.value);
+  });
 
   document.getElementById('btn-reward').addEventListener('click', () => {
     if (system) { system.inject_reward(0.8); addEvent('', 'Reward injected (0.8)', 'event-birth'); }
@@ -1508,9 +1977,6 @@ function setupControls() {
     panel.classList.toggle('maximized');
     const isMax = panel.classList.contains('maximized');
     document.getElementById('btn-panel-maximize').textContent = isMax ? '\u25BD' : '\u25A1';
-    // Update scene container bottom to match
-    const panelBottom = isMax ? '45vh' : '160px';
-    document.getElementById('scene-container').style.bottom = panelBottom;
     document.getElementById('left-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
     document.getElementById('right-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
     setTimeout(() => { onResize(); }, 260); // after CSS transition
@@ -2223,8 +2689,13 @@ function animate() {
     stepAccumulator -= stepsThisFrame;
 
     for (let i = 0; i < stepsThisFrame; i++) {
-      // Auto-inject noise unless user sent input recently (500ms grace period)
-      if (frameCount % 3 === 0 && performance.now() - lastUserInputTime > 500) makeInput('noise');
+      // Arena mode: train on examples instead of idle noise
+      if (occupation === 'arena' && arenaTrainingSet.length > 0) {
+        arenaTrainStep();
+      } else if (frameCount % 3 === 0 && performance.now() - lastUserInputTime > 500) {
+        // Auto-inject noise unless user sent input recently (500ms grace period)
+        makeInput('noise');
+      }
       system.step();
       const fired = system.fired_ids();
       for (const id of fired) frameFired.add(id);
@@ -2246,10 +2717,15 @@ function animate() {
     drawRasterPlot();
     if (frameCount % 3 === 0) {
       updatePanels(); detectEvents();
+      // Arena: update cycle count display
+      if (occupation === 'arena') {
+        const cyclesEl = document.getElementById('arena-cycles');
+        if (cyclesEl) cyclesEl.textContent = arenaCycleCount;
+      }
       // Feed performance to endo so stage detection works.
-      // Use firing rate as a proxy metric — in the demo there's no explicit task,
-      // but endo needs a reward signal to detect stages.
-      if (system.report_performance && cachedStats) {
+      if (occupation === 'arena' && arenaAccHistory.length > 0) {
+        system.report_performance(arenaAccHistory[arenaAccHistory.length - 1] * 100);
+      } else if (system.report_performance && cachedStats) {
         const perf = cachedStats.firing_rate * 100; // 0-100 scale
         system.report_performance(perf);
       }
@@ -2265,10 +2741,39 @@ function animate() {
     diskMesh.rotation.x = elapsed * 0.008;
   }
 
-  // Dynamic bloom
+  // Ambient particle drift — gentle Brownian-like motion
+  if (ambientParticles) {
+    const base = ambientParticles.userData.basePositions;
+    const phases = ambientParticles.userData.phases;
+    const pos = ambientParticles.geometry.attributes.position.array;
+    const activity = Math.min(frameFired.size / 30, 1.0);
+    // Particles drift more when the system is active
+    const driftAmp = 0.15 + activity * 0.3;
+    const speed = 0.3 + activity * 0.5;
+    for (let i = 0; i < phases.length; i++) {
+      const p = phases[i];
+      const i3 = i * 3;
+      pos[i3] = base[i3] + Math.sin(elapsed * speed + p) * driftAmp;
+      pos[i3 + 1] = base[i3 + 1] + Math.cos(elapsed * speed * 0.7 + p * 1.3) * driftAmp;
+      pos[i3 + 2] = base[i3 + 2] + Math.sin(elapsed * speed * 0.5 + p * 0.7) * driftAmp * 0.6;
+    }
+    ambientParticles.geometry.attributes.position.needsUpdate = true;
+    // Brightness pulses with activity
+    ambientParticles.material.opacity = 0.18 + activity * 0.15;
+  }
+
+  // Dynamic bloom — pulses with network activity
   if (bloomPass) {
     const activity = Math.min(lastSpikeCount / 80, 1.0);
     bloomPass.strength = 0.34 + activity * 0.22;
+  }
+
+  // Panel activity pulse — light up panels when system is very active
+  if (frameCount % 10 === 0 && frameFired.size > 15) {
+    document.querySelectorAll('#left-panel .panel, #right-panel .panel').forEach(p => {
+      p.classList.add('active-pulse');
+      setTimeout(() => p.classList.remove('active-pulse'), 800);
+    });
   }
 
   // Update camera BEFORE raycast so matrices match the rendered frame
@@ -2350,9 +2855,8 @@ function updateClusterHulls(nodes, edges) {
   for (const [cid, meshes] of clusterHullMeshes) {
     if (!clusterNodes.has(cid)) {
       scene.remove(meshes.line);
-      scene.remove(meshes.fill);
       meshes.line.geometry.dispose();
-      meshes.fill.geometry.dispose();
+      if (meshes.fill) { scene.remove(meshes.fill); meshes.fill.geometry.dispose(); }
       clusterHullMeshes.delete(cid);
       clusterHullCache.delete(cid);
     }
@@ -2369,9 +2873,8 @@ function updateClusterHulls(nodes, edges) {
     if (clusterHullMeshes.has(cid)) {
       const old = clusterHullMeshes.get(cid);
       scene.remove(old.line);
-      scene.remove(old.fill);
       old.line.geometry.dispose();
-      old.fill.geometry.dispose();
+      if (old.fill) { scene.remove(old.fill); old.fill.geometry.dispose(); }
     }
 
     // Get epistemic state color
@@ -2396,24 +2899,8 @@ function updateClusterHulls(nodes, edges) {
     });
     const line = new THREE.Line(lineGeo, lineMat);
 
-    // Create translucent fill
-    const shape = new THREE.Shape();
-    shape.moveTo(hull[0][0], hull[0][1]);
-    for (let i = 1; i < hull.length; i++) shape.lineTo(hull[i][0], hull[i][1]);
-    shape.closePath();
-    const fillGeo = new THREE.ShapeGeometry(shape);
-    // Rotate from XY plane to XZ plane
-    fillGeo.rotateX(-Math.PI / 2);
-    fillGeo.translate(0, avgY, 0);
-    const fillMat = new THREE.MeshBasicMaterial({
-      color: epColor, transparent: true, opacity: 0.03, side: THREE.DoubleSide,
-      depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
-    });
-    const fill = new THREE.Mesh(fillGeo, fillMat);
-
     scene.add(line);
-    scene.add(fill);
-    clusterHullMeshes.set(cid, { line, fill });
+    clusterHullMeshes.set(cid, { line, fill: null });
   }
 }
 
@@ -2553,6 +3040,103 @@ function updateLearningPulses() {
 }
 
 // ============================================================
+// LEARNING PIPELINE PANEL
+// ============================================================
+function updateLearningPanel() {
+  if (!cachedLearning || !dom.lpSynBar) return;
+  const lp = cachedLearning;
+  const total = Math.max(lp.total_synapses, 1);
+
+  // Pipeline bars — each as fraction of total synapses
+  dom.lpSynBar.style.width = '100%';
+  dom.lpSynV.textContent = lp.total_synapses;
+
+  const eligPct = (lp.eligible / total * 100);
+  dom.lpEligBar.style.width = eligPct + '%';
+  dom.lpEligV.textContent = lp.eligible;
+
+  const tagPct = (lp.active_tags / total * 100);
+  dom.lpTagBar.style.width = tagPct + '%';
+  dom.lpTagV.textContent = lp.active_tags;
+
+  dom.lpCapBar.style.width = Math.min(lp.total_captures / total * 100, 100) + '%';
+  dom.lpCapV.textContent = lp.total_captures;
+
+  const conPct = (lp.consolidated / total * 100);
+  dom.lpConBar.style.width = conPct + '%';
+  dom.lpConV.textContent = lp.consolidated;
+
+  const jusPct = (lp.justified_fraction * 100);
+  dom.lpJusBar.style.width = jusPct + '%';
+  dom.lpJusV.textContent = jusPct.toFixed(0) + '%';
+
+  // Weight histogram
+  drawWeightHistogram(lp);
+}
+
+function drawWeightHistogram(lp) {
+  const canvas = dom.weightHistogram;
+  if (!canvas) return;
+
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.floor(rect.width * dpr);
+  const h = Math.floor((rect.height - 20) * dpr); // leave room for labels
+  if (w < 10 || h < 10) return;
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = (rect.height - 20) + 'px';
+  }
+
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, w, h);
+
+  const bins = lp.weight_histogram;
+  if (!bins || bins.length === 0) return;
+
+  const maxBin = Math.max(...bins, 1);
+  const numBins = bins.length;
+  const barW = w / numBins;
+  const midBin = Math.floor(numBins / 2);
+
+  for (let i = 0; i < numBins; i++) {
+    const barH = (bins[i] / maxBin) * (h - 4);
+    const x = i * barW;
+    const y = h - barH;
+
+    // Color: blue for negative weights, warm for positive, brighter near edges
+    const t = i / (numBins - 1); // 0=most negative, 1=most positive
+    if (t < 0.5) {
+      const intensity = (0.5 - t) * 2; // 1 at far left, 0 at center
+      ctx.fillStyle = `rgba(80, 140, 255, ${0.25 + intensity * 0.6})`;
+    } else {
+      const intensity = (t - 0.5) * 2; // 0 at center, 1 at far right
+      ctx.fillStyle = `rgba(251, 191, 36, ${0.25 + intensity * 0.6})`;
+    }
+
+    ctx.fillRect(x + 0.5, y, barW - 1, barH);
+  }
+
+  // Zero line
+  const zeroX = midBin * barW + barW / 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(zeroX, 0);
+  ctx.lineTo(zeroX, h);
+  ctx.stroke();
+
+  // Update axis labels
+  const range = lp.weight_range || 1;
+  dom.whMin.textContent = (-range).toFixed(1);
+  dom.whMax.textContent = '+' + range.toFixed(1);
+  dom.whStats.textContent = `μ=${lp.weight_mean.toFixed(3)} σ=${lp.weight_std.toFixed(3)}`;
+}
+
+// ============================================================
 // V3: CLUSTER LIST PANEL
 // ============================================================
 function updateClusterList() {
@@ -2667,100 +3251,13 @@ function scrubTimeline(index) {
 }
 
 // ============================================================
-// V3: LINEAGE TREE (Canvas 2D in bottom panel tab)
-// ============================================================
-function drawLineageTree() {
-  const canvas = document.getElementById('lineage-canvas');
-  if (!canvas || !system) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.floor(rect.width * dpr);
-  canvas.height = Math.floor(rect.height * dpr);
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const w = rect.width, h = rect.height;
-  ctx.clearRect(0, 0, w, h);
-
-  let lineageData;
-  try {
-    lineageData = JSON.parse(system.lineage_json());
-  } catch(_) { return; }
-
-  if (!lineageData || !lineageData.nodes || lineageData.nodes.length === 0) {
-    ctx.fillStyle = '#5a6a88';
-    ctx.font = '10px "JetBrains Mono", monospace';
-    ctx.fillText('No lineage data', 10, 20);
-    return;
-  }
-
-  const nodes = lineageData.nodes;
-  const edges = lineageData.edges || [];
-
-  // Layout: group by generation (Y), spread within generation (X)
-  const genMap = new Map();
-  for (const n of nodes) {
-    const gen = n.generation || 0;
-    if (!genMap.has(gen)) genMap.set(gen, []);
-    genMap.get(gen).push(n);
-  }
-
-  const gens = [...genMap.keys()].sort((a, b) => a - b);
-  const maxGen = gens.length;
-  const nodePositions = new Map();
-  const rowH = Math.min(h / (maxGen + 1), 30);
-  const aliveSet = new Set(nodeData.map(n => n.id));
-
-  for (let gi = 0; gi < gens.length; gi++) {
-    const gen = gens[gi];
-    const row = genMap.get(gen);
-    const y = 15 + gi * rowH;
-    const spacing = Math.min(w / (row.length + 1), 20);
-    const startX = (w - row.length * spacing) / 2;
-    for (let ni = 0; ni < row.length; ni++) {
-      const x = startX + ni * spacing + spacing / 2;
-      nodePositions.set(row[ni].id, { x, y });
-    }
-  }
-
-  // Draw edges
-  ctx.strokeStyle = 'rgba(80, 140, 255, 0.15)';
-  ctx.lineWidth = 0.5;
-  for (const e of edges) {
-    const from = nodePositions.get(e.parent);
-    const to = nodePositions.get(e.child);
-    if (from && to) {
-      ctx.beginPath();
-      ctx.moveTo(from.x, from.y);
-      ctx.lineTo(to.x, to.y);
-      ctx.stroke();
-    }
-  }
-
-  // Draw nodes
-  const CELL_HEX = {
-    Stem: '#8890a4', Sensory: '#00d4ff', Associative: '#a78bfa',
-    Motor: '#ff6b35', Modulatory: '#34d399', Fused: '#f472b6',
-  };
-  for (const n of nodes) {
-    const pos = nodePositions.get(n.id);
-    if (!pos) continue;
-    const alive = aliveSet.has(n.id);
-    const color = alive ? (CELL_HEX[n.cell_type] || '#888') : '#333';
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, alive ? 3 : 2, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-  }
-}
-
-// ============================================================
 // INIT
 // ============================================================
 async function main() {
   initDOMCache();
   initScene();
   setupControls();
+  initArena();
   initRaster();
   initGraph();
   await init();
@@ -2772,9 +3269,24 @@ async function main() {
   rebuildMorphonOrder();
   updatePanels();
 
+  // Dramatic reveal: start camera further out, zoom in as loading fades
+  camera.position.set(0, 12, 38);
   const loading = document.getElementById('loading');
   loading.classList.add('hidden');
-  setTimeout(() => loading.remove(), 600);
+  setTimeout(() => loading.remove(), 800);
+  // Smooth camera zoom-in over ~2 seconds
+  const startPos = { y: 12, z: 38 };
+  const endPos = { y: 8, z: 22 };
+  const zoomStart = performance.now();
+  const zoomDuration = 2000;
+  function zoomIn() {
+    const t = Math.min((performance.now() - zoomStart) / zoomDuration, 1);
+    const ease = 1 - Math.pow(1 - t, 3); // cubic ease-out
+    camera.position.y = startPos.y + (endPos.y - startPos.y) * ease;
+    camera.position.z = startPos.z + (endPos.z - startPos.z) * ease;
+    if (t < 1) requestAnimationFrame(zoomIn);
+  }
+  zoomIn();
 
   addEvent(0, 'System initialized [cortical, 60 seed, 3D]', 'event-diff');
 
@@ -2790,13 +3302,6 @@ async function main() {
   }
 
   // V3: Lineage tab — redraw on tab switch
-  document.querySelectorAll('#bottom-panel .tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (btn.dataset.tab === 'tab-lineage') {
-        setTimeout(drawLineageTree, 50);
-      }
-    });
-  });
 
   renderer.setAnimationLoop(animate);
 }

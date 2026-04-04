@@ -212,9 +212,10 @@ pub fn apply_weight_update(
     }
     synapse.age += 1;
 
-    // Bump slow activity trace for myelination gating (τ=200).
-    // Decays each medium tick, bumped when eligibility is meaningful.
-    // Survives between slow ticks (100 steps) unlike eligibility (τ=20).
+    // Bump slow activity trace for myelination gating.
+    // τ_activity=200 medium ticks (~2000 sim steps). Decays each medium tick,
+    // bumped when eligibility is meaningful. Survives between slow ticks
+    // (10 medium ticks = 100 sim steps) unlike eligibility (τ=20 sim steps).
     let tau_activity = 200.0;
     synapse.activity_trace *= (-1.0_f64 / tau_activity).exp();
     if synapse.eligibility.abs() > 0.05 {
@@ -245,6 +246,42 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         && synapse.age > 100
         && synapse.weight.abs() < effective_weight_min
         && synapse.usage_count < 5
+}
+
+/// Inhibitory STDP (Vogels et al. 2011).
+///
+/// Updates an inhibitory synapse to maintain a target firing rate in the
+/// postsynaptic neuron. The rule:
+///   Δw_inh = η_inh × (post_rate - ρ₀) × dt
+///
+/// When post fires more than target, inhibition strengthens (more negative).
+/// When post fires less, inhibition weakens (less negative).
+/// This creates a self-tuning inhibitory circuit — no explicit k-WTA needed.
+///
+/// Unlike excitatory STDP, this rule is NOT modulated by neuromodulatory signals.
+/// Inhibitory balance is a structural property, not a learning signal.
+pub fn update_istdp(
+    synapse: &mut Synapse,
+    post_rate: f64,
+    target_rate: f64,
+    istdp_rate: f64,
+    dt: f64,
+) {
+    // Negative sign: when post fires above target, make weight MORE negative
+    // (stronger inhibition). When below target, make LESS negative (weaker).
+    let delta_w = -istdp_rate * (post_rate - target_rate) * dt;
+
+    if delta_w.is_finite() {
+        synapse.weight += delta_w;
+    }
+
+    // Inhibitory weights must stay negative.
+    synapse.weight = synapse.weight.clamp(-5.0, -0.001);
+
+    synapse.age += 1;
+    if delta_w.abs() > 0.001 {
+        synapse.usage_count += 1;
+    }
 }
 
 /// V2: Adapt receptor sensitivities based on correlation between recent
@@ -704,5 +741,50 @@ mod tests {
         syn.consolidated = true;
         assert!(!should_prune_with_cost(&syn, &params, 10.0),
             "consolidated synapses are always protected");
+    }
+
+    // === iSTDP tests ===
+
+    #[test]
+    fn test_istdp_strengthens_when_post_above_target() {
+        let mut syn = Synapse::new(-0.3);
+        let initial = syn.weight;
+        // post fires at 0.2, target is 0.1 → post is above target → strengthen inhibition
+        update_istdp(&mut syn, 0.2, 0.1, 0.01, 1.0);
+        assert!(syn.weight < initial,
+            "inhibition should strengthen (more negative) when post > target: {} vs {}",
+            syn.weight, initial);
+    }
+
+    #[test]
+    fn test_istdp_weakens_when_post_below_target() {
+        let mut syn = Synapse::new(-0.3);
+        let initial = syn.weight;
+        // post fires at 0.05, target is 0.1 → post is below target → weaken inhibition
+        update_istdp(&mut syn, 0.05, 0.1, 0.01, 1.0);
+        assert!(syn.weight > initial,
+            "inhibition should weaken (less negative) when post < target: {} vs {}",
+            syn.weight, initial);
+    }
+
+    #[test]
+    fn test_istdp_clamps_to_negative() {
+        let mut syn = Synapse::new(-0.01);
+        // Massive weakening drive
+        for _ in 0..1000 {
+            update_istdp(&mut syn, 0.0, 0.5, 0.1, 1.0);
+        }
+        assert!(syn.weight < 0.0, "inhibitory weight must stay negative: {}", syn.weight);
+        assert!(syn.weight >= -5.0, "inhibitory weight must not exceed floor: {}", syn.weight);
+    }
+
+    #[test]
+    fn test_istdp_no_change_at_equilibrium() {
+        let mut syn = Synapse::new(-0.3);
+        let initial = syn.weight;
+        // post_rate == target_rate → delta = 0
+        update_istdp(&mut syn, 0.1, 0.1, 0.01, 1.0);
+        assert!((syn.weight - initial).abs() < 1e-10,
+            "no change expected at equilibrium: {} vs {}", syn.weight, initial);
     }
 }

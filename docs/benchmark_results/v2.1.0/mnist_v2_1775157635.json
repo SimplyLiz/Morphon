@@ -1,0 +1,10 @@
+{
+  "baseline_acc": 25.0,
+  "benchmark": "mnist_v2_supervised",
+  "damaged_acc": 28.499999999999996,
+  "recovery_acc": 28.499999999999996,
+  "v2_acc": 28.499999999999996,
+  "v2_morphons": 1219,
+  "v2_synapses": 76354,
+  "version": "2.1.0"
+}

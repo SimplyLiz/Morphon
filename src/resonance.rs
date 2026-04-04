@@ -59,8 +59,13 @@ impl ResonanceEngine {
             .map(|m| m.id)
             .collect();
 
-        // Generate spike events for each firing morphon's outgoing connections
+        // Generate spike events for each firing morphon's outgoing connections.
+        // Spike strength is scaled by source morphon energy — metabolically
+        // stressed morphons produce weaker signals (graceful degradation).
         let spike_gen = |&source_id: &MorphonId| -> Vec<SpikeEvent> {
+            let energy_factor = morphons.get(&source_id)
+                .map(|m| (m.energy / 0.6).min(1.0))
+                .unwrap_or(1.0);
             topology.outgoing(source_id)
                 .into_iter()
                 .map(|(target_id, synapse)| {
@@ -68,7 +73,7 @@ impl ResonanceEngine {
                     SpikeEvent {
                         source: source_id,
                         target: target_id,
-                        strength: synapse.weight,
+                        strength: synapse.weight * energy_factor,
                         delay: eff_delay,
                         initial_delay: eff_delay,
                     }
@@ -294,5 +299,44 @@ mod tests {
 
         let delivered = engine.deliver(&mut morphons, 1.0);
         assert_eq!(delivered.len(), 1); // spike is consumed even if target missing
+    }
+
+    #[test]
+    fn energy_dependent_spike_strength() {
+        let synapse_weight = 0.8;
+
+        // Low-energy morphon: energy=0.3, factor = 0.3/0.6 = 0.5
+        let mut low_energy = make_morphon(1, true);
+        low_energy.energy = 0.3;
+
+        // Healthy morphon: energy=0.9, factor = min(0.9/0.6, 1.0) = 1.0
+        let mut healthy = make_morphon(2, true);
+        healthy.energy = 0.9;
+
+        let mut morphons = HashMap::new();
+        morphons.insert(1, low_energy);
+        morphons.insert(2, healthy);
+        morphons.insert(3, make_morphon(3, false)); // target
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        topo.add_morphon(3);
+        topo.add_synapse(1, 3, Synapse::new(synapse_weight));
+        topo.add_synapse(2, 3, Synapse::new(synapse_weight));
+
+        let mut engine = ResonanceEngine::new();
+        engine.propagate(&morphons, &topo);
+
+        // Find spikes from each source
+        let spikes: Vec<&SpikeEvent> = engine.pending_spikes.iter().collect();
+        let low_spike = spikes.iter().find(|s| s.source == 1).unwrap();
+        let healthy_spike = spikes.iter().find(|s| s.source == 2).unwrap();
+
+        let expected_low = synapse_weight * (0.3 / 0.6);
+        assert!((low_spike.strength - expected_low).abs() < 0.001,
+            "low-energy spike should be ~{expected_low:.3}, got {:.3}", low_spike.strength);
+        assert!((healthy_spike.strength - synapse_weight).abs() < 0.001,
+            "healthy spike should be full weight {synapse_weight}, got {:.3}", healthy_spike.strength);
     }
 }

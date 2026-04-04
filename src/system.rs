@@ -138,6 +138,24 @@ pub struct SystemStats {
     pub field_pe_max: f64,
     /// Bioelectric field: mean prediction-error value (0.0 if field disabled).
     pub field_pe_mean: f64,
+    /// Axonal properties: mean myelination level across all synapses.
+    #[serde(default)]
+    pub avg_myelination: f64,
+    /// Axonal properties: max myelination level across all synapses.
+    #[serde(default)]
+    pub max_myelination: f64,
+    /// Axonal properties: number of synapses with myelination > 0.01.
+    #[serde(default)]
+    pub myelinated_synapses: usize,
+    /// Axonal properties: mean effective delay across all synapses.
+    #[serde(default)]
+    pub avg_effective_delay: f64,
+    /// Axonal properties: minimum base delay across all synapses (before myelination).
+    #[serde(default)]
+    pub min_base_delay: f64,
+    /// Axonal properties: maximum base delay across all synapses (before myelination).
+    #[serde(default)]
+    pub max_base_delay: f64,
 }
 
 /// The Morphogenic Intelligence System.
@@ -197,7 +215,7 @@ pub struct System {
     /// Current simulation step.
     pub(crate) step_count: u64,
 
-    /// Learning pipeline diagnostics (updated every step).
+    /// Learning pipeline diagnostics (updated on homeostasis ticks, not every step).
     pub(crate) diag: Diagnostics,
 
     /// Cumulative morphon birth count.
@@ -206,6 +224,8 @@ pub struct System {
     pub(crate) total_died: usize,
     /// k-WTA winners from current step (for post-step threshold boost).
     pub(crate) kwta_winners: Vec<MorphonId>,
+    /// Per-morphon firing counts for winner diversity entropy. Reset per episode.
+    pub(crate) episode_fire_counts: HashMap<MorphonId, u64>,
     /// Cumulative transdifferentiation count.
     pub(crate) total_transdifferentiations: usize,
 
@@ -229,6 +249,10 @@ pub struct System {
 
     /// Resolved morphon cap (from config or auto-derived from I/O dimensions).
     pub(crate) effective_max_morphons: usize,
+
+    /// Cached per-morphon synapse maintenance costs. Recomputed on slow ticks
+    /// (when topology changes via synaptogenesis/pruning) instead of every step.
+    pub(crate) cached_maintenance_costs: HashMap<MorphonId, f64>,
 }
 
 impl System {
@@ -236,14 +260,17 @@ impl System {
     pub fn new(config: SystemConfig) -> Self {
         let mut rng = rand::rng();
 
-        // Resolve effective morphon cap before anything else.
-        let effective_max_morphons = config.morphogenesis.resolve_max_morphons(
-            config.developmental.target_input_size,
-            config.developmental.target_output_size,
+        // Resolve effective morphon cap: governance takes precedence over morphogenesis.
+        // The governance cap is a constitutional constraint the system cannot override.
+        let effective_max_morphons = config.governance.max_morphons.unwrap_or_else(||
+            config.morphogenesis.resolve_max_morphons(
+                config.developmental.target_input_size,
+                config.developmental.target_output_size,
+            )
         );
 
         let (mut morphons, topology, next_id) =
-            developmental::develop(&config.developmental, &mut rng);
+            developmental::develop(&config.developmental, &config.homeostasis, &mut rng);
 
         // Build stable I/O port mappings from the developmental result
         let mut sensory_ids: Vec<MorphonId> = morphons
@@ -332,6 +359,7 @@ impl System {
             total_born: 0,
             total_died: 0,
             kwta_winners: Vec::new(),
+            episode_fire_counts: HashMap::new(),
             total_transdifferentiations: 0,
             recent_performance: 0.0,
             consolidation_gate: 10.0, // consolidate once above random baseline
@@ -340,6 +368,7 @@ impl System {
             field: None, // initialized below
             endo,
             effective_max_morphons,
+            cached_maintenance_costs: HashMap::new(),
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -417,6 +446,8 @@ impl System {
                 syn.eligibility = 0.0;
                 syn.pre_trace = 0.0;
                 syn.post_trace = 0.0;
+                syn.activity_trace = 0.0;
+                syn.myelination = 0.0;
                 syn.tag = 0.0;
                 syn.consolidated = false; // critical: undo warm-up captures
             }
@@ -468,17 +499,26 @@ impl System {
 
         let spikes_delivered = delivered.len();
 
-        // 3. k-WTA lateral inhibition BEFORE firing decision.
-        //    Suppress non-winners' input_accumulator so they never fire.
-        //    No "unfiring" — spikes that happen are real.
+        // 3. Lateral inhibition BEFORE firing decision.
+        //    In GlobalKWTA mode: sort and suppress non-winners.
+        //    In LocalInhibition mode: inhibitory interneurons handle this via
+        //    spike propagation (negative-weight synapses already delivered in step 2).
         {
-            let local_radius = self.config.homeostasis.local_kwta_radius;
+            use crate::homeostasis::CompetitionMode;
+            match &self.config.homeostasis.competition_mode {
+                CompetitionMode::LocalInhibition { .. } => {
+                    // No algorithmic k-WTA. Inhibitory interneurons suppress
+                    // neighbors through normal spike delivery (step 2).
+                    // iSTDP tunes their weights on the medium path.
+                    self.kwta_winners.clear();
+                }
+                CompetitionMode::GlobalKWTA { fraction, local_radius, local_k } => {
+            let kwta_fraction = *fraction;
+            let local_radius = *local_radius;
+            let local_k = *local_k;
 
             // Collect associative/stem morphons with degree-normalized input.
-            // Without normalization, high-degree morphons dominate k-WTA by
-            // accumulating more raw input, creating hub neurons that fire
-            // identically for every input and contribute no discriminative signal.
-            let assoc_data: Vec<(MorphonId, f64)> = self.morphons.values()
+            let mut assoc_data: Vec<(MorphonId, f64)> = self.morphons.values()
                 .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
                 .map(|m| {
                     let in_degree = self.topology.degree(m.id).max(1);
@@ -489,10 +529,7 @@ impl System {
             if !assoc_data.is_empty() {
                 let winners = if local_radius > 0.0 {
                     // === LOCAL k-WTA: spatial neighborhoods in Poincare ball ===
-                    // For each morphon, find neighbors within radius, compete locally.
-                    // A morphon can participate in multiple neighborhoods — biologically
-                    // correct (neurons receive inhibition from multiple local circuits).
-                    let local_k = self.config.homeostasis.local_kwta_k;
+                    let local_k = local_k;
                     let mut global_winners: std::collections::HashSet<MorphonId> =
                         std::collections::HashSet::new();
 
@@ -527,11 +564,17 @@ impl System {
                         }
                     }
 
-                    // Suppress non-winners
+                    // Suppress non-winners + anti-Hebbian LTD signal
                     for &(id, _) in &assoc_data {
                         if !global_winners.contains(&id) {
                             if let Some(m) = self.morphons.get_mut(&id) {
                                 m.input_accumulator = 0.0;
+                            }
+                            let incoming = self.topology.incoming_synapses_mut(id);
+                            for (_, edge_idx) in incoming {
+                                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                    syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                                }
                             }
                         }
                     }
@@ -539,59 +582,111 @@ impl System {
                     global_winners.into_iter().collect::<Vec<_>>()
                 } else {
                     // === GLOBAL k-WTA (legacy) ===
-                    let mut sorted = assoc_data.clone();
-                    let k = (sorted.len() as f64 * self.config.homeostasis.kwta_fraction).ceil() as usize;
-                    let k = k.max(3).min(20).min(sorted.len());
+                    let k = (assoc_data.len() as f64 * kwta_fraction).ceil() as usize;
+                    let k = k.max(3).min(20).min(assoc_data.len());
 
-                    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    // Use select_nth_unstable for O(N) partitioning instead of O(N log N) sort.
+                    // We only need top-k, not full ordering.
+                    if k < assoc_data.len() {
+                        assoc_data.select_nth_unstable_by(k, |a, b| {
+                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    }
 
-                    for &(id, _) in &sorted[k..] {
+                    // Suppress non-winners AND inject anti-Hebbian LTD signal.
+                    // Biology: lateral inhibition hyperpolarizes losers, driving LTD
+                    // on their active incoming synapses. Without this, non-winners
+                    // get zero learning signal and never specialize away from shared
+                    // initial weight patterns → mode collapse on classification tasks.
+                    let suppressed_ids: Vec<MorphonId> = assoc_data[k..].iter()
+                        .map(|(id, _)| *id).collect();
+                    for &id in &suppressed_ids {
                         if let Some(m) = self.morphons.get_mut(&id) {
                             m.input_accumulator = 0.0;
                         }
                     }
+                    // Inject post_trace on suppressed neurons' incoming synapses so
+                    // that pre-fired sensory neurons drive LTD (a_minus × post_trace).
+                    // This teaches suppressed neurons "this input is not yours."
+                    for &id in &suppressed_ids {
+                        let incoming = self.topology.incoming_synapses_mut(id);
+                        for (_, edge_idx) in incoming {
+                            if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                            }
+                        }
+                    }
 
-                    sorted[..k].iter().map(|(id, _)| *id).collect()
+                    assoc_data[..k].iter().map(|(id, _)| *id).collect()
                 };
 
                 self.kwta_winners = winners;
             }
+                } // end GlobalKWTA
+            } // end match competition_mode
         }
 
         // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
-        let frustration_config = &self.config.morphogenesis.frustration;
+        // Apply Endo Phase B lever: frustration_sensitivity_mult scales stagnation_threshold.
+        // Higher mult → higher threshold → more tolerant (Proliferating).
+        // Lower mult → lower threshold → more sensitive (Mature).
+        let mut frustration_config = self.config.morphogenesis.frustration.clone();
+        frustration_config.stagnation_threshold *= self.endo.channels.frustration_sensitivity_mult as f64;
+        let frustration_config = &frustration_config;
         let threshold_bias = self.endo.channels.threshold_bias as f64;
-        // Precompute per-morphon synapse maintenance cost with distance + myelination factors.
-        let synapse_cost_base = metabolic.synapse_cost;
-        let maintenance_cost_map: HashMap<MorphonId, f64> = self.morphons.keys()
-            .map(|&id| {
-                let total_cost: f64 = self.topology.outgoing(id)
-                    .into_iter()
-                    .map(|(target_id, synapse)| {
-                        let distance_factor = self.morphons.get(&target_id)
-                            .map(|target| {
-                                let dist = self.morphons[&id].position.distance(&target.position);
-                                1.0 + dist * 0.5 // 50% more cost per unit hyperbolic distance
-                            })
-                            .unwrap_or(1.0);
-                        let myelination_cost = synapse.myelination * 0.002; // myelin maintenance
-                        synapse_cost_base * distance_factor + myelination_cost
-                    })
-                    .sum();
-                (id, total_cost)
-            })
-            .collect();
-        #[cfg(feature = "parallel")]
-        self.morphons.par_iter_mut().for_each(|(id, m)| {
-            let cost = maintenance_cost_map.get(id).copied().unwrap_or(0.0);
-            m.step(dt, cost, metabolic, frustration_config, threshold_bias);
-        });
-        #[cfg(not(feature = "parallel"))]
-        self.morphons.values_mut().for_each(|m| {
-            let cost = maintenance_cost_map.get(&m.id).copied().unwrap_or(0.0);
-            m.step(dt, cost, metabolic, frustration_config, threshold_bias);
-        });
+        // Recompute maintenance costs only on slow ticks (topology changes)
+        // or on the very first step (cache empty). Avoids O(N×M) hyperbolic
+        // distance calculations every step.
+        if tick.slow || self.cached_maintenance_costs.is_empty() {
+            let synapse_cost_base = metabolic.synapse_cost;
+            self.cached_maintenance_costs = self.morphons.keys()
+                .map(|&id| {
+                    let total_cost: f64 = self.topology.outgoing(id)
+                        .into_iter()
+                        .map(|(target_id, synapse)| {
+                            let distance_factor = self.morphons.get(&target_id)
+                                .map(|target| {
+                                    let dist = self.morphons[&id].position.distance(&target.position);
+                                    1.0 + dist * 0.5
+                                })
+                                .unwrap_or(1.0);
+                            let myelination_cost = synapse.myelination * 0.002;
+                            synapse_cost_base * distance_factor + myelination_cost
+                        })
+                        .sum();
+                    (id, total_cost)
+                })
+                .collect();
+        }
+        {
+            let System { ref cached_maintenance_costs, ref mut morphons, .. } = *self;
+            #[cfg(feature = "parallel")]
+            morphons.par_iter_mut().for_each(|(id, m)| {
+                let cost = cached_maintenance_costs.get(id).copied().unwrap_or(0.0);
+                m.step(dt, cost, metabolic, frustration_config, threshold_bias);
+            });
+            #[cfg(not(feature = "parallel"))]
+            morphons.values_mut().for_each(|m| {
+                let cost = cached_maintenance_costs.get(&m.id).copied().unwrap_or(0.0);
+                m.step(dt, cost, metabolic, frustration_config, threshold_bias);
+            });
+        }
+
+        // Reward-correlated energy: morphons that fire when reward arrives earn energy.
+        // Hubs fire for all inputs → reward ±symmetric → net zero income.
+        // Specialists fire for correct class → mostly positive → positive income.
+        let reward_energy_coeff = self.config.metabolic.reward_energy_coefficient;
+        if reward_energy_coeff > 0.0 {
+            let reward = self.modulation.reward_delta();
+            if reward > 0.0 {
+                for m in self.morphons.values_mut() {
+                    if m.fired {
+                        m.energy = (m.energy + reward * reward_energy_coeff).min(1.0);
+                    }
+                }
+            }
+        }
 
         // V3: Cluster overhead — fused morphons pay extra maintenance cost.
         // V2: Cluster collective compute — energy pooling + shared homeostasis
@@ -678,10 +773,32 @@ impl System {
             }
         }
 
-        // 5. Adaptive threshold boost for k-WTA winners (Diehl & Cook).
-        for &id in &self.kwta_winners {
-            if let Some(m) = self.morphons.get_mut(&id) {
-                m.threshold += 0.02;
+        // 5. Adaptive threshold boost (Diehl & Cook).
+        //    In GlobalKWTA mode: boost only k-WTA winners (backward compatible).
+        //    In LocalInhibition mode: boost any fired Associative/Stem morphon.
+        {
+            let boost = self.config.homeostasis.winner_boost
+                * self.endo.channels.winner_adaptation_mult as f64;
+            if boost > 0.0 {
+                use crate::homeostasis::CompetitionMode;
+                match &self.config.homeostasis.competition_mode {
+                    CompetitionMode::LocalInhibition { .. } => {
+                        for m in self.morphons.values_mut() {
+                            if m.fired && (m.cell_type == CellType::Associative
+                                || m.cell_type == CellType::Stem)
+                            {
+                                m.threshold += boost;
+                            }
+                        }
+                    }
+                    _ => {
+                        for &id in &self.kwta_winners {
+                            if let Some(m) = self.morphons.get_mut(&id) {
+                                m.threshold += boost;
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -739,6 +856,68 @@ impl System {
                 self.recent_performance,
             );
             self.endo.tick(vitals);
+            // Clear episode-gated capture count now that endo has consumed it.
+            self.diag.episode_captures_pending = 0;
+        }
+
+        // === ASTROCYTIC GATE UPDATE (medium path) ===
+        // Per-morphon slow state variable (AGMP-inspired) that gates excitatory plasticity.
+        // Updated before learning so the gate is fresh when weight updates happen.
+        if tick.medium {
+            let tau_a = self.config.homeostasis.tau_astrocytic;
+            let eta_v = self.config.homeostasis.eta_v;
+            let eta_s = self.config.homeostasis.eta_s;
+            let eta_f = self.config.homeostasis.eta_f;
+            if tau_a > 0.0 {
+                let decay = 1.0 - 1.0 / tau_a;
+                let inv_tau = 1.0 / tau_a;
+                for m in self.morphons.values_mut() {
+                    let drive = eta_v * m.potential
+                        + eta_s * m.input_accumulator
+                        + eta_f * if m.fired { 1.0 } else { 0.0 };
+                    m.astrocytic_state = decay * m.astrocytic_state + inv_tau * drive;
+                }
+            }
+        }
+
+        // === iSTDP: Update inhibitory interneuron synapses (medium path) ===
+        if tick.medium {
+            if let crate::homeostasis::CompetitionMode::LocalInhibition {
+                istdp_rate, target_rate: target_rate_override, ..
+            } = &self.config.homeostasis.competition_mode {
+                let istdp_rate = *istdp_rate;
+                let target_rate = target_rate_override
+                    .unwrap_or_else(|| self.endo.target_assoc_firing_rate());
+
+                // Collect interneuron IDs
+                let inh_ids: Vec<MorphonId> = self.morphons.values()
+                    .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+                    .map(|m| m.id)
+                    .collect();
+
+                for inh_id in inh_ids {
+                    // Collect post-morphon firing rates before mutating topology
+                    let targets: Vec<(MorphonId, petgraph::graph::EdgeIndex)> =
+                        self.topology.outgoing_synapses_mut(inh_id);
+                    let target_rates: Vec<(petgraph::graph::EdgeIndex, f64)> = targets.iter()
+                        .map(|(target_id, edge_idx)| {
+                            let post_rate = self.morphons.get(target_id)
+                                .map(|m| m.activity_history.mean())
+                                .unwrap_or(0.0);
+                            (*edge_idx, post_rate)
+                        })
+                        .collect();
+
+                    // Now mutate synapses
+                    for (edge_idx, post_rate) in target_rates {
+                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
+                            crate::learning::update_istdp(
+                                synapse, post_rate, target_rate, istdp_rate, dt,
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         // === MEDIUM PATH ===
@@ -748,6 +927,13 @@ impl System {
         // This breaks the circular dependency where critic and actor share learning rules.
         let mut captures_this_step = 0_u64;
         if tick.medium {
+            // Apply Endo's tau_eligibility_mult (reactive, capture-speed) and
+            // slow_trace_leak (stage-dependent baseline) to learning params.
+            // slow_trace_leak > 1 = faster decay = divide tau. Both compose multiplicatively.
+            let mut learning_params = self.config.learning.clone();
+            let trace_leak = self.endo.channels.slow_trace_leak.max(0.1) as f64;
+            learning_params.tau_eligibility *= self.endo.channels.tau_eligibility_mult as f64 / trace_leak;
+
             let critic_set: std::collections::HashSet<MorphonId> =
                 self.critic_ports.iter().copied().collect();
             let td_err = self.last_td_error;
@@ -779,7 +965,7 @@ impl System {
                     // === ACTOR: Three-factor learning ===
                     // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
                     // Associative morphons: DFA feedback signal (neuron-specific credit)
-                    let (post_activity, post_receptors, post_sensitivity, feedback_sig, is_assoc, plast_rate) =
+                    let (post_activity, post_receptors, post_sensitivity, feedback_sig, is_assoc, plast_rate, astro_state, post_ct) =
                         self.morphons.get(&id)
                             .map(|m| {
                                 let activity = if m.cell_type == CellType::Motor {
@@ -791,9 +977,17 @@ impl System {
                                 let is_a = m.cell_type == CellType::Associative
                                     || m.cell_type == CellType::Stem;
                                 (activity, m.receptors.clone(), m.receptor_sensitivity.clone(),
-                                 m.feedback_signal, is_a, m.plasticity_rate)
+                                 m.feedback_signal, is_a, m.plasticity_rate,
+                                 m.astrocytic_state, m.cell_type)
                             })
-                            .unwrap_or((0.0, Default::default(), Default::default(), 0.0, false, 1.0));
+                            .unwrap_or((0.0, Default::default(), Default::default(), 0.0, false, 1.0, 0.5, CellType::Stem));
+                    // Astrocytic gate: sigmoid(a - threshold). Bypassed for Modulatory/InhibitoryInterneuron.
+                    let astro_gate = if post_ct == CellType::Modulatory || post_ct == CellType::InhibitoryInterneuron {
+                        1.0
+                    } else {
+                        let th = self.config.homeostasis.threshold_astrocytic;
+                        1.0 / (1.0 + (-(astro_state - th)).exp())
+                    };
                     let incoming = self.topology.incoming_synapses_mut(id);
 
                     for (pre_id, edge_idx) in incoming {
@@ -804,7 +998,7 @@ impl System {
                                 synapse,
                                 pre_fired,
                                 post_activity,
-                                &self.config.learning,
+                                &learning_params,
                                 dt,
                             );
 
@@ -816,7 +1010,7 @@ impl System {
                                 // pre_trace persists ~10 steps after firing — "is this synapse
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
-                                let dfa_lr = 0.02 * plast_rate * self.endo.channels.plasticity_mult as f64; // scaled by Anchor/Sail + Endo
+                                let dfa_lr = 0.02 * plast_rate * self.endo.channels.plasticity_mult as f64 * astro_gate; // scaled by Anchor/Sail + Endo + astrocytic gate
                                 let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
                                 let weight_decay = 0.001 * synapse.weight;
                                 let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr - weight_decay) * consolidation_scale;
@@ -845,7 +1039,7 @@ impl System {
                                 // Standard three-factor for Motor, Sensory, Modulatory
                                 // Scaled by per-morphon plasticity_rate (Anchor/Sail) × Endo plasticity_mult
                                 let plasticity = self.modulation.plasticity_rate() * plast_rate
-                                    * self.endo.channels.plasticity_mult as f64;
+                                    * self.endo.channels.plasticity_mult as f64 * astro_gate;
                                 let endo_gains = [
                                     self.endo.channels.reward_gain as f64,
                                     self.endo.channels.novelty_gain as f64,
@@ -881,121 +1075,90 @@ impl System {
             }
         }
 
-        // === WEIGHT NORMALIZATION (after STDP updates) ===
-        // Per-neuron L1 normalization for Associative morphons' incoming weights.
-        // Strengthening some inputs forces weakening others — creates synaptic
-        // competition that, combined with WTA, produces specialized feature detectors.
-        // (Diehl & Cook 2015: "sum of all incoming weights kept constant")
-        if tick.medium {
-            let assoc_ids: Vec<MorphonId> = self.morphons.values()
-                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
-                .map(|m| m.id)
-                .collect();
-
-            for &aid in &assoc_ids {
-                let incoming = self.topology.incoming_synapses_mut(aid);
-                let edge_indices: Vec<_> = incoming.into_iter().map(|(_, ei)| ei).collect();
-                if edge_indices.is_empty() { continue; }
-
-                // Compute current L1 norm of positive incoming weights
-                let mut pos_sum = 0.0_f64;
-                for &ei in &edge_indices {
-                    if let Some(syn) = self.topology.graph.edge_weight(ei) {
-                        if syn.weight > 0.0 {
-                            pos_sum += syn.weight;
-                        }
-                    }
-                }
-
-                // Target norm: proportional to number of connections
-                let target_norm = edge_indices.len() as f64 * 0.3;
-                if pos_sum > 0.01 {
-                    // Gentle clamping [0.9, 1.1] preserves weight diversity
-                    // while preventing explosion. Stronger clamping (0.5-2.0)
-                    // collapsed all weights to the target norm, destroying features.
-                    let scale = (target_norm / pos_sum).clamp(0.9, 1.1);
-                    for &ei in &edge_indices {
-                        if let Some(syn) = self.topology.synapse_mut(ei) {
-                            if syn.weight > 0.0 {
-                                syn.weight *= scale;
-                                syn.weight = syn.weight.clamp(0.0, self.config.learning.weight_max);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // === FAST NON-HEBBIAN COMPENSATORY PLASTICITY (Zenke et al. 2015) ===
-        // Two mechanisms that must operate on the SAME timescale as STDP:
-        // (a) Transmitter-induced potentiation: prevents silent death
-        // (b) Heterosynaptic depression: prevents runaway excitation
+        // === COMBINED: Weight normalization + compensatory plasticity + frustration ===
+        // Fused into a single loop to walk incoming edges once per morphon instead
+        // of 3 separate passes with 3 separate incoming_synapses_mut() allocations.
         if tick.medium {
             let tip_rate = self.config.learning.transmitter_potentiation;
             let hsd_rate = self.config.learning.heterosynaptic_depression;
             let wmax = self.config.learning.weight_max;
+            let frustration_enabled = self.config.morphogenesis.frustration.enabled;
+            let perturb_scale = self.config.morphogenesis.frustration.weight_perturbation_scale;
 
-            let morphon_states: Vec<(MorphonId, bool, f64)> = self.morphons.values()
-                .map(|m| (m.id, m.fired, m.activity_history.mean()))
+            // Snapshot morphon states to avoid borrow conflicts with topology
+            let morphon_states: Vec<(MorphonId, bool, f64, f64, bool, f64, bool)> = self.morphons.values()
+                .map(|m| (
+                    m.id,
+                    m.fired,
+                    m.activity_history.mean(),
+                    m.plasticity_rate,
+                    m.frustration.exploration_mode,
+                    m.frustration.frustration_level,
+                    m.cell_type == CellType::Associative || m.cell_type == CellType::Stem,
+                ))
                 .collect();
 
-            for &(id, fired, post_rate) in &morphon_states {
+            for &(id, fired, post_rate, plasticity_rate, in_exploration, frust_level, is_assoc) in &morphon_states {
                 let incoming = self.topology.incoming_synapses_mut(id);
+                let edge_data: Vec<(MorphonId, petgraph::graph::EdgeIndex)> = incoming;
+                if edge_data.is_empty() { continue; }
 
-                for (pre_id, edge_idx) in incoming {
+                // --- Pass 1 (assoc only): compute L1 norm for weight normalization ---
+                let (norm_scale, do_normalize) = if is_assoc {
+                    let mut pos_sum = 0.0_f64;
+                    for &(_, ei) in &edge_data {
+                        if let Some(syn) = self.topology.graph.edge_weight(ei) {
+                            if syn.weight > 0.0 {
+                                pos_sum += syn.weight;
+                            }
+                        }
+                    }
+                    let target_norm = edge_data.len() as f64 * 0.3;
+                    if pos_sum > 0.01 {
+                        let tol = 0.1 + 0.15 * plasticity_rate.min(2.0);
+                        ((target_norm / pos_sum).clamp(1.0 - tol, 1.0 + tol), true)
+                    } else {
+                        (1.0, false)
+                    }
+                } else {
+                    (1.0, false)
+                };
+
+                // --- Pass 2: apply normalization + compensatory plasticity + frustration ---
+                for &(pre_id, edge_idx) in &edge_data {
                     let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
                     if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
-                        // (a) Transmitter-induced potentiation:
-                        // Pre fired but post is chronically quiet → small positive dw.
-                        // Prevents morphons from going permanently silent.
+                        // (a) Weight normalization (assoc/stem only, positive weights)
+                        if do_normalize && synapse.weight > 0.0 {
+                            synapse.weight *= norm_scale;
+                            synapse.weight = synapse.weight.clamp(0.0, wmax);
+                        }
+
+                        // (b) Transmitter-induced potentiation
                         if pre_fired && post_rate < 0.05 {
                             synapse.weight += tip_rate;
                             synapse.weight = synapse.weight.min(wmax);
                         }
 
-                        // (b) Heterosynaptic depression:
-                        // Post fired → decay ALL incoming weights toward zero.
-                        // This normalizes total input and prevents runaway.
-                        // Multiplicative decay: w *= (1 - rate), pushes toward 0
-                        // regardless of sign (positive shrinks, negative shrinks).
+                        // (c) Heterosynaptic depression
                         if fired {
                             synapse.weight *= 1.0 - hsd_rate;
                         }
 
-                        // Blanket weight sanitizer — catch any -inf/NaN from upstream
+                        // (d) Frustration-driven weight perturbation
+                        if frustration_enabled && in_exploration && !synapse.consolidated {
+                            let hash = (id.wrapping_mul(synapse.age).wrapping_add(31337) % 10000) as f64
+                                / 5000.0 - 1.0;
+                            let delta = hash * perturb_scale * frust_level * wmax;
+                            synapse.weight += delta;
+                        }
+
+                        // Blanket weight sanitizer
                         if !synapse.weight.is_finite() {
                             synapse.weight = 0.0;
                         }
                         synapse.weight = synapse.weight.clamp(-wmax, wmax);
-                    }
-                }
-            }
-
-            // === V2: FRUSTRATION-DRIVEN WEIGHT PERTURBATION ===
-            // Morphons in exploration_mode get small random weight perturbations
-            // to escape local minima. Consolidated synapses are protected.
-            if self.config.morphogenesis.frustration.enabled {
-                let wmax = self.config.learning.weight_max;
-                let perturb_scale = self.config.morphogenesis.frustration.weight_perturbation_scale;
-
-                let frustrated_morphons: Vec<(MorphonId, f64)> = self.morphons.values()
-                    .filter(|m| m.frustration.exploration_mode)
-                    .map(|m| (m.id, m.frustration.frustration_level))
-                    .collect();
-
-                for (id, frust_level) in frustrated_morphons {
-                    let incoming = self.topology.incoming_synapses_mut(id);
-                    for (_pre_id, edge_idx) in incoming {
-                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
-                            if synapse.consolidated {
-                                continue;
-                            }
-                            let hash = (id.wrapping_mul(synapse.age).wrapping_add(31337) % 10000) as f64
-                                / 5000.0 - 1.0;
-                            let delta = hash * perturb_scale * frust_level * wmax;
-                            synapse.weight = (synapse.weight + delta).clamp(-wmax, wmax);
-                        }
                     }
                 }
             }
@@ -1033,11 +1196,19 @@ impl System {
 
         // === SLOW PATH ===
         if tick.slow {
+            // Apply Endo Phase B levers to slow-path parameters.
+            let mut slow_learning = self.config.learning.clone();
+            slow_learning.weight_min *= self.endo.channels.pruning_threshold_mult as f64;
+
+            let mut slow_params = self.config.morphogenesis.clone();
+            slow_params.migration_rate *= self.endo.channels.migration_rate_mult as f64;
+            slow_params.synaptogenesis_threshold *= self.endo.channels.synaptogenesis_threshold_mult as f64;
+
             let slow_report = morphogenesis::step_slow(
                 &mut self.morphons,
                 &mut self.topology,
-                &self.config.morphogenesis,
-                &self.config.learning,
+                &slow_params,
+                &slow_learning,
                 self.modulation.homeostasis,
                 &self.config.lifecycle,
                 &mut rng,
@@ -1073,11 +1244,23 @@ impl System {
                 );
             }
 
-            // Activity-dependent myelination: consolidated, active synapses
-            // get faster signal delivery. Very slow τ (5000 steps) — only proven
-            // pathways myelinate. Gives temporal advantage in local competition.
+            // Activity-dependent myelination with neuromodulatory gating.
+            // Treadmilling dynamics (Auer 2019): wrapping vs removal equilibrium.
+            // Arousal gates OPC sensitivity, reward biases toward tagged pathways,
+            // energy pressure suppresses wrapping under metabolic stress.
+            // Energy pressure from Associative morphons only — Sensory/Motor energy
+            // isn't meaningful for myelination stress (they don't fire competitively).
+            let (assoc_energy_sum, assoc_count) = self.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+                .fold((0.0_f64, 0usize), |(sum, n), m| (sum + m.energy, n + 1));
+            let avg_energy = if assoc_count > 0 { assoc_energy_sum / assoc_count as f64 } else { 1.0 };
+            let myelin_ctx = crate::morphon::MyelinationContext {
+                arousal: self.modulation.arousal,
+                reward: self.modulation.reward,
+                energy_pressure: (1.0 - avg_energy).clamp(0.0, 1.0),
+            };
             self.topology.update_all_synapses(|synapse| {
-                synapse.update_myelination(1.0);
+                synapse.update_myelination(1.0, &myelin_ctx);
             });
         }
 
@@ -1092,14 +1275,20 @@ impl System {
                 &self.topology,
             );
 
+            // Apply Endo Phase B lever: division_threshold_mult scales division_threshold.
+            let mut glacial_params = self.config.morphogenesis.clone();
+            glacial_params.division_threshold *= self.endo.channels.division_threshold_mult as f64;
+
             let glacial_report = morphogenesis::step_glacial(
                 &mut self.morphons,
                 &mut self.topology,
                 &mut self.clusters,
                 &mut self.next_morphon_id,
                 &mut self.next_cluster_id,
-                &self.config.morphogenesis,
+                &glacial_params,
                 self.effective_max_morphons,
+                self.config.governance.max_cluster_size_fraction,
+                self.config.governance.max_unverified_fraction,
                 self.modulation.arousal,
                 &self.config.lifecycle,
                 &mut rng,
@@ -1108,6 +1297,18 @@ impl System {
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
+
+            // Wire newly born Associative morphons to nearby InhibitoryInterneurons
+            if report.morphons_born > 0 {
+                let new_ids: Vec<MorphonId> = self.morphons.keys()
+                    .filter(|&&id| id >= self.next_morphon_id.saturating_sub(report.morphons_born as u64 + 10))
+                    .copied()
+                    .collect();
+                morphogenesis::wire_to_nearby_interneurons(
+                    &self.morphons, &mut self.topology,
+                    &self.config.homeostasis.competition_mode, &new_ids,
+                );
+            }
 
             // Track ALL births/deaths including fusion's inhibitory morphons
             let count_after = self.morphons.len();
@@ -1175,6 +1376,7 @@ impl System {
                 &mut self.morphons,
                 &mut self.topology,
                 self.step_count,
+                self.config.metabolic.reward_for_verification,
             );
 
             // Rollback synapses if prediction error spiked after structural changes
@@ -1183,11 +1385,14 @@ impl System {
                 .filter(|id| self.morphons.contains_key(id))
                 .copied()
                 .collect();
+            // Apply Endo's rollback sensitivity multiplier
+            let mut effective_homeo = self.config.homeostasis.clone();
+            effective_homeo.rollback_pe_threshold *= self.endo.channels.rollback_pe_threshold_mult as f64;
             if homeostasis::should_rollback(
                 &checkpoint,
                 &surviving_ids,
                 &self.morphons,
-                &self.config.homeostasis,
+                &effective_homeo,
             ) {
                 homeostasis::rollback_synapses(&checkpoint, &mut self.topology);
                 self.diag.rollback_triggered = true;
@@ -1215,7 +1420,7 @@ impl System {
 
         // === HOMEOSTASIS ===
         if tick.homeostasis {
-            homeostasis::synaptic_scaling(&self.morphons, &mut self.topology);
+            homeostasis::synaptic_scaling(&self.morphons, &mut self.topology, self.config.learning.weight_max);
             homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
             homeostasis::inter_cluster_inhibition(
                 &mut self.morphons,
@@ -1275,22 +1480,62 @@ impl System {
             }
         }
 
+        // === EPISODE FIRE COUNTS (for winner diversity entropy) ===
+        for m in self.morphons.values() {
+            if m.fired {
+                *self.episode_fire_counts.entry(m.id).or_insert(0) += 1;
+            }
+        }
+
         // === DIAGNOSTICS ===
-        // Compute learning pipeline diagnostics for observability.
-        let prev_total_captures = self.diag.total_captures;
-        let prev_total_rollbacks = self.diag.total_rollbacks;
-        let rollback_triggered = self.diag.rollback_triggered;
-        let prev_field_pe_max = self.diag.field_pe_max;
-        let prev_field_pe_mean = self.diag.field_pe_mean;
-        self.diag = Diagnostics::snapshot(&self.morphons, &self.topology);
+        // Lightweight per-step counters (O(1)):
         self.diag.spikes_delivered_this_step = spikes_delivered;
         self.diag.spikes_pending = self.resonance.pending_count();
         self.diag.captures_this_step = captures_this_step;
-        self.diag.total_captures = prev_total_captures + captures_this_step;
-        self.diag.total_rollbacks = prev_total_rollbacks;
-        self.diag.rollback_triggered = rollback_triggered;
-        self.diag.field_pe_max = prev_field_pe_max;
-        self.diag.field_pe_mean = prev_field_pe_mean;
+        self.diag.total_captures += captures_this_step;
+
+        // Expensive full snapshot only on homeostasis ticks — avoids O(synapses+morphons)
+        // traversal every step. Consumers (dream engine, inspect(), external logging)
+        // tolerate slightly stale stats.
+        if tick.homeostasis || tick.glacial {
+            let prev_total_captures = self.diag.total_captures;
+            let prev_total_rollbacks = self.diag.total_rollbacks;
+            let rollback_triggered = self.diag.rollback_triggered;
+            let prev_field_pe_max = self.diag.field_pe_max;
+            let prev_field_pe_mean = self.diag.field_pe_mean;
+            let prev_episode_captures = self.diag.episode_captures_pending;
+            self.diag = Diagnostics::snapshot(&self.morphons, &self.topology);
+            self.diag.spikes_delivered_this_step = spikes_delivered;
+            self.diag.spikes_pending = self.resonance.pending_count();
+            self.diag.captures_this_step = captures_this_step;
+            self.diag.total_captures = prev_total_captures;
+            self.diag.total_rollbacks = prev_total_rollbacks;
+            self.diag.rollback_triggered = rollback_triggered;
+            self.diag.field_pe_max = prev_field_pe_max;
+            self.diag.field_pe_mean = prev_field_pe_mean;
+            self.diag.episode_captures_pending = prev_episode_captures;
+
+            // V3: Populate epistemic diagnostic counts from cluster state
+            {
+                let (mut supported, mut hypothesis, mut outdated, mut contested) = (0, 0, 0, 0);
+                let mut skepticism_sum = 0.0;
+                for c in self.clusters.values() {
+                    match &c.epistemic_state {
+                        crate::epistemic::EpistemicState::Supported { .. } => supported += 1,
+                        crate::epistemic::EpistemicState::Hypothesis { .. } => hypothesis += 1,
+                        crate::epistemic::EpistemicState::Outdated { .. } => outdated += 1,
+                        crate::epistemic::EpistemicState::Contested { .. } => contested += 1,
+                    }
+                    skepticism_sum += c.epistemic_history.skepticism;
+                }
+                self.diag.epistemic_supported = supported;
+                self.diag.epistemic_hypothesis = hypothesis;
+                self.diag.epistemic_outdated = outdated;
+                self.diag.epistemic_contested = contested;
+                self.diag.avg_skepticism = if self.clusters.is_empty() { 0.0 }
+                    else { skepticism_sum / self.clusters.len() as f64 };
+            }
+        }
 
         // Curvature learning: regions with high prediction error get stronger curvature
         // (more space for fine-grained distinctions). Runs on slow schedule.
@@ -1543,7 +1788,8 @@ impl System {
                         }
                         // Endo consolidation_gain lowers effective capture threshold.
                         // High cg = capture-friendly (stressed/proliferating), low = selective (mature).
-                        let effective_threshold = self.config.learning.capture_threshold / cg;
+                        let effective_threshold = self.config.learning.capture_threshold
+                            * self.endo.channels.capture_threshold_mult as f64 / cg;
                         if syn.tag > effective_threshold && !syn.consolidated {
                             syn.consolidated = true;
                             syn.tag = 0.0;
@@ -1583,6 +1829,10 @@ impl System {
                         let target = 0.2 + (1.0 - normalized_imp) * 0.8;
                         m.plasticity_rate += anchoring_rate * (target - m.plasticity_rate);
                         m.plasticity_rate = m.plasticity_rate.clamp(0.1, 2.5);
+                        // Dampen noise for important morphons — anchors produce stable output.
+                        let noise_target = crate::types::intrinsic_noise_for(m.cell_type) * target;
+                        m.intrinsic_noise += anchoring_rate * (noise_target - m.intrinsic_noise);
+                        m.intrinsic_noise = m.intrinsic_noise.clamp(0.0, 0.2);
                     }
                 }
             }
@@ -1653,19 +1903,43 @@ impl System {
             // Biology: PRP availability gates how much a good episode consolidates.
             let cg = self.endo.channels.consolidation_gain as f64;
             let strength = (delta / self.running_avg_steps.max(1.0)).min(1.0);
+            let mut capture_count = 0_u64;
             for ei in self.topology.graph.edge_indices() {
                 if let Some(syn) = self.topology.graph.edge_weight_mut(ei) {
                     if syn.tag > 0.1 && syn.consolidation_level < 1.0 {
                         let delta_level = strength * syn.tag_strength.min(1.0) * 0.1 * cg;
                         syn.consolidation_level = (syn.consolidation_level + delta_level).min(1.0);
                         syn.tag *= 0.5;
+                        capture_count += 1;
                     }
                 }
+            }
+            // Signal to Endo that captures happened — both the direct counter reset
+            // AND the pending count so sense_vitals() sees episode-gated captures
+            // in Rule 5 and Rule 11 (not just the ticks_since counter).
+            if capture_count > 0 {
+                self.endo.ticks_since_last_capture = 0;
+                self.diag.episode_captures_pending += capture_count;
             }
         } else if delta < 0.0 {
             // Below average — decay tags, don't consolidate
             self.decay_all_tags(0.5);
         }
+
+        // Compute winner diversity entropy from episode fire counts
+        let total_fires: u64 = self.episode_fire_counts.values().sum();
+        if total_fires > 0 {
+            let n = self.episode_fire_counts.len();
+            let h: f64 = self.episode_fire_counts.values()
+                .filter(|&&c| c > 0)
+                .map(|&c| {
+                    let p = c as f64 / total_fires as f64;
+                    -p * p.ln()
+                })
+                .sum();
+            self.diag.winner_diversity_entropy = if n > 1 { h / (n as f64).ln() } else { 0.0 };
+        }
+        self.episode_fire_counts.clear();
     }
 
     /// Decay all active tags after a below-average episode.
@@ -1705,6 +1979,10 @@ impl System {
                 syn.consolidated = false;
                 syn.consolidation_level = 0.0;
                 syn.tag = 0.0; // reset tag for fresh accumulation
+                syn.activity_trace = 0.0;
+                // Halve myelination — treadmill removal will erode the rest
+                // now that consolidation_level is zero (wrapping target drops).
+                syn.myelination *= 0.5;
             }
         }
     }
@@ -1836,6 +2114,24 @@ impl System {
         reward_strength: f64,
         inhibit_strength: f64,
     ) {
+        // Broadcast reward into the global modulation channel so that
+        // reward-correlated energy (metabolic) and learning (three-factor)
+        // both see the signal. Without this, classification tasks that only
+        // use reward_contrastive() never set modulation.reward.
+        self.modulation.inject_reward(reward_strength);
+
+        // Reward-correlated energy: fired morphons earn energy when reward arrives.
+        // Hubs fire for all inputs → reward ±symmetric → net zero income.
+        // Specialists fire for correct class → mostly positive → positive income.
+        let coeff = self.config.metabolic.reward_energy_coefficient;
+        if coeff > 0.0 && reward_strength > 0.0 {
+            for m in self.morphons.values_mut() {
+                if m.fired {
+                    m.energy = (m.energy + reward_strength * coeff).min(1.0);
+                }
+            }
+        }
+
         let n_outputs = self.output_ports.len();
         for i in 0..n_outputs {
             if i == correct_index {
@@ -1975,19 +2271,19 @@ impl System {
             let motor_id = self.output_ports[j];
             let incoming = self.topology.incoming_synapses_mut(motor_id);
             for (pre_id, edge_idx) in incoming {
-                // Pre-synaptic activity: binary (fired or not in recent history).
-                // Using sigmoid(potential) fails because cold morphons have sigmoid≈0.
-                // Using a floor erases class discrimination.
-                // Binary firing is the clearest signal: this sensory neuron was active
-                // for this input, so its connection to the correct output should strengthen.
+                // Pre-synaptic activity: continuous sigmoid of potential.
+                // Binary gate (fired || activity_history > 0.05) caused a cold-start
+                // deadlock: neurons can't learn because they don't fire, and they
+                // don't fire because they haven't learned. Sigmoid gives a gradient
+                // signal even for cold neurons (sigmoid(0) = 0.5).
                 let pre_act = self.morphons.get(&pre_id)
-                    .map(|m| if m.fired || m.activity_history.mean() > 0.05 { 1.0 } else { 0.0 })
+                    .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
                     .unwrap_or(0.0);
 
-                if pre_act < 0.01 { continue; } // skip inactive pre-synaptic neurons
+                if pre_act < 0.01 { continue; } // skip only truly dead neurons
 
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    let delta_w = learning_rate * error_j; // pre_act is binary gate, not multiplier
+                    let delta_w = learning_rate * pre_act * error_j;
                     syn.weight += delta_w;
                     syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
                 }
@@ -2081,8 +2377,8 @@ impl System {
                 };
 
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                    // Delta rule + L2 weight decay to prevent drift to ±clamp
-                    let weight_decay = 0.01 * syn.weight; // pulls toward zero (10x stronger)
+                    // Delta rule + mild L2 weight decay
+                    let weight_decay = 0.001 * syn.weight;
                     let delta_w = learning_rate * pre_act * error_j - weight_decay;
                     syn.weight += delta_w;
                     syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
@@ -2196,6 +2492,8 @@ impl System {
                     syn.eligibility = 0.0;
                     syn.pre_trace = 0.0;
                     syn.post_trace = 0.0;
+                    syn.activity_trace = 0.0;
+                    syn.myelination = 0.0;
                 }
             }
         }
@@ -2261,11 +2559,32 @@ impl System {
 
         let n = self.morphons.len().max(1) as f64;
 
+        // Axonal property stats
+        let synapse_count = self.topology.synapse_count();
+        let (mut total_myelin, mut max_myelin, mut myelinated, mut total_eff_delay) =
+            (0.0, 0.0_f64, 0usize, 0.0);
+        let (mut min_base_delay, mut max_base_delay) = (f64::MAX, 0.0_f64);
+        for (_, _, ei) in self.topology.all_edges() {
+            let syn = &self.topology.graph[ei];
+            total_myelin += syn.myelination;
+            max_myelin = max_myelin.max(syn.myelination);
+            if syn.myelination > 0.01 {
+                myelinated += 1;
+            }
+            total_eff_delay += syn.effective_delay();
+            min_base_delay = min_base_delay.min(syn.delay);
+            max_base_delay = max_base_delay.max(syn.delay);
+        }
+        if synapse_count == 0 {
+            min_base_delay = 0.0;
+        }
+        let s = synapse_count.max(1) as f64;
+
         SystemStats {
             max_morphons: self.effective_max_morphons,
             at_morphon_cap: self.morphons.len() >= self.effective_max_morphons,
             total_morphons: self.morphons.len(),
-            total_synapses: self.topology.synapse_count(),
+            total_synapses: synapse_count,
             fused_clusters: self.clusters.len(),
             differentiation_map,
             max_generation: max_gen,
@@ -2289,6 +2608,12 @@ impl System {
                 .unwrap_or_default(),
             field_pe_max: self.diag.field_pe_max,
             field_pe_mean: self.diag.field_pe_mean,
+            avg_myelination: total_myelin / s,
+            max_myelination: max_myelin,
+            myelinated_synapses: myelinated,
+            avg_effective_delay: total_eff_delay / s,
+            min_base_delay,
+            max_base_delay,
         }
     }
 

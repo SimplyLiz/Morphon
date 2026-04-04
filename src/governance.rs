@@ -43,6 +43,11 @@ pub struct ConstitutionalConstraints {
     /// Minimum energy floor — morphon energy never drops below this.
     /// Prevents total starvation while still allowing energy-based selection.
     pub energy_floor: f64,
+
+    /// Maximum morphon population cap.
+    /// `None` = auto-derive from I/O dimensions: `max(500, (input + output) * 3)`.
+    /// `Some(n)` = explicit override. The system cannot raise its own cap.
+    pub max_morphons: Option<usize>,
 }
 
 impl Default for ConstitutionalConstraints {
@@ -56,6 +61,7 @@ impl Default for ConstitutionalConstraints {
             max_fusion_rate_per_epoch: 0.1,
             max_structural_changes_per_epoch: 50,
             energy_floor: 0.0, // permissive default — existing behavior
+            max_morphons: None, // auto-derive from I/O dimensions
         }
     }
 }

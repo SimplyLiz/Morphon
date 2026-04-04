@@ -15,6 +15,57 @@ use crate::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// ─── Competition Mode ────────────────────────────────────────────────
+
+/// How lateral inhibition / winner selection is implemented.
+/// Default: GlobalKWTA for backward compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompetitionMode {
+    /// Global k-WTA: top-k fraction wins, rest get zeroed.
+    /// Optionally uses spatial neighborhoods in Poincare ball.
+    GlobalKWTA {
+        /// Fraction of associative morphons that win each step.
+        /// CartPole: 0.15, MNIST: 0.02-0.05.
+        fraction: f64,
+        /// Hyperbolic distance radius for local neighborhoods.
+        /// When > 0, each morphon competes only within this radius.
+        /// 0.0 = global competition (all associative morphons ranked together).
+        #[serde(default)]
+        local_radius: f64,
+        /// Winners per local neighborhood (only used when local_radius > 0).
+        #[serde(default = "default_local_k")]
+        local_k: usize,
+    },
+    /// Biologically local inhibition via iSTDP interneurons (Vogels et al. 2011).
+    /// Inhibitory interneurons are created during developmental bootstrap and
+    /// self-tune their synapse weights to maintain a target firing rate.
+    LocalInhibition {
+        /// Fraction of morphon budget allocated to inhibitory interneurons (e.g. 0.1 = 10%).
+        interneuron_ratio: f64,
+        /// iSTDP learning rate. Vogels et al. use ~0.01; start at 0.005 for stability.
+        istdp_rate: f64,
+        /// Initial weight of inhibitory synapses (negative, e.g. -0.3).
+        initial_inh_weight: f64,
+        /// Spatial radius for grouping in Poincare ball.
+        /// Each interneuron inhibits morphons within this hyperbolic distance.
+        /// 0.0 = one global group (all-to-all inhibition).
+        inhibition_radius: f64,
+        /// Target firing rate for iSTDP homeostasis.
+        /// None = derived from Endo's fr_assoc setpoints (midpoint of min/max).
+        target_rate: Option<f64>,
+    },
+}
+
+fn default_local_k() -> usize { 3 }
+
+impl Default for CompetitionMode {
+    fn default() -> Self {
+        CompetitionMode::GlobalKWTA { fraction: 0.15, local_radius: 0.0, local_k: 3 }
+    }
+}
+
+// ─── Homeostasis Params ─────────────────────────────────────────────
+
 /// Parameters for homeostatic mechanisms.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HomeostasisParams {
@@ -30,22 +81,32 @@ pub struct HomeostasisParams {
     /// Lowered from 0.5 to 0.2 so rollback actually protects against
     /// destabilizing structural changes.
     pub rollback_pe_threshold: f64,
-    /// Fraction of associative morphons that win the k-WTA competition each step.
-    /// Used as fallback when local_kwta_radius is 0.0 (global competition).
-    /// CartPole: 0.15 (15%) for diverse representations.
-    /// MNIST: 0.02-0.05 (1-5 winners) for class-selective feature detectors.
-    pub kwta_fraction: f64,
-    /// Hyperbolic distance radius for local k-WTA neighborhoods.
-    /// When > 0, each morphon competes only with neighbors within this radius
-    /// in the Poincare ball. Different neighborhoods compete independently,
-    /// allowing diverse feature specialization across spatial regions.
-    /// 0.0 = global k-WTA (legacy behavior).
+    /// Competition mode: controls how lateral inhibition is implemented.
     #[serde(default)]
-    pub local_kwta_radius: f64,
-    /// Number of winners per local neighborhood.
-    /// Only used when local_kwta_radius > 0.
-    #[serde(default = "default_local_kwta_k")]
-    pub local_kwta_k: usize,
+    pub competition_mode: CompetitionMode,
+    /// Base threshold boost applied after firing (Diehl & Cook 2015).
+    /// In GlobalKWTA mode: applied only to k-WTA winners.
+    /// In LocalInhibition mode: applied to any fired Associative/Stem morphon.
+    /// Extracted from hardcoded 0.02 for Endo V2 modulation.
+    #[serde(default = "default_winner_boost")]
+    pub winner_boost: f64,
+
+    // ─── Astrocytic gate (AGMP-inspired) ────────────────────────────
+    /// Astrocytic slow state time constant. Higher = more inertia.
+    #[serde(default = "default_tau_astrocytic")]
+    pub tau_astrocytic: f64,
+    /// Astrocytic gate sigmoid midpoint.
+    #[serde(default = "default_threshold_astrocytic")]
+    pub threshold_astrocytic: f64,
+    /// Membrane potential contribution to astrocytic state.
+    #[serde(default = "default_eta_v")]
+    pub eta_v: f64,
+    /// Synaptic input contribution to astrocytic state.
+    #[serde(default = "default_eta_s")]
+    pub eta_s: f64,
+    /// Firing event contribution to astrocytic state.
+    #[serde(default = "default_eta_f")]
+    pub eta_f: f64,
 }
 
 impl Default for HomeostasisParams {
@@ -56,14 +117,23 @@ impl Default for HomeostasisParams {
             inhibition_correlation_threshold: 0.9,
             migration_cooldown_duration: 20.0,
             rollback_pe_threshold: 0.2,
-            kwta_fraction: 0.15,
-            local_kwta_radius: 0.0,
-            local_kwta_k: 3,
+            competition_mode: CompetitionMode::default(),
+            winner_boost: 0.02,
+            tau_astrocytic: 500.0,
+            threshold_astrocytic: 0.5,
+            eta_v: 0.3,
+            eta_s: 0.5,
+            eta_f: 0.2,
         }
     }
 }
 
-fn default_local_kwta_k() -> usize { 3 }
+fn default_winner_boost() -> f64 { 0.02 }
+fn default_tau_astrocytic() -> f64 { 500.0 }
+fn default_threshold_astrocytic() -> f64 { 0.5 }
+fn default_eta_v() -> f64 { 0.3 }
+fn default_eta_s() -> f64 { 0.5 }
+fn default_eta_f() -> f64 { 0.2 }
 
 // === A) Synaptic Scaling ===
 
@@ -75,6 +145,7 @@ fn default_local_kwta_k() -> usize { 3 }
 pub fn synaptic_scaling(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
+    weight_max: f64,
 ) {
     for morphon in morphons.values() {
         let actual_rate = morphon.activity_history.mean();
@@ -94,6 +165,7 @@ pub fn synaptic_scaling(
         for (_, edge_idx) in incoming {
             if let Some(syn) = topology.synapse_mut(edge_idx) {
                 syn.weight *= scaling_factor;
+                syn.weight = syn.weight.clamp(-weight_max, weight_max);
             }
         }
     }
@@ -108,6 +180,15 @@ pub fn synaptic_scaling(
 ///
 /// Biology: homeostatic plasticity with an anti-correlation term. Neurons that
 /// fire indiscriminately receive stronger LTD-like depression.
+/// Selectivity-aware anti-hub scaling.
+///
+/// Depresses weights of high-firing morphons that are NOT selective (hubs),
+/// while protecting high-firing morphons that ARE selective (feature detectors).
+///
+/// A feature detector fires strongly for specific inputs and weakly otherwise
+/// (high variance in activity_history). A hub fires moderately for everything
+/// (low variance). Both can have the same mean firing rate — the distinction
+/// is in the variance of responses.
 pub fn anti_hub_scaling(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
@@ -134,11 +215,25 @@ pub fn anti_hub_scaling(
             continue;
         }
 
-        // How much above the hub threshold: 0.0 at threshold, 1.0 at max_rate
+        // Selectivity check: high variance = feature detector, low variance = hub.
+        // Coefficient of variation (CV = std/mean) is dimensionless and comparable
+        // across morphons with different baseline rates.
+        let variance = morphon.activity_history.variance();
+        let cv = if rate > 1e-6 { variance.sqrt() / rate } else { 0.0 };
+
+        // CV > 0.5 means the morphon's response varies substantially across inputs.
+        // This is a selective feature detector — protect it from depression.
+        if cv > 0.5 {
+            continue;
+        }
+
+        // This morphon fires a lot AND with low variance — it's an indiscriminate hub.
+        // Apply weight depression proportional to how far above threshold it is.
         let excess = (rate - hub_threshold) / (max_rate - hub_threshold).max(1e-10);
-        // Scale factor: 0.7 at threshold, 0.3 at max — aggressive depression
-        let scale = 1.0 - excess * 0.7;
-        let scale = scale.clamp(0.3, 0.95);
+        // Gentler scaling than before: 0.85 at threshold, 0.6 at max.
+        // The old 0.3× was too aggressive — even hubs carry some useful connectivity.
+        let scale = 1.0 - excess * 0.4;
+        let scale = scale.clamp(0.6, 0.95);
 
         let incoming = topology.incoming_synapses_mut(morphon.id);
         for (_, edge_idx) in incoming {
@@ -387,7 +482,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(1.0));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         // Activity (0.5) > setpoint (0.1), so scaling_factor = 0.1/0.5 = 0.2
@@ -411,7 +506,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         assert!(
@@ -433,7 +528,7 @@ mod tests {
         topo.add_morphon(1);
         topo.add_synapse(0, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, syn) = topo.synapse_between(0, 1).unwrap();
         assert!(
@@ -457,7 +552,7 @@ mod tests {
         topo.add_synapse(0, 1, Synapse::new(1.0));
         topo.add_synapse(2, 1, Synapse::new(0.5));
 
-        synaptic_scaling(&morphons, &mut topo);
+        synaptic_scaling(&morphons, &mut topo, 5.0);
 
         let (_, s1) = topo.synapse_between(0, 1).unwrap();
         let (_, s2) = topo.synapse_between(2, 1).unwrap();
@@ -610,5 +705,33 @@ mod tests {
             synapse_states: vec![],
         };
         assert!(!should_rollback(&cp, &[99], &morphons, &params));
+    }
+
+    // === CompetitionMode tests ===
+
+    #[test]
+    fn test_competition_mode_default_is_global_kwta() {
+        let params = HomeostasisParams::default();
+        assert!(matches!(params.competition_mode, CompetitionMode::GlobalKWTA { fraction, .. } if (fraction - 0.15).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_competition_mode_serde_roundtrip() {
+        let mode = CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.5,
+            target_rate: Some(0.12),
+        };
+        let json = serde_json::to_string(&mode).unwrap();
+        let roundtrip: CompetitionMode = serde_json::from_str(&json).unwrap();
+        assert!(matches!(roundtrip, CompetitionMode::LocalInhibition { interneuron_ratio, .. } if (interneuron_ratio - 0.1).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_winner_boost_default() {
+        let params = HomeostasisParams::default();
+        assert!((params.winner_boost - 0.02).abs() < 1e-6);
     }
 }

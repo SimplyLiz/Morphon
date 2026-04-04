@@ -19,6 +19,7 @@ Hard invariants enforced outside the learning loop. Cannot be modified by the sy
 - `max_fusion_rate_per_epoch: f64` (0.1) — tempo limit
 - `max_structural_changes_per_epoch: usize` (50) — total budget
 - `energy_floor: f64` (0.0) — minimum energy, prevents total starvation
+- `max_morphons` — population cap. Auto-derived from I/O dimensions (`max(500, io × 3)`) or explicitly set. The system cannot raise its own cap; it operates within it. See "Resource Pressure Signaling" below
 
 **Enforcement points:**
 - `check_connectivity()` called in `synaptogenesis()` before creating connections
@@ -100,6 +101,19 @@ Every synapse can track why it was formed and what reinforced it.
 ## Backward Compatibility
 
 All new fields use `#[serde(default)]`. Old snapshots deserialize without changes. Default `ConstitutionalConstraints` are permissive (energy_floor=0.0, connectivity=50) so existing behavior is unchanged.
+
+## Resource Pressure Signaling
+
+The system cannot modify its own `max_morphons` cap — that's a constitutional constraint. But it can signal resource pressure, allowing the caller (or a future Governor) to decide whether to raise the cap.
+
+**Current (implemented):** `system.inspect().max_morphons` vs `system.inspect().total_morphons` — caller compares manually. `system.inspect().at_morphon_cap` is a convenience boolean.
+
+**Phase 2: Governor-mediated resource requests.** When the system detects it's constrained (at cap + frustrated + division pressure > threshold), the Governor evaluates a resource request against:
+- Compute/memory budget constraints (deployment context)
+- Whether growth is productive (is performance still improving at the cap?)
+- Rate limiting (prevent request spam from oscillating frustration)
+
+The Governor can: approve (raise cap), deny (system must optimize within current topology), or counter-propose (trigger apoptosis of low-value morphons to free capacity without raising the cap). This keeps the constitutional guarantee intact — the system requests, the Governor decides.
 
 ## Phase 2 Preview
 

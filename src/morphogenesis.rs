@@ -73,7 +73,7 @@ impl Default for MorphogenesisParams {
             fusion_min_size: 3,
             migration_rate: 0.05,
             apoptosis_min_age: 1000,
-            apoptosis_energy_threshold: 0.1,
+            apoptosis_energy_threshold: 0.05,
             transdifferentiation_desire_threshold: 0.5,
             transdifferentiation_min_age: 500,
             max_morphons: None,  // auto-derive from I/O dimensions
@@ -128,17 +128,20 @@ pub struct MorphogenesisReport {
 pub fn synaptogenesis(
     morphons: &HashMap<MorphonId, Morphon>,
     topology: &mut Topology,
-    _params: &MorphogenesisParams,
+    params: &MorphogenesisParams,
     rng: &mut impl Rng,
     max_connectivity: usize,
     step_count: u64,
 ) -> usize {
     let mut created = 0;
 
-    // Pre-filter: only morphons with recent activity are candidates
+    // Pre-filter: only morphons with recent activity are candidates.
+    // InhibitoryInterneurons are excluded — their connectivity is managed by iSTDP.
+    let activity_threshold = params.synaptogenesis_threshold * 0.5; // scale: 0.6 * 0.5 = 0.3 at default
     let active: Vec<MorphonId> = morphons
         .values()
-        .filter(|m| m.activity_history.mean() >= 0.3)
+        .filter(|m| m.cell_type != CellType::InhibitoryInterneuron
+            && m.activity_history.mean() >= activity_threshold)
         .map(|m| m.id)
         .collect();
 
@@ -211,11 +214,15 @@ pub fn synaptogenesis(
                 continue;
             }
             let weight = rng.random_range(-0.5..0.5);
+            // Distance-dependent delay: nearby morphons get fast connections (~0.5),
+            // distant ones get slower propagation (up to ~2.0). Myelination can
+            // reduce effective delay later for consolidated pathways.
+            let delay = 0.5 + distance * 0.75;
             let justification = crate::justification::SynapticJustification::new(
                 crate::justification::FormationCause::ProximityFormation { distance },
                 step_count,
             );
-            topology.add_synapse(from.id, to.id, Synapse::new_justified(weight, justification));
+            topology.add_synapse(from.id, to.id, Synapse::new_justified(weight, justification).with_delay(delay));
             created += 1;
         }
     }
@@ -324,6 +331,55 @@ pub fn division(
     }
 
     born
+}
+
+/// Wire newly born Associative morphons to nearby InhibitoryInterneurons.
+/// Called after division to ensure new morphons participate in local competition.
+pub fn wire_to_nearby_interneurons(
+    morphons: &HashMap<MorphonId, Morphon>,
+    topology: &mut Topology,
+    competition_mode: &crate::homeostasis::CompetitionMode,
+    new_morphon_ids: &[MorphonId],
+) {
+    let initial_inh_weight = match competition_mode {
+        crate::homeostasis::CompetitionMode::LocalInhibition { initial_inh_weight, .. } => {
+            *initial_inh_weight
+        }
+        _ => return,
+    };
+
+    let interneurons: Vec<(MorphonId, crate::types::HyperbolicPoint)> = morphons.values()
+        .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+        .map(|m| (m.id, m.position.clone()))
+        .collect();
+
+    for &new_id in new_morphon_ids {
+        let new_m = match morphons.get(&new_id) {
+            Some(m) if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem => m,
+            _ => continue,
+        };
+
+        // Connect to the closest interneuron
+        let mut closest: Option<(MorphonId, f64)> = None;
+        for (inh_id, inh_pos) in &interneurons {
+            let dist = new_m.position.distance(inh_pos);
+            if closest.is_none() || dist < closest.unwrap().1 {
+                closest = Some((*inh_id, dist));
+            }
+        }
+
+        if let Some((inh_id, _)) = closest {
+            // Bidirectional wiring
+            if topology.synapse_between(new_id, inh_id).is_none() {
+                topology.add_synapse(new_id, inh_id,
+                    crate::morphon::Synapse::new(0.3).with_delay(0.5));
+            }
+            if topology.synapse_between(inh_id, new_id).is_none() {
+                topology.add_synapse(inh_id, new_id,
+                    crate::morphon::Synapse::new(initial_inh_weight).with_delay(0.5));
+            }
+        }
+    }
 }
 
 /// Run differentiation — Morphons specialize based on their activity patterns.
@@ -566,7 +622,20 @@ pub fn fusion(
     topology: &mut Topology,
     params: &MorphogenesisParams,
     effective_max_morphons: usize,
+    max_cluster_size_fraction: f64,
+    max_unverified_fraction: f64,
 ) -> usize {
+    // V3 Governor: block new fusion when too many clusters are unverified.
+    // Prevents unbounded cluster creation before existing ones are validated.
+    if !clusters.is_empty() {
+        let unverified = clusters.values()
+            .filter(|c| matches!(c.epistemic_state, crate::epistemic::EpistemicState::Hypothesis { .. }))
+            .count();
+        if unverified as f64 / clusters.len() as f64 > max_unverified_fraction {
+            return 0;
+        }
+    }
+
     // Find groups of tightly connected, correlated morphons
     // Simple heuristic: look at groups of neighbors that all fire together
     let mut fused = 0;
@@ -622,6 +691,13 @@ pub fn fusion(
             // Prediction error must be trending down (current PE < long-term average)
             if mean_pe >= mean_desire && mean_desire > 0.01 {
                 continue; // no evidence of prediction error reduction — deny fusion
+            }
+
+            // V3 Governor: cluster size check — no cluster may exceed max fraction
+            let candidate_size = members.len();
+            let total = morphons.len();
+            if total > 0 && (candidate_size as f64 / total as f64) > max_cluster_size_fraction {
+                continue;
             }
 
             let cluster_id = *next_cluster_id;
@@ -789,7 +865,7 @@ fn create_inhibitory_morphons_for_cluster(
             topology.add_synapse(
                 inh_id,
                 mid,
-                crate::morphon::Synapse::new_justified(inhibition_weight, justification),
+                crate::morphon::Synapse::new_justified(inhibition_weight, justification).with_delay(0.5),
             );
         }
 
@@ -1044,15 +1120,17 @@ pub fn apoptosis(
     let to_remove: Vec<MorphonId> = morphons
         .values()
         .filter(|m| {
-            m.age > params.apoptosis_min_age
+            // InhibitoryInterneurons are structural — never apoptose.
+            m.cell_type != CellType::InhibitoryInterneuron
+                && m.age > params.apoptosis_min_age
                 && m.fused_with.is_none()
                 // Two paths to apoptosis:
-                // (a) Isolated + starved: low degree AND low energy
-                // (b) Silent: activity < 0.1% regardless of energy or connectivity.
-                //     Being silent for 1000+ steps IS sufficient evidence of being
-                //     useless. Energy check not required — in sparse networks,
-                //     basal_regen > maintenance_cost so idle morphons never drain.
-                && ((topology.degree(m.id) < 3 && m.energy < params.apoptosis_energy_threshold)
+                // (a) Sustained energy deficit: below threshold for 500+ ticks.
+                //     With reward-correlated utility + superlinear firing cost,
+                //     hubs drain energy (high cost, uncorrelated reward). Duration
+                //     check prevents killing morphons with transient dips.
+                // (b) Silent: activity < 0.1% — useless regardless of energy.
+                && (m.ticks_below_energy_threshold > 500
                     || m.activity_history.mean() < 0.001)
 
                 // V3 Governor: protect minimum cell type fractions
@@ -1129,6 +1207,8 @@ pub fn step_glacial(
     next_cluster_id: &mut ClusterId,
     params: &MorphogenesisParams,
     effective_max_morphons: usize,
+    max_cluster_size_fraction: f64,
+    max_unverified_fraction: f64,
     arousal_level: f64,
     lifecycle: &LifecycleConfig,
     rng: &mut impl Rng,
@@ -1148,7 +1228,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.fusion {
-        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons);
+        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction);
         report.defusions = defusion(morphons, clusters, topology);
     }
 
@@ -1520,11 +1600,38 @@ mod tests {
     }
 
     #[test]
-    fn apoptosis_keeps_well_connected_morphons() {
+    fn apoptosis_keeps_energy_rich_morphons() {
         let mut morphons = HashMap::new();
         let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
         m.age = 2000;
-        m.energy = 0.01;
+        m.energy = 0.5; // above threshold — survives regardless of connectivity
+        // Give it some activity so it doesn't die via silent path (b)
+        for _ in 0..10 {
+            m.activity_history.push(1.0);
+        }
+        morphons.insert(1, m);
+
+        // Add enough healthy morphons to exceed min_morphons governor
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        for id in 100..112 {
+            let healthy = Morphon::new(id, HyperbolicPoint::origin(3));
+            morphons.insert(id, healthy);
+            topo.add_morphon(id);
+        }
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
+        assert_eq!(died, 0, "energy-rich morphons should survive regardless of connectivity");
+    }
+
+    #[test]
+    fn apoptosis_kills_energy_starved_well_connected_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 2000;
+        m.energy = 0.03;
+        m.ticks_below_energy_threshold = 600; // sustained deficit > 500 ticks
         morphons.insert(1, m);
 
         let mut topo = Topology::new();
@@ -1535,10 +1642,124 @@ mod tests {
         topo.add_synapse(2, 1, Synapse::new(0.5));
         topo.add_synapse(3, 1, Synapse::new(0.3));
         topo.add_synapse(1, 4, Synapse::new(0.2));
+        // degree = 3, but energy-starved — should die
+
+        // Add enough healthy morphons to exceed min_morphons governor
+        for id in 100..112 {
+            let healthy = Morphon::new(id, HyperbolicPoint::origin(3));
+            morphons.insert(id, healthy);
+            topo.add_morphon(id);
+        }
 
         let params = MorphogenesisParams::default();
         let died = apoptosis(&mut morphons, &mut topo, &params, 100);
-        assert_eq!(died, 0, "well-connected morphons (degree >= 3) should survive");
+        assert_eq!(died, 1, "energy-starved morphons should die regardless of connectivity");
+        assert!(!morphons.contains_key(&1));
+    }
+
+    #[test]
+    fn apoptosis_silent_path_kills_active_energy_rich_but_silent_morphons() {
+        let mut morphons = HashMap::new();
+        let mut m = Morphon::new(1, HyperbolicPoint::origin(3));
+        m.age = 2000;
+        m.energy = 0.8; // healthy energy
+        // Activity near zero (default RingBuffer) — silent for 100+ steps
+        morphons.insert(1, m);
+
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        // Give it high degree — should still die via silent path
+        for id in 2..6 {
+            topo.add_morphon(id);
+            topo.add_synapse(id, 1, Synapse::new(0.5));
+        }
+
+        // Add enough healthy morphons to exceed min_morphons governor
+        for id in 100..112 {
+            let healthy = Morphon::new(id, HyperbolicPoint::origin(3));
+            morphons.insert(id, healthy);
+            topo.add_morphon(id);
+        }
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
+        assert_eq!(died, 1, "silent morphon should die via path (b) regardless of energy or connectivity");
+        assert!(!morphons.contains_key(&1));
+    }
+
+    #[test]
+    fn apoptosis_rate_limiting() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        // Create 20 apoptosis-eligible morphons (old, low energy, default silent activity)
+        for id in 1..=20 {
+            let mut m = Morphon::new(id, HyperbolicPoint::origin(3));
+            m.age = 2000;
+            m.energy = 0.01;
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+        // Add healthy morphons to exceed min_morphons
+        for id in 100..130 {
+            let healthy = Morphon::new(id, HyperbolicPoint::origin(3));
+            morphons.insert(id, healthy);
+            topo.add_morphon(id);
+        }
+
+        let params = MorphogenesisParams::default();
+        // recent_births=3 → max_deaths = 3 + 2 = 5
+        let died = apoptosis(&mut morphons, &mut topo, &params, 3);
+        assert_eq!(died, 5, "apoptosis should be rate-limited to recent_births + 2");
+    }
+
+    #[test]
+    fn apoptosis_min_morphons_governor() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        // Create exactly min_morphons eligible morphons
+        let params = MorphogenesisParams::default();
+        for id in 1..=(params.min_morphons as u64) {
+            let mut m = Morphon::new(id, HyperbolicPoint::origin(3));
+            m.age = 2000;
+            m.energy = 0.01;
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
+        assert_eq!(died, 0, "apoptosis should not fire when at min_morphons floor");
+    }
+
+    #[test]
+    fn apoptosis_protects_last_sensory_morphon() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        // One sensory morphon — eligible for death but protected by diversity guard
+        let mut sensory = Morphon::new(1, HyperbolicPoint::origin(3));
+        sensory.age = 2000;
+        sensory.energy = 0.01;
+        sensory.cell_type = CellType::Sensory;
+        morphons.insert(1, sensory);
+        topo.add_morphon(1);
+
+        // Add enough non-sensory morphons so removing the sensory one
+        // would violate min_sensory_fraction (0.05).
+        // With 1 sensory out of 12 total = 8.3% > 5%, so it can die.
+        // With 1 sensory out of 25 total = 4% < 5%, so it's protected.
+        for id in 100..124 {
+            let mut m = Morphon::new(id, HyperbolicPoint::origin(3));
+            m.cell_type = CellType::Associative;
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+
+        let params = MorphogenesisParams::default();
+        let died = apoptosis(&mut morphons, &mut topo, &params, 100);
+        assert_eq!(died, 0, "last sensory morphon near min_sensory_fraction should be protected");
+        assert!(morphons.contains_key(&1));
     }
 
     // === Fusion ===
@@ -1558,9 +1779,17 @@ mod tests {
             for _ in 0..100 { m.activity_history.push(0.5); }
             morphons.insert(i, m);
         }
+        // Add bystander morphons so the fusion candidate (3/13 ≈ 23%) passes
+        // the max_cluster_size_fraction check (30% cap).
+        for i in 10..20 {
+            let far_pos = HyperbolicPoint { coords: vec![0.5, 0.5, 0.0], curvature: 1.0 };
+            let mut m = Morphon::new(i, far_pos);
+            m.cell_type = CellType::Associative;
+            morphons.insert(i, m);
+        }
 
         let mut topo = Topology::new();
-        for i in 0..3 { topo.add_morphon(i); }
+        for &id in morphons.keys() { topo.add_morphon(id); }
         topo.add_synapse(0, 1, Synapse::new(0.5));
         topo.add_synapse(0, 2, Synapse::new(0.3));
 
@@ -1571,7 +1800,7 @@ mod tests {
 
         let fused = fusion(
             &mut morphons, &mut clusters, &mut next_cluster_id,
-            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS,
+            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         assert_eq!(fused, 1, "should form one cluster");
@@ -1781,7 +2010,7 @@ mod tests {
         let lifecycle = LifecycleConfig { division: false, ..Default::default() };
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
-            &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.0, &lifecycle, &mut rng, None, 0,
+            &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, 0.0, &lifecycle, &mut rng, None, 0,
         );
         assert_eq!(report.morphons_born, 0);
     }
@@ -1895,7 +2124,7 @@ mod tests {
         let mut clusters = HashMap::new();
         let fused = fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params, DEFAULT_MAX_MORPHONS,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         if fused > 0 {
@@ -1927,7 +2156,7 @@ mod tests {
         let mut clusters = HashMap::new();
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
-            &mut topology, &params, DEFAULT_MAX_MORPHONS,
+            &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
         );
 
         if !clusters.is_empty() {
@@ -1991,5 +2220,87 @@ mod tests {
         };
 
         (morphons, topology, params, 0, 100)
+    }
+
+    // === Distance-dependent delay in synaptogenesis ===
+
+    #[test]
+    fn synaptogenesis_sets_delay_from_distance() {
+        use crate::topology::Topology;
+
+        let mut morphons = HashMap::new();
+        let mut topology = Topology::new();
+        let mut rng = rand::rng();
+
+        // Place two morphons close together (distance ≈ 0)
+        let origin = HyperbolicPoint { coords: vec![0.0, 0.0, 0.0], curvature: 1.0 };
+        let near = HyperbolicPoint { coords: vec![0.01, 0.0, 0.0], curvature: 1.0 };
+        // And one far away (distance > 1.0 in hyperbolic space)
+        let far = HyperbolicPoint { coords: vec![0.7, 0.0, 0.0], curvature: 1.0 };
+
+        let mut m0 = Morphon::new(0, origin.clone());
+        m0.cell_type = CellType::Associative;
+        let mut m1 = Morphon::new(1, near);
+        m1.cell_type = CellType::Associative;
+        let mut m2 = Morphon::new(2, far);
+        m2.cell_type = CellType::Associative;
+
+        for m in [&m0, &m1, &m2] {
+            topology.add_morphon(m.id);
+        }
+        morphons.insert(0, m0);
+        morphons.insert(1, m1);
+        morphons.insert(2, m2);
+
+        let params = MorphogenesisParams::default();
+
+        // Run synaptogenesis many times to ensure connections form
+        for _ in 0..500 {
+            synaptogenesis(&morphons, &mut topology, &params, &mut rng, 50, 0);
+        }
+
+        // Check that formed synapses have distance-dependent delays
+        if let Some((_, syn_near)) = topology.synapse_between(0, 1)
+            .or(topology.synapse_between(1, 0))
+        {
+            // Close morphons: distance ≈ 0.02, delay ≈ 0.5 + 0.02*0.75 ≈ 0.515
+            assert!(syn_near.delay < 1.0,
+                "near synapse should have short delay, got {}", syn_near.delay);
+            assert!(syn_near.delay >= 0.5,
+                "delay floor is 0.5, got {}", syn_near.delay);
+        }
+
+        if let Some((_, syn_far)) = topology.synapse_between(0, 2)
+            .or(topology.synapse_between(2, 0))
+        {
+            // Far morphons: distance > 1.0, delay > 0.5 + 1.0*0.75 = 1.25
+            assert!(syn_far.delay > 1.0,
+                "far synapse should have longer delay, got {}", syn_far.delay);
+        }
+    }
+
+    #[test]
+    fn synaptogenesis_delay_myelination_chain() {
+        // Verify the full chain: distance → delay → myelination → reduced effective_delay
+        let mut syn = Synapse::new(0.5).with_delay(2.0); // distant synapse
+        let base_effective = syn.effective_delay();
+        assert!((base_effective - 2.0).abs() < 1e-10);
+
+        // Simulate consolidation + activity → myelination (neutral context)
+        let ctx = crate::morphon::MyelinationContext {
+            arousal: 0.0, reward: 0.0, energy_pressure: 0.0,
+        };
+        syn.consolidation_level = 1.0;
+        syn.activity_trace = 1.0;
+        for _ in 0..5000 {
+            syn.update_myelination(1.0, &ctx);
+        }
+
+        assert!(syn.myelination > 0.3,
+            "should have meaningful myelination after 5000 steps: {}", syn.myelination);
+        assert!(syn.effective_delay() < base_effective,
+            "myelination should reduce effective delay: {} vs {}", syn.effective_delay(), base_effective);
+        assert!(syn.effective_delay() >= 0.5,
+            "effective delay floor respected: {}", syn.effective_delay());
     }
 }

@@ -34,6 +34,10 @@ pub enum CellType {
     Modulatory,
     /// Part of a fused cluster — no longer fully autonomous.
     Fused,
+    /// Intra-group inhibitory interneuron for local competition (iSTDP).
+    /// Distinguished from Modulatory (inter-cluster) to enable separate
+    /// learning rules and lifecycle management.
+    InhibitoryInterneuron,
 }
 
 impl Default for CellType {
@@ -184,6 +188,7 @@ impl ActivationFn {
             CellType::Motor => ActivationFn::Burst,
             CellType::Modulatory => ActivationFn::Oscillatory,
             CellType::Fused => ActivationFn::Sigmoid,
+            CellType::InhibitoryInterneuron => ActivationFn::Sigmoid,
         }
     }
 }
@@ -218,6 +223,10 @@ pub fn default_receptors(cell_type: CellType) -> ReceptorSet {
             set.insert(ModulatorType::Reward);
             set.insert(ModulatorType::Homeostasis);
         }
+        CellType::InhibitoryInterneuron => {
+            // Interneurons respond to homeostasis only — not reward-gated.
+            set.insert(ModulatorType::Homeostasis);
+        }
     }
     set
 }
@@ -239,6 +248,18 @@ pub fn default_receptor_sensitivity(cell_type: CellType) -> HashMap<ModulatorTyp
         (ch, val)
     })
     .collect()
+}
+
+/// Default intrinsic noise amplitude for a cell type.
+/// Motor morphons get zero noise (output must be deterministic).
+/// Associative morphons get reduced noise (readout stability).
+/// Sensory/Stem/Modulatory get full noise (exploration).
+pub fn intrinsic_noise_for(cell_type: CellType) -> f64 {
+    match cell_type {
+        CellType::Motor => 0.0,
+        CellType::Associative => 0.08,
+        _ => 0.1,
+    }
 }
 
 /// Position in N-dimensional hyperbolic information space (Poincaré ball model).

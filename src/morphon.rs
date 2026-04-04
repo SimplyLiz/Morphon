@@ -14,7 +14,7 @@ use std::collections::HashMap;
 pub struct Synapse {
     /// Connection weight.
     pub weight: f64,
-    /// Signal delay (learnable).
+    /// Signal delay — initialized from hyperbolic distance, then modulated by myelination.
     pub delay: f64,
     /// Fast eligibility trace — transient marking for three-factor learning (τ ~ 100ms).
     pub eligibility: f64,
@@ -39,7 +39,7 @@ pub struct Synapse {
     /// Incremented on post-spike, decays exponentially with tau_trace.
     pub post_trace: f64,
 
-    /// Slow-decaying activity trace for myelination gating (τ ~ 200 steps).
+    /// Slow-decaying activity trace for myelination gating (τ=200 medium ticks ≈ 2000 sim steps).
     /// Bumped in apply_weight_update (medium path), read in update_myelination (slow path).
     /// Solves the timing mismatch where fast traces (eligibility τ=20, pre/post τ=10)
     /// decay to zero between slow ticks.
@@ -97,17 +97,67 @@ impl Synapse {
         (self.delay / speed_factor).max(0.5) // minimum 0.5 tick delay
     }
 
-    /// Update myelination level based on consolidation and recent activity.
-    /// Myelination is very slow (τ ~ 5000 steps) — tracks proven, consolidated pathways.
-    /// Uses `activity_trace` (bumped in apply_weight_update on medium tick) as the
-    /// activity signal — it decays slowly enough (τ=200) to survive between slow ticks.
-    pub fn update_myelination(&mut self, dt: f64) {
-        let active = if self.activity_trace > 0.1 { 1.0 } else { 0.0 };
-        let target = self.consolidation_level * active;
-        let tau_myelin = 5000.0;
-        self.myelination += (target - self.myelination) * (dt / tau_myelin);
-        self.myelination = self.myelination.clamp(0.0, 1.0);
+    /// Update myelination via treadmilling dynamics with neuromodulatory gating.
+    ///
+    /// Biology (Auer et al. 2019): myelin thickness is a dynamic equilibrium —
+    /// new layers added at inner tongue (activity-driven), old layers removed
+    /// at outer tongue (constitutive). Three interacting processes:
+    ///
+    /// 1. **Wrapping** (additive): local activity × consolidation, gated by
+    ///    arousal sensitivity. Reward biases toward tagged synapses.
+    /// 2. **Treadmill removal** (subtractive): constitutive slow removal,
+    ///    representing outer-tongue turnover (thrombin/neurofascin 155).
+    /// 3. **Stress inhibition**: energy pressure suppresses wrapping;
+    ///    removal continues → net demyelination under sustained stress.
+    pub fn update_myelination(&mut self, dt: f64, ctx: &MyelinationContext) {
+        let tau_wrap = 5000.0;      // wrapping timescale (slow)
+        let tau_removal = 50000.0;  // treadmill removal — slower than wrapping so
+                                    // equilibrium settles near target, not far below it
+
+        // --- Wrapping (inner tongue addition) ---
+        // Local signal: consolidated + active pathway → OPC process wraps.
+        let activity_signal = if self.activity_trace > 0.1 { 1.0 } else { 0.0 };
+        let local_drive = self.consolidation_level * activity_signal;
+
+        // Neuromodulatory gating of OPC sensitivity (threshold shift, not rate).
+        // High arousal: OPCs respond to weaker activity → faster myelination.
+        // Maps to: norepinephrine driving OPC differentiation (Barron & Kim 2023).
+        let sensitivity = 1.0 + ctx.arousal * 0.5;
+
+        // Reward bias: recently-tagged synapses get a myelination boost.
+        // Maps to: dopamine D1/D2 on OL lineage cells (Monje 2024).
+        let reward_bias = if self.tag > 0.1 { ctx.reward * 0.3 } else { 0.0 };
+
+        // Stress gate: energy pressure slows wrapping (doesn't block it).
+        // Maps to: cortisol down-regulating IGF-1 → OPC differentiation slowed.
+        // 0.5× multiplier: at full energy pressure (1.0), wrapping is halved, not zeroed.
+        let stress_gate = (1.0 - ctx.energy_pressure * 0.5).max(0.2);
+
+        let wrap_target = (local_drive * sensitivity + reward_bias) * stress_gate;
+
+        // --- Treadmill removal (outer tongue turnover) ---
+        // Constitutive, proportional to current level. Always running.
+        let removal = self.myelination * (dt / tau_removal);
+
+        // --- Net change ---
+        let wrapping = (wrap_target - self.myelination) * (dt / tau_wrap);
+        self.myelination = (self.myelination + wrapping - removal).clamp(0.0, 1.0);
     }
+}
+
+/// Neuromodulatory context for myelination decisions.
+/// Passed from System on the slow path — the synapse doesn't know about
+/// global state, so the caller provides what the "oligodendrocyte" senses.
+#[derive(Debug, Clone, Copy)]
+pub struct MyelinationContext {
+    /// Arousal (norepinephrine) — promotes OPC differentiation.
+    /// High arousal → OPCs more sensitive to activity → faster myelination.
+    pub arousal: f64,
+    /// Reward (dopamine) — biases myelination toward recently-rewarded pathways.
+    pub reward: f64,
+    /// Energy pressure (0.0 = abundant, 1.0 = depleted).
+    /// High pressure → inhibit myelination (cortisol/stress analog).
+    pub energy_pressure: f64,
 }
 
 fn default_plasticity_rate() -> f64 { 1.0 }
@@ -153,6 +203,18 @@ pub struct MetabolicConfig {
     /// V2: Energy drawn from cluster pool per tick by each fused morphon.
     #[serde(default = "default_cluster_draw")]
     pub cluster_energy_draw_per_tick: f64,
+
+    /// Energy earned by morphons that fire when reward signal is positive.
+    /// Hubs fire for all inputs → reward is ±symmetric → net zero income.
+    /// Specialists fire for correct class → mostly positive → positive income.
+    #[serde(default)]
+    pub reward_energy_coefficient: f64,
+
+    /// Superlinear firing cost factor. Firing cost scales as:
+    /// `firing_cost * (1.0 + activity_rate * superlinear_firing_factor)`
+    /// At 50% rate with factor=2.0, cost is 3× base. At 5%, cost is 1.1× base.
+    #[serde(default)]
+    pub superlinear_firing_factor: f64,
 }
 
 fn default_cluster_reduction() -> f64 { 0.4 }
@@ -164,13 +226,15 @@ impl Default for MetabolicConfig {
             base_cost: 0.001,
             synapse_cost: 0.0001,  // reduced 5× — was starving hidden layer
             utility_reward: 0.02,
-            basal_regen: 0.005,    // generous trickle — silent morphons survive for anchor/sail
+            basal_regen: 0.003,    // tight trickle — hubs with superlinear cost go net-negative
             firing_cost: 0.002,    // reduced 2× — firing should be cheap
             cluster_overhead_per_tick: 0.0005,
             reward_for_successful_output: 0.05,
-            reward_for_verification: 0.0, // Phase 2 placeholder
+            reward_for_verification: 0.02, // energy bonus when cluster reaches Supported
             cluster_base_cost_reduction: 0.4,
             cluster_energy_draw_per_tick: 0.0003,
+            reward_energy_coefficient: 0.0,
+            superlinear_firing_factor: 0.0,
         }
     }
 }
@@ -253,6 +317,12 @@ pub struct Morphon {
     #[serde(default = "default_plasticity_rate")]
     pub plasticity_rate: f64,
 
+    // === Metabolic duration tracking ===
+    /// Consecutive ticks below apoptosis energy threshold.
+    /// Apoptosis requires sustained energy deficit, not a transient dip.
+    #[serde(default)]
+    pub ticks_below_energy_threshold: u32,
+
     // === V2: Frustration-Driven Exploration ===
     /// Per-morphon frustration state for escaping local minima via adaptive noise.
     #[serde(default)]
@@ -270,7 +340,24 @@ pub struct Morphon {
     /// Recent prediction error deltas for adaptation tracking.
     #[serde(default)]
     pub recent_pe_deltas: RingBuffer,
+
+    // === V2: Astrocytic Gate (AGMP-inspired) ===
+    /// Slow state variable gating excitatory plasticity. Updated every medium tick.
+    /// gate = sigmoid(astrocytic_state - threshold_a), multiplied into weight updates.
+    #[serde(default = "default_astrocytic_state")]
+    pub astrocytic_state: f64,
+
+    // === V2: Per-Morphon Noise ===
+    /// Base noise amplitude for membrane potential perturbation.
+    /// Initialized from cell type (Motor=0.0, Associative=0.08, others=0.1),
+    /// inherited with mutation in divide(), updated on differentiation.
+    /// Final noise = intrinsic_noise × frustration.noise_amplitude.
+    #[serde(default = "default_intrinsic_noise")]
+    pub intrinsic_noise: f64,
 }
+
+fn default_astrocytic_state() -> f64 { 1.0 }
+fn default_intrinsic_noise() -> f64 { 0.1 }
 
 impl Morphon {
     /// Create a new stem-cell Morphon at the given position.
@@ -302,10 +389,13 @@ impl Morphon {
             homeostatic_setpoint: 0.15,
             feedback_signal: 0.0,
             plasticity_rate: 1.0, // default; overwritten by developmental program
+            ticks_below_energy_threshold: 0,
             frustration: FrustrationState::default(),
             receptor_sensitivity: default_receptor_sensitivity(CellType::Stem),
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
+            astrocytic_state: 1.0,
+            intrinsic_noise: crate::types::intrinsic_noise_for(CellType::Stem),
         }
     }
 
@@ -349,6 +439,7 @@ impl Morphon {
             feedback_signal: 0.0,
             // Child inherits parent's plasticity with mutation — anchors beget anchors
             plasticity_rate: (self.plasticity_rate + rng.random_range(-0.1..0.1)).clamp(0.1, 2.0),
+            ticks_below_energy_threshold: 0,
             frustration: FrustrationState::default(),
             // V2: Child inherits parent's receptor sensitivities with small mutation
             receptor_sensitivity: self.receptor_sensitivity.iter().map(|(&ch, &val)| {
@@ -357,6 +448,9 @@ impl Morphon {
             }).collect(),
             recent_modulation: HashMap::new(),
             recent_pe_deltas: RingBuffer::new(10),
+            astrocytic_state: self.astrocytic_state,
+            // Child inherits parent's noise with mutation — noisy parents beget noisy children
+            intrinsic_noise: (self.intrinsic_noise + rng.random_range(-0.01..0.01)).clamp(0.0, 0.2),
         }
     }
 
@@ -382,17 +476,11 @@ impl Morphon {
         // only the current input, not accumulated history. Without this, noise
         // accumulates over hundreds of steps and drifts motors to ±clamp.
         let leak_rate = if self.cell_type == CellType::Motor { 1.0 } else { 0.1 };
-        // Pseudo-random noise centered at zero.
-        // Motor morphons get reduced noise (0.02) to prevent accumulation drift.
-        // Other types get standard noise (0.1) for baseline activity.
+        // Pseudo-random noise centered at zero, scaled by per-morphon intrinsic_noise.
+        // intrinsic_noise is set per cell type (Motor=0, Associative=0.08, others=0.1),
+        // inherited in divide(), updated on differentiation. Frustration amplifies on top.
         let noise_raw = (self.id.wrapping_mul(self.age).wrapping_add(7919) % 1000) as f64 / 1000.0;
-        let noise_scale = match self.cell_type {
-            CellType::Motor => 0.0,
-            // Reduced noise for Associative morphons — preserves pattern stability
-            // for readout learning while frustration scaling still drives exploration.
-            CellType::Associative => 0.02 * self.frustration.noise_amplitude,
-            _ => 0.1 * self.frustration.noise_amplitude,
-        };
+        let noise_scale = self.intrinsic_noise * self.frustration.noise_amplitude;
         let noise = (noise_raw - 0.5) * noise_scale;
         self.prev_potential = self.potential;
         self.potential = self.potential * (1.0 - leak_rate * dt) + self.input_accumulator + noise;
@@ -411,7 +499,8 @@ impl Morphon {
         self.fired = activation > (self.threshold + threshold_bias) && self.energy > 0.0;
         if self.fired {
             self.refractory_timer = 1.0; // refractory period (1 step)
-            self.energy -= metabolic.firing_cost;
+            let rate = self.activity_history.mean();
+            self.energy -= metabolic.firing_cost * (1.0 + rate * metabolic.superlinear_firing_factor);
             self.activity_history.push(1.0);
         } else {
             self.activity_history.push(0.0);
@@ -500,6 +589,15 @@ impl Morphon {
         // Clamp to [0, 1]
         self.energy = self.energy.clamp(0.0, 1.0);
 
+        // Track sustained energy deficit for duration-based apoptosis.
+        // Hubs drain energy through superlinear firing cost; this counter
+        // ensures apoptosis only fires after sustained deficit, not transient dips.
+        if self.energy < 0.1 {
+            self.ticks_below_energy_threshold = self.ticks_below_energy_threshold.saturating_add(1);
+        } else {
+            self.ticks_below_energy_threshold = 0;
+        }
+
         // Tick down migration cooldown
         if self.migration_cooldown > 0.0 {
             self.migration_cooldown -= dt;
@@ -507,14 +605,6 @@ impl Morphon {
 
         // Reset accumulator for next step
         self.input_accumulator = 0.0;
-    }
-
-    /// Check if this Morphon should undergo apoptosis (programmed death).
-    pub fn should_apoptose(&self) -> bool {
-        self.age > 1000
-            && self.energy < 0.1
-            && self.activity_history.mean() < 0.01
-            && self.fused_with.is_none()
     }
 
     /// Check if this Morphon is ready to divide.
@@ -539,6 +629,7 @@ impl Morphon {
         self.activation_fn = ActivationFn::for_cell_type(target);
         self.receptors = default_receptors(target);
         self.receptor_sensitivity = default_receptor_sensitivity(target);
+        self.intrinsic_noise = crate::types::intrinsic_noise_for(target);
         true
     }
 
@@ -554,6 +645,7 @@ impl Morphon {
             self.activation_fn = ActivationFn::Sigmoid;
             self.receptors = default_receptors(CellType::Stem);
             self.receptor_sensitivity = default_receptor_sensitivity(CellType::Stem);
+            self.intrinsic_noise = crate::types::intrinsic_noise_for(CellType::Stem);
         }
     }
 }
@@ -651,14 +743,20 @@ mod tests {
 
     // === Myelination ===
 
+    /// Neutral context: no neuromodulatory influence.
+    fn neutral_ctx() -> MyelinationContext {
+        MyelinationContext { arousal: 0.0, reward: 0.0, energy_pressure: 0.0 }
+    }
+
     #[test]
     fn myelination_increases_with_consolidation_and_activity() {
         let mut syn = Synapse::new(0.5);
         syn.consolidation_level = 0.8;
         syn.activity_trace = 1.0; // above 0.1 gate
+        let ctx = neutral_ctx();
 
         for _ in 0..1000 {
-            syn.update_myelination(1.0);
+            syn.update_myelination(1.0, &ctx);
         }
 
         assert!(syn.myelination > 0.0, "myelination should increase: {}", syn.myelination);
@@ -670,12 +768,13 @@ mod tests {
         let mut syn = Synapse::new(0.5);
         syn.consolidation_level = 0.0;
         syn.activity_trace = 1.0;
+        let ctx = neutral_ctx();
 
         for _ in 0..1000 {
-            syn.update_myelination(1.0);
+            syn.update_myelination(1.0, &ctx);
         }
 
-        assert!((syn.myelination - 0.0).abs() < 1e-10,
+        assert!(syn.myelination.abs() < 1e-6,
             "unmyelinated without consolidation: {}", syn.myelination);
     }
 
@@ -709,12 +808,133 @@ mod tests {
         syn.myelination = 0.5;
         syn.consolidation_level = 0.8;
         syn.activity_trace = 0.0; // inactive — no recent signal
+        let ctx = neutral_ctx();
 
         for _ in 0..2000 {
-            syn.update_myelination(1.0);
+            syn.update_myelination(1.0, &ctx);
         }
 
         assert!(syn.myelination < 0.5,
             "myelination should decay without activity: {}", syn.myelination);
+    }
+
+    #[test]
+    fn arousal_accelerates_myelination() {
+        let mut syn_calm = Synapse::new(0.5);
+        syn_calm.consolidation_level = 0.8;
+        syn_calm.activity_trace = 1.0;
+        let mut syn_aroused = syn_calm.clone();
+
+        let calm = neutral_ctx();
+        let aroused = MyelinationContext { arousal: 1.0, reward: 0.0, energy_pressure: 0.0 };
+
+        for _ in 0..1000 {
+            syn_calm.update_myelination(1.0, &calm);
+            syn_aroused.update_myelination(1.0, &aroused);
+        }
+
+        assert!(syn_aroused.myelination > syn_calm.myelination,
+            "arousal should accelerate myelination: aroused={} vs calm={}",
+            syn_aroused.myelination, syn_calm.myelination);
+    }
+
+    #[test]
+    fn reward_biases_tagged_synapses() {
+        let mut syn_tagged = Synapse::new(0.5);
+        syn_tagged.consolidation_level = 0.3; // low consolidation
+        syn_tagged.activity_trace = 0.5;
+        syn_tagged.tag = 0.5; // has active tag
+        let mut syn_untagged = syn_tagged.clone();
+        syn_untagged.tag = 0.0; // no tag
+
+        let ctx = MyelinationContext { arousal: 0.0, reward: 1.0, energy_pressure: 0.0 };
+
+        for _ in 0..1000 {
+            syn_tagged.update_myelination(1.0, &ctx);
+            syn_untagged.update_myelination(1.0, &ctx);
+        }
+
+        assert!(syn_tagged.myelination > syn_untagged.myelination,
+            "reward should bias myelination toward tagged synapses: tagged={} vs untagged={}",
+            syn_tagged.myelination, syn_untagged.myelination);
+    }
+
+    #[test]
+    fn energy_pressure_inhibits_myelination() {
+        let mut syn_healthy = Synapse::new(0.5);
+        syn_healthy.consolidation_level = 0.8;
+        syn_healthy.activity_trace = 1.0;
+        let mut syn_stressed = syn_healthy.clone();
+
+        let healthy = neutral_ctx();
+        let stressed = MyelinationContext { arousal: 0.0, reward: 0.0, energy_pressure: 0.9 };
+
+        for _ in 0..1000 {
+            syn_healthy.update_myelination(1.0, &healthy);
+            syn_stressed.update_myelination(1.0, &stressed);
+        }
+
+        assert!(syn_healthy.myelination > syn_stressed.myelination,
+            "energy pressure should inhibit myelination: healthy={} vs stressed={}",
+            syn_healthy.myelination, syn_stressed.myelination);
+    }
+
+    #[test]
+    fn treadmill_erodes_myelin_without_activity() {
+        // Start with full myelination but no activity or consolidation.
+        // Treadmill removal should erode it over time.
+        let mut syn = Synapse::new(0.5);
+        syn.myelination = 1.0;
+        syn.consolidation_level = 0.0;
+        syn.activity_trace = 0.0;
+        let ctx = neutral_ctx();
+
+        for _ in 0..10000 {
+            syn.update_myelination(1.0, &ctx);
+        }
+
+        assert!(syn.myelination < 0.3,
+            "treadmill should erode unmaintained myelin: {}", syn.myelination);
+    }
+
+    #[test]
+    fn superlinear_firing_cost_penalizes_high_rate_morphons() {
+        let mut metabolic = MetabolicConfig::default();
+        metabolic.superlinear_firing_factor = 2.0;
+        let fc = default_frustration_config();
+
+        // High-rate morphon: fill activity history with 50% firing
+        let mut hub = make_morphon();
+        hub.energy = 1.0;
+        hub.threshold = -100.0; // force firing
+        for _ in 0..50 {
+            hub.activity_history.push(1.0);
+        }
+        for _ in 0..50 {
+            hub.activity_history.push(0.0);
+        }
+        let hub_energy_before = hub.energy;
+        hub.input_accumulator = 1.0;
+        hub.step(1.0, 0.0, &metabolic, &fc, 0.0);
+        let hub_cost = hub_energy_before - hub.energy;
+
+        // Low-rate morphon: fill activity history with 5% firing
+        let mut specialist = make_morphon();
+        specialist.energy = 1.0;
+        specialist.threshold = -100.0;
+        for _ in 0..5 {
+            specialist.activity_history.push(1.0);
+        }
+        for _ in 0..95 {
+            specialist.activity_history.push(0.0);
+        }
+        let spec_energy_before = specialist.energy;
+        specialist.input_accumulator = 1.0;
+        specialist.step(1.0, 0.0, &metabolic, &fc, 0.0);
+        let spec_cost = spec_energy_before - specialist.energy;
+
+        assert!(hub.fired && specialist.fired, "both should fire");
+        assert!(hub_cost > spec_cost * 1.5,
+            "hub should pay significantly more: hub={hub_cost:.4}, spec={spec_cost:.4}");
     }
 }
