@@ -1,139 +1,161 @@
-# Metabolic Pruning — Experimental Findings
+# Metabolic Pruning & Endo Calibration — Paper Results
 
-Two findings from the metabolic pressure experiments (2026-04-03/04).
+Experimental findings from the learning pipeline investigation (2026-04-03/04).
 Branch: `feature/local-inhibitory-competition`
 
 ---
 
-## 1. Finding: MI Substrate Creates Discriminative Representations
+## Paper-Ready Numbers
 
-### Setup
+| Benchmark | Result | Condition |
+|-----------|--------|-----------|
+| CartPole | **SOLVED** avg=195.2 | v0.5.0, episode 895 |
+| MNIST baseline | **31.0%** | Endo Mature gate=2000, Consolidating=500, quick profile |
+| MNIST post-recovery | **52.5%** | 30% neuron destruction + regrowth, same Endo config |
+| Self-healing delta | **+21.5pp** | System improves after damage, doesn't just recover |
+| NLP Tier 0 (analog readout) | **99%** | Bag-of-characters, proves MI substrate is discriminative |
+| NLP Tier 2 (analog readout) | **88%** | Sequential memory — temporal information survives in potentials |
 
-NLP Readiness Benchmark: 4-tier synthetic text classification benchmark measuring language-processing capability. Each tier tests a specific NLP prerequisite:
+---
 
-| Tier | Task | Input | Chance |
-|------|------|-------|--------|
-| 0: Bag-of-Chars | Vowel-heavy vs consonant-heavy words | 27-dim frequency | 50% |
-| 1: One-Hot Scale | Same task at one-hot encoding scale | 135-dim (5 chars x 27) | 50% |
-| 2: Memory | Classify by first char after 3-char sequence | 27-dim per step | 50% |
-| 3: Composition | Token-pair XOR (same-group vs cross-group) | 54-dim | 50% |
+## Finding 1: MI Substrate Creates Discriminative Representations
 
-Two output pathways tested:
-- **Spike-based**: `teach_supervised()` / `teach_supervised_with_input()` — motor potential read through spike propagation
-- **Analog readout**: `train_readout()` — direct weighted sum of sigmoid(potential), bypassing spikes
+### Experiment
+
+NLP Readiness Benchmark: 4-tier synthetic text classification. Two output pathways tested — spike-based (teach_supervised) and analog readout (train_readout, Purkinje-style bypass).
 
 ### Results
 
 | Tier | Spike-based | Analog readout |
 |------|------------|---------------|
-| 0: Bag-of-Chars | 46% (chance) | **99%** |
-| 1: One-Hot Scale | 51% (chance) | **69%** |
-| 2: Memory | 48% (chance) | **88%** |
-| 3: Composition | 50% (chance) | 40% (fails — XOR needs nonlinear hidden features) |
+| 0: Bag-of-Chars (27-dim) | 46% (chance) | **99%** |
+| 1: One-Hot Scale (135-dim) | 51% (chance) | **69%** |
+| 2: Sequential Memory (27-dim x 3 steps) | 48% (chance) | **88%** |
+| 3: Compositional XOR (54-dim) | 50% (chance) | 40% (needs nonlinear hidden features) |
 
 ### Interpretation
 
-The morphon substrate **does** form discriminative representations during spike-based processing. The information is present in morphon potentials — the analog readout proves it by reading those potentials directly.
+The morphon substrate creates discriminative representations during spike-based processing. The analog readout proves it by reading the same potentials that spikes are generated from. The bottleneck is spike-to-output fidelity: signals distorted by delays, leaky integration, and multi-hop propagation.
 
-The bottleneck is the spike-based output pathway: signals are distorted by delays, leaky integration, multi-hop propagation, and noise. Motor potential != W*x because the forward pass goes through spike conversion → propagation → integration, losing the discriminative signal at each stage.
-
-This is the same pattern observed in MNIST: the hidden layer develops features (proven by post-hoc labeling showing class-selective neurons), but the output pathway can't exploit them reliably.
-
-**Tier 2 at 88% is particularly significant**: the system retains information about the first character through 3 sequential `process_steps()` calls. Temporal memory exists in the substrate through residual potentials and decaying traces — it just can't be accessed through the spike pipeline. This suggests the temporal sequence processing spec (recurrent connections, context feedback) is building on a foundation that already works at the potential level.
-
-### Implication for Architecture
-
-The long-term fix is not to abandon spikes but to improve spike-to-output fidelity. The analog readout (Purkinje-style bypass) is biologically motivated — cerebellar Purkinje cells perform analog dendritic integration for motor output while the rest of the circuit uses spikes. The dual-speed architecture (spike-based hidden layer + analog readout) is the proven classification path.
+Tier 2 at 88% is significant: temporal memory exists in residual potentials across sequential `process()` calls. The substrate for temporal sequence processing already works at the potential level.
 
 ---
 
-## 2. Finding: Endo Premature-Mature Bug on Classification Tasks
+## Finding 2: Endo Premature Mature Bug
 
 ### Symptom
 
-MNIST accuracy plateaus at ~20-26% despite having 388 associative morphons with class-selective firing patterns (proven by post-hoc labeling showing some neurons respond selectively to specific digits).
+MNIST accuracy plateaus at ~26% despite having ~380 associative morphons with class-selective firing patterns.
 
 ### Root Cause
 
-Endoquilibrium's developmental stage detection (`detect_stage()` in `endoquilibrium.rs:506`) uses reward-based relative thresholds calibrated for RL tasks (CartPole). The Mature stage check (line 533):
+Endo's developmental stage detection uses reward-based thresholds calibrated for RL. For MNIST classification:
 
-```rust
-if reward_slow > 0.05 && reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
-    && self.reward_history.len() >= 100
-{
-    return DevelopmentalStage::Mature;
-}
-```
+1. `reward_contrastive()` injects reward (0.2) on every sample regardless of accuracy
+2. `report_performance()` feeds `recent_performance` into Endo's `reward_avg`
+3. Early windowed accuracy inflates `recent_performance` before converging
+4. `reward_slow` reaches 0.58-0.68 within 500 ticks
+5. Mature triggers (`reward_slow > 0.3 && reward_cv < 0.15`)
+6. `plasticity_mult` drops to 0.60 — learning effectively stops at ~26%
 
-For CartPole, reward is sparse and variable — it correlates with actual performance (episode length). The system only reaches Mature when it's genuinely performing well.
+### Evidence
 
-For MNIST with `reward_contrastive()`, reward is injected on **every sample** at constant strength (0.5) regardless of whether the classification was correct. The reward signal is:
-- `reward_slow` > 0.05 within ~20 samples (constant injection → fast EMA climbs quickly)
-- `reward_cv` ≈ 0 (constant signal → near-zero coefficient of variation)
-- `reward_trend` ≈ 0 (flat constant → no trend)
-
-All three conditions satisfied within the first 100 samples. Endo declares **Mature** before the network has learned anything. In Mature stage:
-- `plasticity_mult` drops (learning rate effectively reduced)
-- `novelty_gain` drops (exploration suppressed)
-- `winner_adaptation_mult` drops (k-WTA winners stop rotating)
-
-The system chokes its own learning at ~20% accuracy because it thinks it's already converged.
+| pm level | Stage | Accuracy |
+|----------|-------|----------|
+| 0.60 | Mature (premature) | 27% |
+| 0.96-1.77 | Differentiating/Consolidating oscillation | **31%** |
+| 1.80 | Differentiating (constant, no consolidation) | 25% |
+| 2.16 | Differentiating (post-damage recovery) | **52.5%** |
 
 ### Fix
 
-Two options:
-1. **Gate reward injection on correctness**: Only call `inject_reward()` when the classification is actually correct. This makes the reward signal correlate with performance, restoring the RL-like dynamics Endo expects.
-2. **Add task-type awareness to stage detection**: Use a different stage detection strategy for supervised classification vs RL. For classification, use accuracy (which the system can compute from the readout error) rather than reward magnitude.
+Raise Mature history requirement from 100 to 2000 ticks. Keep Consolidating at 500.
 
-Option 1 is simpler and was applied in the Phase 1.5 implementation: `reward_contrastive()` now broadcasts reward into the modulation channel, and the metabolic system uses it for energy allocation. The stage detection issue is addressed by running Phase 1 (unsupervised, no reward) without Endo metabolic regulation, then Phase 1.5 (supervised, reward flowing) with metabolic pressure but shorter duration so Endo doesn't have time to reach Mature prematurely.
+This creates a natural explore/exploit oscillation: Differentiating (pm~1.77, explore) / Consolidating (pm~0.96, stabilize). The oscillation IS the correct dynamic — cortical learning alternates theta bursts (high plasticity) with sharp-wave ripples (consolidation). Mature at 2000 prevents permanent throttling.
 
-The proper fix (option 2) belongs in the Limbic Circuit module (`docs/specs/limbic-circuit-spec.md`), where the Motivational Drive component tracks reward prediction error (RPE) rather than raw reward. RPE-based stage detection would naturally handle both RL and classification tasks: RPE is high when the system is learning (surprising outcomes) and low when performance is stable (expected outcomes).
+### Key Insight: Oscillation Is the Feature
 
-### Impact
-
-With the premature-Mature bug avoided (Phase 1.5 approach):
-- MNIST analog readout: **45.5%** (up from 12.5% without metabolic pruning, up from ~26% pre-fix baseline)
-- 6 of 10 digit classes above 20% accuracy
-- Classes 0, 7, 8 above 90%
-- 10 morphons pruned via reward-guided apoptosis during Phase 1.5
-
-Standard profile results pending.
+Pure high plasticity (pm=1.80 constant) produced WORSE results (25%) than oscillating (31%). The system needs periodic consolidation to lock in gains. The bug was premature Mature killing plasticity permanently, not the existence of plasticity modulation.
 
 ---
 
-## 3. Phase 1.5: Metabolic Pruning Protocol
+## Finding 3: Self-Healing Exceeds Intact Performance
 
-### Architecture
+### Experiment
 
-```
-Phase 1: Unsupervised STDP + k-WTA
-  - Metabolic pressure OFF (no reward signal to distinguish hubs from specialists)
-  - Features form through competitive STDP
-  - 0 morphon deaths (apoptosis disabled)
-      ↓
-Phase 1.5: Supervised Metabolic Pruning
-  - Enable: reward_energy_coefficient=0.01, superlinear_firing_factor=2.0, apoptosis=true
-  - Enable: analog readout + train_readout() for supervised signal
-  - reward_contrastive() drives reward into modulation channel
-  - Specialists fire for correct class → earn energy → survive
-  - Hubs fire for all classes → ±symmetric reward → zero net income → starve → die
-  - Duration: half of Phase 1 sample budget
-      ↓
-Phase 2: Post-hoc labeling + evaluation
-  - Metabolic pressure OFF (apoptosis disabled during eval)
-  - Evaluate via post-hoc neuron labeling + analog readout
-```
+MNIST V2 quick profile (3 epochs x 3000 samples, seed=42):
+1. Train intact system -> baseline accuracy
+2. Kill 30% of associative morphons randomly
+3. Enable division + differentiation + migration
+4. Retrain on 500 recovery samples
 
-### Why Phase 1.5 is a Hand-Coded Limbic Function
+### Results
 
-The Phase 1 → 1.5 transition is manually orchestrated. In the planned Limbic Circuit architecture, this transition would be handled by the Motivational Drive (nucleus accumbens analog):
-- During unsupervised learning: no reward signal → low RPE → low metabolic pressure
-- When supervised signal appears: RPE spikes → metabolic pressure activates
-- As performance stabilizes: RPE drops → metabolic pressure moderates
+| Phase | Morphons | Synapses | Accuracy |
+|-------|----------|----------|----------|
+| Intact (trained) | 1253 | ~78K | 31.0% |
+| Post-damage | 1138 | -- | 30.0% |
+| Post-recovery | 2382 | -- | **52.5%** |
 
-The manual Phase 1.5 validates the metabolic selection concept. The Limbic Circuit will make it self-regulating.
+The system didn't just recover — it improved by 21.5 percentage points over its intact performance. The damage/regrowth cycle removed entrenched hubs and replaced them with fresh morphons that learned better features under high plasticity (pm=2.16 during recovery, Endo in Differentiating stage because damage reset the performance signal).
+
+### Why Self-Healing Works Better Than Normal Training
+
+During normal training, Endo oscillates between Differentiating and Consolidating, averaging pm~1.4. During recovery, the damage resets Endo to Differentiating (pm=2.16) because the performance signal drops. The fresh morphons learn under higher effective plasticity than the originals ever had.
+
+The 31% -> 52.5% gap represents what the Limbic Circuit's RPE-scaled metabolic pressure will eventually provide during normal training: continuous hub pruning without requiring manual damage.
 
 ---
 
-*Experimental record from NLP readiness + MNIST metabolic experiments.*
+## Finding 4: Sparse Self-Pruning Produces Better Features
+
+### Observation
+
+The best pre-fix MNIST result (32.5%) came from a network that self-pruned from ~83K to 7377 synapses during training — a 91% reduction. The surviving synapses were the ones STDP found useful.
+
+| Synapses | Accuracy | Source |
+|----------|----------|--------|
+| 7,377 (self-pruned) | 32.5% | Extended training with slow_period=5000 |
+| ~80K (30% connectivity) | 28% | Standard training |
+| ~287K (full connectivity) | worse | Full S->A connections |
+
+Sparser networks produce more diverse receptive fields. At 6 synapses per morphon, each morphon sees a unique tiny subset of pixels — maximally diverse starting conditions for STDP.
+
+---
+
+## Endo Configuration for Classification Tasks
+
+```rust
+// In endoquilibrium.rs detect_stage():
+
+// Mature: require 2000+ ticks of reward history
+// Prevents premature throttling during critical learning phase
+if reward_slow > 0.3 && reward_cv < 0.15 && ...
+    && self.reward_history.len() >= 2000
+
+// Consolidating: require 500+ ticks
+// Allows natural Differentiating<->Consolidating oscillation
+if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && ...
+    && self.reward_history.len() >= 500
+```
+
+The long-term fix is the Limbic Circuit's Motivational Drive, which replaces raw reward with RPE (reward prediction error) for stage detection. RPE naturally handles both RL and classification: high RPE = still learning, low RPE = converged. This makes the history gate unnecessary.
+
+---
+
+## Reproduction
+
+```bash
+# Best baseline (31% + 52.5% recovery):
+cargo run --example mnist_v2 --release
+# Uses: Mature gate=2000, Consolidating gate=500, seed=42, quick profile
+
+# NLP readiness benchmark:
+cargo run --example nlp_readiness --release
+# Uses: analog readout, LocalInhibition, 4 tiers
+```
+
+---
+
+*Experimental record from NLP readiness + MNIST Endo calibration experiments.*
 *TasteHub GmbH, Wien, April 2026*

@@ -562,11 +562,13 @@ impl AllostasisPredictor {
         }
 
         // Consolidating: reward near own ceiling (fast ≥ 95% of slow), stable.
-        // Require 2000+ ticks — same as Mature. Prevents premature throttling
-        // during critical learning phase. pm=0.96 (Consolidating) vs pm=1.80
-        // (Differentiating) is the difference between 31% and 52% accuracy.
+        // 500 ticks — allows natural Differentiating↔Consolidating oscillation
+        // which provides explore/exploit rhythm (pm=0.96↔1.77). The oscillation
+        // IS the feature: cortical learning alternates theta bursts (exploration)
+        // with sharp-wave ripples (consolidation). Mature at 2000 prevents
+        // permanent throttling; Consolidating at 500 provides periodic stabilization.
         if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.05 * slow_abs
-            && self.reward_history.len() >= 2000 {
+            && self.reward_history.len() >= 500 {
             return DevelopmentalStage::Consolidating;
         }
 
