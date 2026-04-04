@@ -201,6 +201,10 @@ impl EpisodicMemory {
             .collect()
     }
 
+    pub fn episodes(&self) -> &[Episode] {
+        &self.episodes
+    }
+
     pub fn len(&self) -> usize {
         self.episodes.len()
     }

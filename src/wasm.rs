@@ -523,5 +523,168 @@ mod bindings {
         pub fn step_count(&self) -> u64 {
             self.inner.step_count()
         }
+
+        /// Number of morphons currently alive.
+        pub fn morphon_count(&self) -> usize {
+            self.inner.morphons.len()
+        }
+
+        /// All live morphon IDs — for incremental polling without a full topology snapshot.
+        pub fn all_morphon_ids(&self) -> Vec<u32> {
+            self.inner.morphons.keys().map(|&id| id as u32).collect()
+        }
+
+        /// State of a single morphon by ID. Returns null/undefined if ID not found.
+        pub fn morphon_json(&self, id: u32) -> Option<String> {
+            let m = self.inner.morphons.get(&(id as u64))?;
+
+            let (cluster_id, epistemic_state, skepticism) = m.fused_with
+                .and_then(|cid| self.inner.clusters.get(&cid).map(|c| (cid, c)))
+                .map(|(cid, c)| {
+                    let state_label = match &c.epistemic_state {
+                        crate::epistemic::EpistemicState::Supported { .. } => "Supported",
+                        crate::epistemic::EpistemicState::Hypothesis { .. } => "Hypothesis",
+                        crate::epistemic::EpistemicState::Outdated { .. } => "Outdated",
+                        crate::epistemic::EpistemicState::Contested { .. } => "Contested",
+                    };
+                    (Some(cid), state_label, c.epistemic_history.skepticism)
+                })
+                .unwrap_or((None, "none", 0.0));
+
+            Some(serde_json::json!({
+                "id": m.id,
+                "cell_type": format!("{:?}", m.cell_type),
+                "x": m.position.coords.first().copied().unwrap_or(0.0),
+                "y": m.position.coords.get(1).copied().unwrap_or(0.0),
+                "z": m.position.coords.get(2).copied().unwrap_or(0.0),
+                "potential": m.potential,
+                "fired": m.fired,
+                "energy": m.energy,
+                "specificity": m.position.specificity(),
+                "generation": m.generation,
+                "differentiation": m.differentiation_level,
+                "prediction_error": m.prediction_error,
+                "desire": m.desire,
+                "threshold": m.threshold,
+                "age": m.age,
+                "autonomy": m.autonomy,
+                "division_pressure": m.division_pressure,
+                "firing_rate": m.activity_history.mean(),
+                "fused": m.fused_with.is_some(),
+                "cluster_id": cluster_id,
+                "epistemic_state": epistemic_state,
+                "skepticism": skepticism,
+            }).to_string())
+        }
+
+        /// Homeostasis diagnostics: params, current prediction error, competition mode.
+        pub fn homeostasis_json(&self) -> String {
+            let s = &self.inner;
+            let n = s.morphons.len().max(1) as f64;
+            let avg_pe = s.morphons.values().map(|m| m.prediction_error).sum::<f64>() / n;
+            let avg_setpoint = s.morphons.values().map(|m| m.homeostatic_setpoint).sum::<f64>() / n;
+            let avg_migration_cooldown = s.morphons.values()
+                .map(|m| m.migration_cooldown)
+                .sum::<f64>() / n;
+            let on_cooldown = s.morphons.values().filter(|m| m.migration_cooldown > 0.0).count();
+            let h = &s.config.homeostasis;
+
+            serde_json::json!({
+                "avg_prediction_error": avg_pe,
+                "avg_homeostatic_setpoint": avg_setpoint,
+                "avg_migration_cooldown": avg_migration_cooldown,
+                "morphons_on_migration_cooldown": on_cooldown,
+                "rollback_pe_threshold": h.rollback_pe_threshold,
+                "scaling_interval": h.scaling_interval,
+                "inhibition_strength": h.inhibition_strength,
+                "winner_boost": h.winner_boost,
+                "competition_mode": format!("{:?}", h.competition_mode),
+                "field_pe_max": s.diag.field_pe_max,
+                "field_pe_mean": s.diag.field_pe_mean,
+            })
+            .to_string()
+        }
+
+        /// Triple memory state: working patterns, episodic summary, procedural history tail.
+        pub fn memory_json(&self) -> String {
+            let mem = &self.inner.memory;
+
+            let working: Vec<serde_json::Value> = mem.working.active_patterns().iter().map(|p| {
+                serde_json::json!({
+                    "pattern": p.pattern,
+                    "activation": p.activation,
+                    "decay_timer": p.decay_timer,
+                })
+            }).collect();
+
+            let episodic: Vec<serde_json::Value> = mem.episodic.episodes().iter().map(|e| {
+                serde_json::json!({
+                    "timestamp": e.timestamp,
+                    "reward": e.reward,
+                    "novelty": e.novelty,
+                    "consolidation": e.consolidation,
+                    "replay_count": e.replay_count,
+                    "pattern_len": e.pattern.len(),
+                })
+            }).collect();
+
+            let procedural: Vec<serde_json::Value> = mem.procedural.topology_history
+                .iter().rev().take(20).map(|s| {
+                    serde_json::json!({
+                        "timestamp": s.timestamp,
+                        "morphon_count": s.morphon_count,
+                        "synapse_count": s.synapse_count,
+                        "avg_connectivity": s.avg_connectivity,
+                        "cluster_count": s.cluster_count,
+                    })
+                }).collect();
+
+            serde_json::json!({
+                "working_count": mem.working.len(),
+                "working_patterns": working,
+                "episodic_count": mem.episodic.len(),
+                "episodic_episodes": episodic,
+                "procedural_history": procedural,
+            })
+            .to_string()
+        }
+
+        /// Flat grid data for a named field layer.
+        /// layer: "PredictionError" | "Energy" | "Novelty" | "Stress" | "Identity"
+        /// Returns empty vec if field is disabled or layer is not active.
+        pub fn field_layer_flat(&self, layer: &str) -> Vec<f64> {
+            let field_type = match layer {
+                "PredictionError" => crate::field::FieldType::PredictionError,
+                "Energy" => crate::field::FieldType::Energy,
+                "Novelty" => crate::field::FieldType::Novelty,
+                "Stress" => crate::field::FieldType::Stress,
+                "Identity" => crate::field::FieldType::Identity,
+                _ => return vec![],
+            };
+            self.inner.field
+                .as_ref()
+                .and_then(|f| f.layers.get(&field_type))
+                .map(|l| l.data.clone())
+                .unwrap_or_default()
+        }
+
+        /// Field metadata: resolution and which layers are active.
+        pub fn field_meta_json(&self) -> String {
+            match &self.inner.field {
+                None => serde_json::json!({ "enabled": false }).to_string(),
+                Some(f) => {
+                    let active: Vec<String> = f.config.active_layers.iter()
+                        .map(|ft| format!("{:?}", ft))
+                        .collect();
+                    serde_json::json!({
+                        "enabled": true,
+                        "resolution": f.config.resolution,
+                        "active_layers": active,
+                        "diffusion_rate": f.config.diffusion_rate,
+                        "decay_rate": f.config.decay_rate,
+                    }).to_string()
+                }
+            }
+        }
     }
 }
