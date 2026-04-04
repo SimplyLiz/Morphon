@@ -1,0 +1,26 @@
+{
+  "baseline_acc": 0.0,
+  "benchmark": "mnist_v2_supervised",
+  "config": {
+    "initial_connectivity": 0.02,
+    "kwta_fraction": 0.05,
+    "kwta_local": true,
+    "mature_threshold": 0.3,
+    "medium_period": 10,
+    "sa_connectivity": "hardcoded 30%",
+    "seed_size": 200,
+    "slow_period": 5000
+  },
+  "damaged_acc": 0.0,
+  "epochs": 2,
+  "n_train": 500,
+  "profile": "fast",
+  "recovery_acc": 0.0,
+  "seed": 42,
+  "steps_per_image": 10,
+  "total_duration_s": 271,
+  "v2_acc": 16.5,
+  "v2_morphons": 1217,
+  "v2_synapses": 73327,
+  "version": "2.4.0"
+}

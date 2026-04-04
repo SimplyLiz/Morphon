@@ -182,10 +182,9 @@ pub fn develop(
             .filter(|m| m.cell_type == CellType::Motor).map(|m| m.id).collect();
 
         // Fan-in from sensory → associative: each associative receives from ~30% of sensory.
-        // Use fan-IN perspective (iterate over associative, sample sensory) to ensure
-        // uniform receptive field sizes. The old fan-OUT approach created uneven
-        // distributions where some associative morphons received 2-3x more input,
-        // seeding hub dominance from initialization.
+        // Hardcoded 30% — the 32.5% MNIST result used this density. Phase 4 runs after
+        // ensure_io_capacity adds target_input_size sensory morphons, so this sees the
+        // full 784 pixel neurons. config.initial_connectivity is for seed-phase connections.
         let sens_per_assoc = (sensory.len() as f64 * 0.3).ceil() as usize;
 
         for &a in &associative {

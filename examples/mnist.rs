@@ -145,7 +145,7 @@ fn create_system(local_inh: bool) -> System {
         developmental: DevelopmentalConfig {
             seed_size: 500,
             dimensions: 6,
-            initial_connectivity: 0.02,
+            initial_connectivity: 0.3,  // 30% S→A — sparse random receptive fields for STDP differentiation
             proliferation_rounds: 1,
             target_input_size: Some(IMG_PIXELS),
             target_output_size: Some(NUM_CLASSES),
