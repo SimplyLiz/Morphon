@@ -2055,6 +2055,24 @@ impl System {
         reward_strength: f64,
         inhibit_strength: f64,
     ) {
+        // Broadcast reward into the global modulation channel so that
+        // reward-correlated energy (metabolic) and learning (three-factor)
+        // both see the signal. Without this, classification tasks that only
+        // use reward_contrastive() never set modulation.reward.
+        self.modulation.inject_reward(reward_strength);
+
+        // Reward-correlated energy: fired morphons earn energy when reward arrives.
+        // Hubs fire for all inputs → reward ±symmetric → net zero income.
+        // Specialists fire for correct class → mostly positive → positive income.
+        let coeff = self.config.metabolic.reward_energy_coefficient;
+        if coeff > 0.0 && reward_strength > 0.0 {
+            for m in self.morphons.values_mut() {
+                if m.fired {
+                    m.energy = (m.energy + reward_strength * coeff).min(1.0);
+                }
+            }
+        }
+
         let n_outputs = self.output_ports.len();
         for i in 0..n_outputs {
             if i == correct_index {

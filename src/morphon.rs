@@ -153,6 +153,20 @@ pub struct MetabolicConfig {
     /// V2: Energy drawn from cluster pool per tick by each fused morphon.
     #[serde(default = "default_cluster_draw")]
     pub cluster_energy_draw_per_tick: f64,
+
+    /// Reward-correlated energy income. Morphons that fire when reward arrives
+    /// earn energy proportional to this coefficient. Hubs fire for all inputs
+    /// → reward ±symmetric → net zero income. Specialists fire for correct
+    /// class → mostly positive → positive income.
+    #[serde(default)]
+    pub reward_energy_coefficient: f64,
+
+    /// Superlinear firing cost factor. Firing cost scales as:
+    /// `firing_cost * (1.0 + activity_rate * superlinear_firing_factor)`
+    /// At 50% rate with factor=2.0, cost is 3× base. At 5%, cost is 1.1× base.
+    /// Penalizes hubs that fire indiscriminately.
+    #[serde(default)]
+    pub superlinear_firing_factor: f64,
 }
 
 fn default_cluster_reduction() -> f64 { 0.4 }
@@ -171,6 +185,8 @@ impl Default for MetabolicConfig {
             reward_for_verification: 0.02, // energy bonus when cluster reaches Supported
             cluster_base_cost_reduction: 0.4,
             cluster_energy_draw_per_tick: 0.0003,
+            reward_energy_coefficient: 0.0,
+            superlinear_firing_factor: 0.0,
         }
     }
 }
@@ -427,7 +443,8 @@ impl Morphon {
         self.fired = activation > (self.threshold + threshold_bias) && self.energy > 0.0;
         if self.fired {
             self.refractory_timer = 1.0; // refractory period (1 step)
-            self.energy -= metabolic.firing_cost;
+            let rate = self.activity_history.mean();
+            self.energy -= metabolic.firing_cost * (1.0 + rate * metabolic.superlinear_firing_factor);
             self.activity_history.push(1.0);
         } else {
             self.activity_history.push(0.0);

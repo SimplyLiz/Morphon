@@ -52,6 +52,11 @@ pub struct EndoConfig {
     // Rule 5: Tag-capture coefficients
     pub tag_capture_reward_boost: f32,
     pub tag_capture_stale_ticks: u64,
+
+    /// Minimum plasticity_mult Endo can output. Prevents Mature stage from throttling
+    /// below this floor. Default 0.0 (no floor). Set to ~1.5 for supervised learning
+    /// tasks where premature Mature detection must not suppress plasticity.
+    pub plasticity_floor: f32,
 }
 
 impl Default for EndoConfig {
@@ -80,6 +85,7 @@ impl Default for EndoConfig {
             // Rule 5
             tag_capture_reward_boost: 1.5,
             tag_capture_stale_ticks: 500,
+            plasticity_floor: 0.0,
         }
     }
 }
@@ -499,8 +505,21 @@ impl AllostasisPredictor {
             }
         }
 
-        // Detect developmental stage
-        self.stage = self.detect_stage();
+        // Detect developmental stage — log on transition with triggering vitals
+        let new_stage = self.detect_stage();
+        if new_stage != self.stage {
+            let reward_slow = self.slow_emas.reward_avg;
+            let reward_fast = self.fast_emas.reward_avg;
+            let reward_std = self.std_f32(&self.reward_history);
+            let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 99.0 };
+            let reward_trend = self.trend_f32(&self.reward_history);
+            let slow_abs = reward_slow.abs().max(0.01_f32);
+            eprintln!("[ENDO] {:?} → {:?} | reward_slow={:.4} reward_cv={:.4} trend={:.6} (slow_abs={:.4}) hist={}",
+                self.stage, new_stage,
+                reward_slow, reward_cv, reward_trend, slow_abs,
+                self.reward_history.len());
+            self.stage = new_stage;
+        }
     }
 
     fn detect_stage(&self) -> DevelopmentalStage {
@@ -527,18 +546,27 @@ impl AllostasisPredictor {
         }
 
         // Mature: reward stable (low variance) and near slow EMA — consistent performance.
-        // Require slow EMA to be meaningfully above zero — can't be mature if barely learning.
+        // Threshold is 0.3 (not 0.05): prevents premature Mature on classification tasks
+        // where contrastive reward is dense+stable even at 20% accuracy. Endo must see
+        // genuinely high reward before declaring the system mature.
         let reward_std = self.std_f32(&self.reward_history);
         let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 1.0 };
-        if reward_slow > 0.05 && reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
-            && self.reward_history.len() >= 100
+        // Mature: require 2000+ ticks of history. At medium_period=10 and 10 steps/image,
+        // that's 2000 images. Prevents premature Mature during the critical learning phase
+        // where reward_slow inflates from early high-accuracy windows.
+        // Recovery experiment proved: pm=2.16 (Differentiating) → 49%, pm=0.60 (Mature) → 27%.
+        if reward_slow > 0.3 && reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
+            && self.reward_history.len() >= 2000
         {
             return DevelopmentalStage::Mature;
         }
 
         // Consolidating: reward near own ceiling (fast ≥ 95% of slow), stable.
-        // Require slow EMA > 0.05 — both near zero doesn't mean "at ceiling."
-        if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.05 * slow_abs {
+        // Require 2000+ ticks — same as Mature. Prevents premature throttling
+        // during critical learning phase. pm=0.96 (Consolidating) vs pm=1.80
+        // (Differentiating) is the difference between 31% and 52% accuracy.
+        if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.05 * slow_abs
+            && self.reward_history.len() >= 2000 {
             return DevelopmentalStage::Consolidating;
         }
 
@@ -1109,6 +1137,11 @@ impl Endoquilibrium {
         self.channels.migration_rate_mult = lerp(self.channels.migration_rate_mult, raw.migration_rate_mult, a);
         self.channels.synaptogenesis_threshold_mult = lerp(self.channels.synaptogenesis_threshold_mult, raw.synaptogenesis_threshold_mult, a);
         self.channels.clamp();
+        // Apply plasticity floor after clamping — prevents Mature from suppressing learning
+        // below the configured minimum (useful for supervised tasks).
+        if self.config.plasticity_floor > 0.0 {
+            self.channels.plasticity_mult = self.channels.plasticity_mult.max(self.config.plasticity_floor);
+        }
     }
 
     /// Composite health score (0–1). 1.0 = all vitals within setpoints.
@@ -1161,6 +1194,21 @@ impl Endoquilibrium {
     /// Current developmental stage.
     pub fn stage(&self) -> DevelopmentalStage {
         self.predictor.stage
+    }
+
+    /// Slow EMA of reward signal (what Mature detection uses).
+    pub fn reward_slow(&self) -> f32 {
+        self.predictor.slow_emas.reward_avg
+    }
+
+    /// Coefficient of variation of reward history (Mature trigger: cv < 0.15).
+    pub fn reward_cv(&self) -> f32 {
+        let fast = self.predictor.fast_emas.reward_avg;
+        if fast.abs() > 0.01 {
+            self.predictor.std_f32(&self.predictor.reward_history) / fast.abs()
+        } else {
+            99.0
+        }
     }
 
     /// Target associative firing rate (midpoint of setpoint range).

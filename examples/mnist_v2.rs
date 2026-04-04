@@ -230,26 +230,37 @@ fn train_and_eval(
         // LR schedule: 0.05 → 0.005 over epochs
         let lr = LR_START * (LR_END / LR_START).powf(epoch as f64 / epochs.max(1) as f64);
 
-        let mut running_correct = 0_u64;
-        let mut running_total = 0_u64;
+        // Windowed accuracy ring buffer (last 50 predictions)
+        const WINDOW: usize = 50;
+        let mut window_buf = [false; WINDOW];
+        let mut window_pos = 0_usize;
+        let mut window_filled = 0_usize;
 
         for (bi, &idx) in indices.iter().take(n_train).enumerate() {
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
 
-            // Supervised readout + contrastive reward at output ports
+            // Supervised readout + contrastive reward gated on correctness
             let correct = train_labels[idx];
             system.train_readout(correct, lr);
-            system.reward_contrastive(correct, 0.2, 0.1);
-
-            // Track running accuracy and report to endo every image
             let predicted = system.read_output().iter().enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i).unwrap_or(0);
-            running_total += 1;
-            if predicted == correct { running_correct += 1; }
-            let running_acc = running_correct as f64 / running_total as f64;
-            system.report_performance(running_acc);
+            // Only inject reward when correct — prevents reward_slow inflation
+            // that triggers premature Mature at 11% accuracy
+            if predicted == correct {
+                system.reward_contrastive(correct, 0.5, 0.2);
+            }
+            window_buf[window_pos] = predicted == correct;
+            window_pos = (window_pos + 1) % WINDOW;
+            if window_filled < WINDOW { window_filled += 1; }
+            let window_correct: usize = window_buf[..window_filled].iter().filter(|&&x| x).count();
+            let running_acc = window_correct as f64 / window_filled as f64;
+            // Only report once window is full — partial windows inflate early accuracy
+            // which pumps recent_performance → reward_slow → premature Mature
+            if window_filled >= WINDOW {
+                system.report_performance(running_acc);
+            }
 
             // Episode-end consolidation per image
             let reward = if predicted == correct { 1.0 } else { 0.0 };
@@ -258,9 +269,12 @@ fn train_and_eval(
             let report_interval = if n_train <= 500 { 250 } else { 1000 };
             if (bi + 1) % report_interval == 0 || (bi + 1 == n_train && epoch + 1 == epochs) {
                 let acc = evaluate(system, test_images, test_labels, 100);
-                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} ({:.0}s) {}",
-                    label, epoch + 1, bi + 1, n_train, acc, lr, start.elapsed().as_secs(),
-                    system.endo.summary());
+                let s = system.inspect();
+                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} m={} s={} ({:.0}s) {} | rs={:.3} cv={:.3}",
+                    label, epoch + 1, bi + 1, n_train, acc, lr,
+                    s.total_morphons, s.total_synapses,
+                    start.elapsed().as_secs(), system.endo.summary(),
+                    system.endo.reward_slow(), system.endo.reward_cv());
             }
         }
     }
@@ -472,13 +486,36 @@ fn main() {
         eprintln!("╚═══════════════════════════════════════════╝");
     }
 
+    // Config summary
+    eprintln!("\n━━━ CONFIG ━━━");
+    eprintln!("  profile: {}, seed: {}, n_train: {}, epochs: {}", profile, seed, n_train, n_epochs);
+    eprintln!("  seed_size: 200, initial_connectivity: 0.02 (S→A hardcoded 30%)");
+    eprintln!("  steps/image: {}, medium_period: 10, slow_period: 5000", STEPS_PER_IMAGE);
+    eprintln!("  k-WTA: {:.2}{}", kwta, if use_local_kwta { " (local)" } else { " (global)" });
+    eprintln!("  Mature threshold: 0.3 (Endo)");
+    eprintln!("  total time: {:.0}s", t1.elapsed().as_secs_f64());
+
     // Save
     let version = env!("CARGO_PKG_VERSION");
+    let total_duration_s = t1.elapsed().as_secs();
     let results = json!({
         "benchmark": "mnist_v2_supervised", "version": version,
+        "profile": profile, "seed": seed,
+        "n_train": n_train, "epochs": n_epochs, "steps_per_image": STEPS_PER_IMAGE,
+        "config": {
+            "seed_size": 200,
+            "initial_connectivity": 0.02,
+            "sa_connectivity": "hardcoded 30%",
+            "medium_period": 10,
+            "slow_period": 5000,
+            "kwta_fraction": kwta,
+            "kwta_local": use_local_kwta,
+            "mature_threshold": 0.3,
+        },
         "baseline_acc": base_acc, "v2_acc": v2_acc,
         "damaged_acc": damaged_acc, "recovery_acc": recovery_acc,
         "v2_morphons": v2_m, "v2_synapses": v2_s,
+        "total_duration_s": total_duration_s,
     });
     let dir = format!("docs/benchmark_results/v{}", version);
     fs::create_dir_all(&dir).ok();

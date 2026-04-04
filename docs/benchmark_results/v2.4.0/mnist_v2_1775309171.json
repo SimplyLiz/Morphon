@@ -1,0 +1,15 @@
+{
+  "baseline_acc": 0.0,
+  "benchmark": "mnist_v2_supervised",
+  "damaged_acc": 0.0,
+  "epochs": 2,
+  "n_train": 500,
+  "profile": "fast",
+  "recovery_acc": 0.0,
+  "seed": 42,
+  "steps_per_image": 10,
+  "v2_acc": 16.0,
+  "v2_morphons": 1275,
+  "v2_synapses": 82873,
+  "version": "2.4.0"
+}

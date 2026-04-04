@@ -145,7 +145,7 @@ fn create_system(local_inh: bool) -> System {
         developmental: DevelopmentalConfig {
             seed_size: 500,
             dimensions: 6,
-            initial_connectivity: 0.02,
+            initial_connectivity: 0.3,  // 30% S→A — sparse random receptive fields for STDP differentiation
             proliferation_rounds: 1,
             target_input_size: Some(IMG_PIXELS),
             target_output_size: Some(NUM_CLASSES),
@@ -175,9 +175,6 @@ fn create_system(local_inh: bool) -> System {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.0005, // gentler for large network
             heterosynaptic_depression: 0.001, tag_accumulation_rate: 0.3,
-            multi_timescale_traces: false,
-            tau_eligibility_slow: 200.0,
-            slow_trace_leak: 0.15,
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.05,
