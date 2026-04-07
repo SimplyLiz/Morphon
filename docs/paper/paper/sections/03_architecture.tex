@@ -10,6 +10,13 @@ This section presents the six biological principles underlying MI and the data s
   \label{fig:architecture}
 \end{figure}
 
+\begin{figure}[h]
+  \centering
+  \figifexists[0.85\linewidth]{topology_developed.jpg}{Morphon network topology}
+  \caption{The Morphon network during runtime, rendered by the in-browser WASM visualizer. Spheres are morphons colored by cell type: purple = associative, cyan = sensory, orange = motor, green = modulatory. Dotted yellow trails are spike-carrying synapses; the discrete dots represent action potentials propagating along axons with their learned delays. The 3D layout is the Poincar\'e ball embedding (Section~\ref{sec:architecture}); morphons of the same type cluster naturally because their hyperbolic positions are correlated with cell-type identity. Orange motor morphons concentrate on one side and project to the others through the synaptic web. The visualizer is reproducible from \texttt{web/} via \texttt{wasm-pack build} and a local HTTP server.}
+  \label{fig:topology}
+\end{figure}
+
 \subsection{The Six Biological Principles}
 
 \begin{description}
