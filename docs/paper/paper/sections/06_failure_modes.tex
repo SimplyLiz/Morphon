@@ -9,7 +9,7 @@ This is the analytical core of the paper. We document four failure modes encount
 A positive feedback loop in which high reward triggers strong dopamine release, which potentiates active synapses, which raises future activity, which increases reward, which triggers more dopamine. All motor morphons saturate at maximum firing rate within $\sim$50 ticks; the reward signal becomes meaningless.
 
 \paragraph{Biological parallel.}
-Dopaminergic excitotoxicity \cite{wakade1985dopamine}. Biology prevents this through receptor desensitization on sustained exposure, presynaptic autoreceptor inhibition, and synaptic reuptake.
+Dopaminergic excitotoxicity. Biology prevents this through receptor desensitization on sustained exposure, presynaptic autoreceptor inhibition, and synaptic reuptake.
 
 \paragraph{Fix.}
 Receptor saturation via Hill function ($n=2$), receptor downregulation on sustained exposure, exponential decay (``reuptake'') of modulator concentrations from release sites.
@@ -73,7 +73,14 @@ pm = 2.16 (post-damage recovery)      & Differentiating                & \textbf
 \end{tabular}
 \end{table}
 
-The pattern is monotonic in plasticity \emph{within the oscillating regime}: more plasticity, more accuracy. But pure constant high plasticity (1.80) also fails (25\%) because the weights churn without ever consolidating. The system needs both phases.
+The pattern is monotonic in plasticity \emph{within the oscillating regime} (Figure~\ref{fig:plasticity_accuracy}): more plasticity, more accuracy. But pure constant high plasticity (1.80) also fails (25\%) because the weights churn without ever consolidating. The system needs both phases.
+
+\begin{figure}[h]
+  \centering
+  \figifexists[0.7\linewidth]{plasticity_accuracy.pdf}{plasticity vs accuracy scatter}
+  \caption{MNIST accuracy as a function of plasticity multiplier and Endoquilibrium stage. Premature Mature (pm=0.60) caps accuracy at 27\%. The natural Differentiating/Consolidating oscillation around pm=1.4 reaches 31\%. Constant high plasticity (pm=1.80) is \emph{worse} (25\%) because weights churn without consolidating. Post-damage recovery at pm=2.16 reaches 52.5\%. The relationship is monotonic only when the system can also consolidate.}
+  \label{fig:plasticity_accuracy}
+\end{figure}
 
 \paragraph{Biological parallel.}
 This is reward prediction error vs.\ raw reward as a maturity signal. In biology, the brain does not declare ``learning complete'' because rewards are arriving --- it tracks reward \emph{prediction error} (RPE), which goes to zero only when actual outcomes match expected outcomes. A constant 0.2 reward is only ``mature'' if the system was \emph{predicting} 0.2; if the system is at 11\% accuracy but receiving 0.2 each sample, RPE is high and learning should continue. The biological literature on dopamine and RPE \cite{schultz1997neural} is unambiguous on this point.

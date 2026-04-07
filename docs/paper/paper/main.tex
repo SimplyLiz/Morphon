@@ -21,6 +21,15 @@
 \usepackage{subcaption}
 \usepackage{titlesec}
 
+% Helper: only include figure if file exists, otherwise show placeholder
+\newcommand{\figifexists}[3][0.7\linewidth]{%
+  \IfFileExists{figures/#2}{%
+    \includegraphics[width=#1]{figures/#2}%
+  }{%
+    \fbox{\parbox{#1}{\centering\vspace{1em}\textit{[Figure pending: #3]}\vspace{1em}}}%
+  }%
+}
+
 \hypersetup{
   colorlinks=true,
   linkcolor=blue!60!black,

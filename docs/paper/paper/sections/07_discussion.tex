@@ -11,7 +11,7 @@ The spike pipeline still has a job: it produces the diverse, sparse, energy-effi
 
 \subsection{Self-Healing as a Computational Capability}
 
-The +21.5pp improvement after damage is, to our knowledge, the first demonstration of \emph{beneficial} self-healing in a neural architecture. Other work on damage recovery in neural networks measures how close a damaged network can return to its pre-damage performance \cite{lavanchy2025damage}; MI is the first system we know of where damage produces a network that is genuinely better than the original.
+The +21.5pp improvement after damage is, to our knowledge, the first demonstration of \emph{beneficial} self-healing in a neural architecture. Other work on damage recovery in neural networks measures how close a damaged network can return to its pre-damage performance; MI is the first system we know of where damage produces a network that is genuinely better than the original.
 
 The mechanism is clear in retrospect. The original training run accumulated entrenched ``hub'' morphons --- high-degree neurons that fire indiscriminately and dominate the readout. Once entrenched, the homeostatic regulator declares the system ``done learning'' (the premature Mature bug, Section~\ref{sec:premature_mature}) and stops protecting morphon diversity. Damage removes some hubs at random, the regulator notices the performance drop and re-enables high plasticity, and the regrowth fills the gaps with fresh, well-specialized morphons that the now-uninhibited learning rules sculpt under the right conditions.
 

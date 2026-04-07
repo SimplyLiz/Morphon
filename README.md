@@ -11,7 +11,7 @@ Morphon-Core is a biological-inspired, adaptive intelligence engine that impleme
 | **CartPole-v1** | **SOLVED** avg=195.2 | Three-factor learning + developmental morphogenesis only |
 | **MNIST (intact)** | 31.0% | Quick profile, v3.0.0 |
 | **MNIST (post-recovery)** | **52.5%** | After 30% damage + regrowth — exceeds intact baseline by **+21.5pp** |
-| **NLP readiness** | **Level 3/3** | Bag-of-chars 99%, scale 69%, sequential memory 88% (analog readout) |
+| **NLP readiness** | **Level 3/3** | Bag-of-chars 99%, scale 62%, sequential memory 85% (analog readout) |
 
 The post-damage MNIST result is the most striking finding: **the system improves after losing 30% of its hidden layer**. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage, and the regrowth produces better-specialized morphons than the original training trajectory ever did.
 

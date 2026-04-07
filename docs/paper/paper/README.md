@@ -33,23 +33,34 @@ figures/          — generated plots (TODO)
 
 ## Status
 
-Draft. Reproducible numbers from the v3.0.0 codebase, but the paper still needs:
+Draft. 14 pages. All headline numbers reproduce on v3.0.0.
 
-1. **Figures.** TODO list:
-   - Topology growth: Poincaré embedding snapshots (CartPole, ticks 0/100/500/1000)
-   - Receptive field heatmaps for selected MNIST hidden morphons
-   - Plasticity oscillation timeline (pm trajectory across one MNIST epoch)
-   - Self-healing curve (accuracy before / after damage / after recovery)
-   - NLP readiness benchmark bar chart (4 tiers × 2 readouts)
+### Done
+- All 8 sections written (abstract, intro, related work, architecture, implementation, experiments, failure modes, discussion, conclusion)
+- 28 bibliography entries (placeholder refs removed)
+- 3 figures generated from JSON benchmark results:
+  - `figures/self_healing.pdf` — MNIST 4-bar (random, intact, damaged, recovered)
+  - `figures/nlp_readiness.pdf` — 4 tiers × 2 readouts comparison
+  - `figures/plasticity_accuracy.pdf` — pm vs accuracy scatter
+- v3.0.0 NLP readiness verified: Tier 0/1/2/3 = 99/62/85/42
+- v2.4.0 MNIST self-healing reproduced from JSON (31.0 → 52.5%)
 
-2. **Polishing.**
-   - Bibliography entries marked `(Placeholder reference)` need real citations
-   - Author block + affiliation
-   - Anonymization for double-blind submissions
+### Still TODO
+- **Author block + affiliation.** Currently says "Lisa Anonymous, TasteHub GmbH". Replace with real info or anonymize for double-blind.
+- **CartPole figure.** Current `figures/cartpole_curve.pdf` is a fallback (no per-episode data in the JSONs). Either dump per-episode steps from a fresh CartPole run or remove the figure.
+- **Architecture diagram.** No Morphon struct diagram or topology snapshot yet (would require either TikZ work or visualizer screenshots).
+- **MNIST receptive field heatmaps.** Would need to expose hidden-morphon weight extraction in the example.
+- **v3.0.0 MNIST verification run.** The 31% / 52.5% numbers came from v2.4.0; should verify they reproduce on v3.0.0 (~25 min quick profile).
 
-3. **Verification.** Re-run all benchmarks on the v3.0.0 release tag and confirm
-   the JSON results in `docs/benchmark_results/v3.0.0/` match the numbers in the
-   paper.
+## Generating figures
+
+```bash
+cd docs/paper/paper
+python3 figures/generate.py    # reads JSON from docs/benchmark_results/v*/
+make                            # rebuild PDF
+```
+
+Requires `python3` and `matplotlib`.
 
 ## Source materials
 

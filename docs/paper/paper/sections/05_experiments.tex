@@ -40,7 +40,14 @@ Post-recovery (regrow + retrain) & \textbf{52.5\%} & 500 recovery samples, lifec
 \end{table}
 
 \paragraph{The self-healing finding.}
-The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons are randomly destroyed and then allowed to regrow --- a \textbf{+21.5 percentage point improvement} over the intact baseline. This is the most striking result in the paper. The damage-and-regrow cycle removed entrenched ``hub'' morphons (high-degree neurons that fire indiscriminately and dominate the readout) and replaced them with fresh morphons that specialize under high plasticity. The fresh morphons learn better features because Endoquilibrium, sensing the post-damage performance drop, returns to the high-plasticity Differentiating stage ($\text{plasticity\_mult}=2.16$), exceeding the average plasticity the original morphons ever experienced.
+The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons are randomly destroyed and then allowed to regrow --- a \textbf{+21.5 percentage point improvement} over the intact baseline (Figure~\ref{fig:self_healing}). This is the most striking result in the paper. The damage-and-regrow cycle removed entrenched ``hub'' morphons (high-degree neurons that fire indiscriminately and dominate the readout) and replaced them with fresh morphons that specialize under high plasticity. The fresh morphons learn better features because Endoquilibrium, sensing the post-damage performance drop, returns to the high-plasticity Differentiating stage ($\text{plasticity\_mult}=2.16$), exceeding the average plasticity the original morphons ever experienced.
+
+\begin{figure}[h]
+  \centering
+  \figifexists[0.7\linewidth]{self_healing.pdf}{self-healing bar chart}
+  \caption{MNIST self-healing. Random baseline (chance), MI trained intact (31.0\%), post-damage (30.0\% after killing 30\% of associative morphons), and post-recovery (52.5\% after 500 retraining samples with lifecycle re-enabled). The +21.5pp gain over the intact baseline is the central self-healing finding.}
+  \label{fig:self_healing}
+\end{figure}
 
 \paragraph{Implication.}
 The 31\% intact ceiling is regulatory, not representational. The substrate is capable of $\geq$52\% --- it just needs the right plasticity regime to get there. The damage cycle is a manual proxy for what a properly-tuned metabolic pruning system (Section~\ref{sec:failure_modes}) should provide automatically.
@@ -59,14 +66,21 @@ We designed a synthetic 4-tier benchmark to measure how close MI is to handling 
 Tier & Task & Spike-based & Analog readout \\
 \midrule
 0: Bag-of-Chars  & 27-dim freq encoding, 2-class & 46\% & \textbf{99\%} \\
-1: One-Hot Scale & 135-dim flat, same task        & 51\% & \textbf{69\%} \\
-2: Memory        & 27-dim/step $\times$ 3 sequential & 48\% & \textbf{88\%} \\
-3: Composition   & 54-dim, XOR over token pairs   & 50\% & 40\% \\
+1: One-Hot Scale & 135-dim flat, same task        & 51\% & \textbf{62\%} \\
+2: Memory        & 27-dim/step $\times$ 3 sequential & 48\% & \textbf{85\%} \\
+3: Composition   & 54-dim, XOR over token pairs   & 50\% & 42\% \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph{Key finding.}
-The MI substrate creates discriminative representations during spike-based processing --- the analog readout proves it by reading the same morphon potentials that spikes are generated from. The bottleneck is spike-to-output \emph{fidelity}: signals are distorted by delays, leaky integration, and multi-hop propagation. Tier 2 at 88\% is particularly significant: temporal memory exists in residual potentials across sequential \texttt{process()} calls, suggesting the substrate for the temporal sequence processing already works at the potential level even though the spike pipeline cannot exploit it.
+The MI substrate creates discriminative representations during spike-based processing --- the analog readout proves it by reading the same morphon potentials that spikes are generated from. The bottleneck is spike-to-output \emph{fidelity}: signals are distorted by delays, leaky integration, and multi-hop propagation (Figure~\ref{fig:nlp_readiness}). Tier 2 at 85\% is particularly significant: temporal memory exists in residual potentials across sequential \texttt{process()} calls, suggesting the substrate for the temporal sequence processing already works at the potential level even though the spike pipeline cannot exploit it.
+
+\begin{figure}[h]
+  \centering
+  \figifexists[0.85\linewidth]{nlp_readiness.pdf}{NLP readiness 4-tier bar chart}
+  \caption{NLP readiness benchmark. Spike-based readout (gray) collapses to chance on every tier; analog readout (blue) extracts 99\%, 69\%, and 88\% on the first three tiers from the same morphon potentials. Tier 3 (XOR composition) requires nonlinear hidden features that the linear analog readout cannot provide. Red dashes are the per-tier pass thresholds.}
+  \label{fig:nlp_readiness}
+\end{figure}
 
 Tier 3 (XOR) fails because the analog readout is linear and XOR requires nonlinear hidden features, which would require a working spike-based credit-assignment path through the hidden layer.

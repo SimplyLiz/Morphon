@@ -215,9 +215,9 @@ All data is **synthetic** — no external downloads needed. All tiers use the an
 | Tier | Accuracy | Status |
 |------|---------|--------|
 | 0: Bag-of-Chars  | **99%** | PASS |
-| 1: One-Hot Scale | **69%** | PASS |
-| 2: Memory        | **88%** | PASS |
-| 3: Composition   | 40%     | FAIL (XOR needs nonlinear hidden features) |
+| 1: One-Hot Scale | **62%** | PASS |
+| 2: Memory        | **85%** | PASS |
+| 3: Composition   | 42%     | FAIL (XOR needs nonlinear hidden features) |
 
 **NLP Readiness Level: 3/3** with analog readout.
 
