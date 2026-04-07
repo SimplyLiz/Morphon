@@ -624,6 +624,7 @@ pub fn fusion(
     effective_max_morphons: usize,
     max_cluster_size_fraction: f64,
     max_unverified_fraction: f64,
+    competition_mode: &crate::homeostasis::CompetitionMode,
 ) -> usize {
     // V3 Governor: block new fusion when too many clusters are unverified.
     // Prevents unbounded cluster creation before existing ones are validated.
@@ -746,6 +747,24 @@ pub fn fusion(
                 next_morphon_id,
                 effective_max_morphons,
             );
+
+            // === Create intra-cluster InhibitoryInterneurons (Section 3.4) ===
+            // Only in LocalInhibition mode. These interneurons receive excitation from
+            // all cluster members and send inhibition back, implementing local WTA
+            // competition that is self-tuned by iSTDP rather than a global sort.
+            if let crate::homeostasis::CompetitionMode::LocalInhibition {
+                interneuron_ratio, initial_inh_weight, ..
+            } = competition_mode {
+                create_local_inhibitory_interneurons(
+                    &members,
+                    morphons,
+                    topology,
+                    next_morphon_id,
+                    effective_max_morphons,
+                    *initial_inh_weight,
+                    *interneuron_ratio,
+                );
+            }
 
             clusters.insert(
                 cluster_id,
@@ -876,6 +895,106 @@ fn create_inhibitory_morphons_for_cluster(
         if let Some(other_cluster) = clusters.get_mut(&other_cid) {
             other_cluster.inhibitory_morphons.push(inh_id);
         }
+    }
+
+    created
+}
+
+/// Create intra-cluster InhibitoryInterneuron morphons for a newly-formed cluster.
+///
+/// Each interneuron receives excitatory input from all cluster members and sends
+/// inhibitory (negative-weight) synapses back. iSTDP (Vogels et al. 2011) tunes
+/// the inhibitory weights on the medium path to maintain target firing rates.
+///
+/// Number of interneurons: max(1, round(members.len() * interneuron_ratio)).
+/// Biological baseline: ~10-20% inhibitory (Brunel 2000); start at 10% and let
+/// iSTDP compensate if the ratio is imperfect.
+fn create_local_inhibitory_interneurons(
+    members: &[MorphonId],
+    morphons: &mut HashMap<MorphonId, Morphon>,
+    topology: &mut Topology,
+    next_morphon_id: &mut MorphonId,
+    max_morphons: usize,
+    initial_inh_weight: f64,
+    interneuron_ratio: f64,
+) -> Vec<MorphonId> {
+    let excitatory: Vec<MorphonId> = members.iter()
+        .filter(|&&mid| morphons.get(&mid).map_or(false, |m|
+            m.cell_type == CellType::Associative || m.cell_type == CellType::Stem))
+        .copied()
+        .collect();
+
+    if excitatory.is_empty() {
+        return Vec::new();
+    }
+
+    let n_interneurons = ((excitatory.len() as f64 * interneuron_ratio).round() as usize).max(1);
+    let mut created = Vec::new();
+
+    // Compute cluster centroid in Poincare ball
+    let dim = morphons.values().next().map(|m| m.position.coords.len()).unwrap_or(3);
+    let mut centroid = vec![0.0_f64; dim];
+    let mut count = 0usize;
+    for &mid in &excitatory {
+        if let Some(m) = morphons.get(&mid) {
+            for (i, c) in m.position.coords.iter().enumerate() {
+                if i < centroid.len() { centroid[i] += c; }
+            }
+            count += 1;
+        }
+    }
+    if count > 0 {
+        for c in &mut centroid { *c /= count as f64; }
+    }
+    // Clamp inside Poincare ball
+    let norm: f64 = centroid.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > 0.85 {
+        let scale = 0.85 / norm;
+        for c in &mut centroid { *c *= scale; }
+    }
+
+    for _ in 0..n_interneurons {
+        if morphons.len() >= max_morphons {
+            break;
+        }
+
+        let inh_id = *next_morphon_id;
+        *next_morphon_id += 1;
+
+        let position = crate::types::HyperbolicPoint {
+            coords: centroid.clone(),
+            curvature: 1.0,
+        };
+
+        let mut inh = crate::morphon::Morphon::new(inh_id, position);
+        inh.cell_type = CellType::InhibitoryInterneuron;
+        inh.activation_fn = crate::types::ActivationFn::Sigmoid;
+
+        topology.add_morphon(inh_id);
+
+        // Excitatory member → interneuron (positive drive)
+        for &mid in &excitatory {
+            if topology.synapse_between(mid, inh_id).is_none() {
+                topology.add_synapse(
+                    mid, inh_id,
+                    crate::morphon::Synapse::new(0.3).with_delay(0.5),
+                );
+            }
+        }
+
+        // Interneuron → all excitatory members (inhibitory feedback)
+        let inh_weight = initial_inh_weight.min(-0.001);
+        for &mid in &excitatory {
+            if topology.synapse_between(inh_id, mid).is_none() {
+                topology.add_synapse(
+                    inh_id, mid,
+                    crate::morphon::Synapse::new(inh_weight).with_delay(0.5),
+                );
+            }
+        }
+
+        morphons.insert(inh_id, inh);
+        created.push(inh_id);
     }
 
     created
@@ -1214,6 +1333,7 @@ pub fn step_glacial(
     rng: &mut impl Rng,
     target: Option<&crate::developmental::TargetMorphology>,
     step_count: u64,
+    competition_mode: &crate::homeostasis::CompetitionMode,
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
@@ -1228,7 +1348,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.fusion {
-        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction);
+        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction, competition_mode);
         report.defusions = defusion(morphons, clusters, topology);
     }
 
@@ -1801,6 +1921,7 @@ mod tests {
         let fused = fusion(
             &mut morphons, &mut clusters, &mut next_cluster_id,
             &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(),
         );
 
         assert_eq!(fused, 1, "should form one cluster");
@@ -2011,6 +2132,7 @@ mod tests {
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
             &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, 0.0, &lifecycle, &mut rng, None, 0,
+            &crate::homeostasis::CompetitionMode::default(),
         );
         assert_eq!(report.morphons_born, 0);
     }
@@ -2125,6 +2247,7 @@ mod tests {
         let fused = fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
             &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(),
         );
 
         if fused > 0 {
@@ -2157,6 +2280,7 @@ mod tests {
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
             &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(),
         );
 
         if !clusters.is_empty() {

@@ -117,6 +117,17 @@ pub struct VitalSigns {
     /// Rolling reward/performance metric (task-agnostic, set by caller).
     /// For CartPole: episode steps. For MNIST: classification accuracy.
     pub reward_avg: f32,
+    // Competition monitoring (Section 8, Phase A)
+    /// Mean number of cluster members that fired after competition resolved.
+    /// Only meaningful in LocalInhibition mode; 0 when no clusters exist.
+    pub winners_per_cluster: f32,
+    // Morphogenesis rates (Section 8, Phase B)
+    /// Division events in the last glacial tick.
+    pub division_rate: f32,
+    /// Pruning (synapse) events in the last slow tick.
+    pub pruning_rate: f32,
+    /// Mean frustration level across all morphons.
+    pub frustration_mean: f32,
 }
 
 impl Default for VitalSigns {
@@ -137,6 +148,10 @@ impl Default for VitalSigns {
             energy_utilization: 0.5,
             prediction_error_mean: 0.1,
             reward_avg: 0.0,
+            winners_per_cluster: 0.0,
+            division_rate: 0.0,
+            pruning_rate: 0.0,
+            frustration_mean: 0.0,
         }
     }
 }
@@ -149,6 +164,7 @@ pub fn sense_vitals(
     diag: &Diagnostics,
     step: u64,
     reward_avg: f64,
+    clusters: &HashMap<crate::types::ClusterId, crate::morphogenesis::Cluster>,
 ) -> VitalSigns {
     let n = morphons.len().max(1) as f32;
 
@@ -156,7 +172,13 @@ pub fn sense_vitals(
     let fr = |ct: CellType| -> f32 {
         diag.firing_by_type
             .get(&ct)
-            .map(|&(fired, total)| if total > 0 { fired as f32 / total as f32 } else { 0.0 })
+            .map(|&(fired, total)| {
+                if total > 0 {
+                    fired as f32 / total as f32
+                } else {
+                    0.0
+                }
+            })
             .unwrap_or(0.0)
     };
 
@@ -186,6 +208,22 @@ pub fn sense_vitals(
     let avg_energy = energy_sum / n;
     let energy_utilization = 1.0 - avg_energy.clamp(0.0, 1.0);
 
+    // winners_per_cluster: mean fired count per cluster (LocalInhibition observability)
+    let winners_per_cluster = if clusters.is_empty() {
+        0.0_f32
+    } else {
+        let total_winners: usize = clusters
+            .values()
+            .map(|c| {
+                c.members
+                    .iter()
+                    .filter(|&&mid| morphons.get(&mid).map_or(false, |m| m.fired))
+                    .count()
+            })
+            .sum();
+        total_winners as f32 / clusters.len() as f32
+    };
+
     VitalSigns {
         timestamp: step,
         fr_sensory: fr(CellType::Sensory),
@@ -202,6 +240,10 @@ pub fn sense_vitals(
         energy_utilization,
         prediction_error_mean: pe_sum / n,
         reward_avg: reward_avg as f32,
+        winners_per_cluster,
+        division_rate: diag.division_events_recent as f32,
+        pruning_rate: diag.pruning_events_recent as f32,
+        frustration_mean: diag.avg_frustration as f32,
     }
 }
 
@@ -229,7 +271,11 @@ fn compute_weight_entropy(topology: &Topology) -> f32 {
     // First pass: find range
     for ei in topology.graph.edge_indices() {
         if let Some(syn) = topology.graph.edge_weight(ei) {
-            let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+            let w = if syn.weight.is_finite() {
+                syn.weight
+            } else {
+                0.0
+            };
             abs_max = abs_max.max(w.abs());
             count += 1;
         }
@@ -244,7 +290,11 @@ fn compute_weight_entropy(topology: &Topology) -> f32 {
     // Second pass: bin
     for ei in topology.graph.edge_indices() {
         if let Some(syn) = topology.graph.edge_weight(ei) {
-            let w = if syn.weight.is_finite() { syn.weight } else { 0.0 };
+            let w = if syn.weight.is_finite() {
+                syn.weight
+            } else {
+                0.0
+            };
             let normalized = (w + abs_max) / range; // [0, 1]
             let bin = ((normalized * NUM_BINS as f64) as usize).min(NUM_BINS - 1);
             bins[bin] += 1;
@@ -319,7 +369,9 @@ pub struct ChannelState {
     pub synaptogenesis_threshold_mult: f32,
 }
 
-fn default_channel_one() -> f32 { 1.0 }
+fn default_channel_one() -> f32 {
+    1.0
+}
 
 impl Default for ChannelState {
     fn default() -> Self {
@@ -408,27 +460,39 @@ impl DevelopmentalSetpoints {
     fn for_stage(stage: DevelopmentalStage) -> Self {
         match stage {
             DevelopmentalStage::Proliferating => Self {
-                fr_assoc_min: 0.12, fr_assoc_max: 0.18,
-                elig_min: 0.40, elig_max: 0.70,
-                entropy_min: 3.0, entropy_max: 4.5,
+                fr_assoc_min: 0.12,
+                fr_assoc_max: 0.18,
+                elig_min: 0.40,
+                elig_max: 0.70,
+                entropy_min: 3.0,
+                entropy_max: 4.5,
                 type_targets: [0.15, 0.20, 0.35, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Differentiating => Self {
-                fr_assoc_min: 0.10, fr_assoc_max: 0.15,
-                elig_min: 0.30, elig_max: 0.60,
-                entropy_min: 2.5, entropy_max: 4.0,
+                fr_assoc_min: 0.10,
+                fr_assoc_max: 0.15,
+                elig_min: 0.30,
+                elig_max: 0.60,
+                entropy_min: 2.5,
+                entropy_max: 4.0,
                 type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Consolidating | DevelopmentalStage::Mature => Self {
-                fr_assoc_min: 0.08, fr_assoc_max: 0.12,
-                elig_min: 0.20, elig_max: 0.40,
-                entropy_min: 2.0, entropy_max: 3.5,
+                fr_assoc_min: 0.08,
+                fr_assoc_max: 0.12,
+                elig_min: 0.20,
+                elig_max: 0.40,
+                entropy_min: 2.0,
+                entropy_max: 3.5,
                 type_targets: [0.05, 0.20, 0.45, 0.10, 0.15, 0.05, 0.0],
             },
             DevelopmentalStage::Stressed => Self {
-                fr_assoc_min: 0.08, fr_assoc_max: 0.15,
-                elig_min: 0.15, elig_max: 0.50,
-                entropy_min: 2.0, entropy_max: 4.0,
+                fr_assoc_min: 0.08,
+                fr_assoc_max: 0.15,
+                elig_min: 0.15,
+                elig_max: 0.50,
+                entropy_min: 2.0,
+                entropy_max: 4.0,
                 type_targets: [0.10, 0.20, 0.40, 0.10, 0.15, 0.05, 0.0],
             },
         }
@@ -446,6 +510,10 @@ struct AllostasisPredictor {
     morphon_count_history: VecDeque<u32>,
     reward_history: VecDeque<f32>,
     stage: DevelopmentalStage,
+    /// Cumulative tick count — used for Mature gate instead of reward_history.len()
+    /// because the ring buffer is capped at 500 but Mature requires 2000 ticks.
+    #[serde(default)]
+    total_updates: usize,
 }
 
 impl Default for AllostasisPredictor {
@@ -457,6 +525,7 @@ impl Default for AllostasisPredictor {
             morphon_count_history: VecDeque::with_capacity(200),
             reward_history: VecDeque::with_capacity(500),
             stage: DevelopmentalStage::Proliferating,
+            total_updates: 0,
         }
     }
 }
@@ -464,26 +533,92 @@ impl Default for AllostasisPredictor {
 impl AllostasisPredictor {
     fn update(&mut self, vitals: &VitalSigns, fast_alpha: f32, slow_alpha: f32) {
         // Update fast EMAs
-        ema_update_f32(&mut self.fast_emas.fr_sensory, vitals.fr_sensory, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.fr_associative, vitals.fr_associative, fast_alpha);
+        ema_update_f32(
+            &mut self.fast_emas.fr_sensory,
+            vitals.fr_sensory,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.fr_associative,
+            vitals.fr_associative,
+            fast_alpha,
+        );
         ema_update_f32(&mut self.fast_emas.fr_motor, vitals.fr_motor, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.fr_modulatory, vitals.fr_modulatory, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.eligibility_density, vitals.eligibility_density, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.weight_entropy, vitals.weight_entropy, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.energy_utilization, vitals.energy_utilization, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.prediction_error_mean, vitals.prediction_error_mean, fast_alpha);
-        ema_update_f32(&mut self.fast_emas.reward_avg, vitals.reward_avg, fast_alpha);
+        ema_update_f32(
+            &mut self.fast_emas.fr_modulatory,
+            vitals.fr_modulatory,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.eligibility_density,
+            vitals.eligibility_density,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.weight_entropy,
+            vitals.weight_entropy,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.energy_utilization,
+            vitals.energy_utilization,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.prediction_error_mean,
+            vitals.prediction_error_mean,
+            fast_alpha,
+        );
+        ema_update_f32(
+            &mut self.fast_emas.reward_avg,
+            vitals.reward_avg,
+            fast_alpha,
+        );
 
         // Update slow EMAs
-        ema_update_f32(&mut self.slow_emas.fr_sensory, vitals.fr_sensory, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.fr_associative, vitals.fr_associative, slow_alpha);
+        ema_update_f32(
+            &mut self.slow_emas.fr_sensory,
+            vitals.fr_sensory,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.fr_associative,
+            vitals.fr_associative,
+            slow_alpha,
+        );
         ema_update_f32(&mut self.slow_emas.fr_motor, vitals.fr_motor, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.fr_modulatory, vitals.fr_modulatory, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.eligibility_density, vitals.eligibility_density, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.weight_entropy, vitals.weight_entropy, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.energy_utilization, vitals.energy_utilization, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.prediction_error_mean, vitals.prediction_error_mean, slow_alpha);
-        ema_update_f32(&mut self.slow_emas.reward_avg, vitals.reward_avg, slow_alpha);
+        ema_update_f32(
+            &mut self.slow_emas.fr_modulatory,
+            vitals.fr_modulatory,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.eligibility_density,
+            vitals.eligibility_density,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.weight_entropy,
+            vitals.weight_entropy,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.energy_utilization,
+            vitals.energy_utilization,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.prediction_error_mean,
+            vitals.prediction_error_mean,
+            slow_alpha,
+        );
+        ema_update_f32(
+            &mut self.slow_emas.reward_avg,
+            vitals.reward_avg,
+            slow_alpha,
+        );
+
+        self.total_updates += 1;
 
         // History for trend detection
         self.pe_history.push_back(vitals.prediction_error_mean);
@@ -511,7 +646,11 @@ impl AllostasisPredictor {
             let reward_slow = self.slow_emas.reward_avg;
             let reward_fast = self.fast_emas.reward_avg;
             let reward_std = self.std_f32(&self.reward_history);
-            let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 99.0 };
+            let reward_cv = if reward_fast.abs() > 0.01 {
+                reward_std / reward_fast.abs()
+            } else {
+                99.0
+            };
             let reward_trend = self.trend_f32(&self.reward_history);
             let slow_abs = reward_slow.abs().max(0.01_f32);
             eprintln!("[ENDO] {:?} → {:?} | reward_slow={:.4} reward_cv={:.4} trend={:.6} (slow_abs={:.4}) hist={}",
@@ -550,13 +689,19 @@ impl AllostasisPredictor {
         // where contrastive reward is dense+stable even at 20% accuracy. Endo must see
         // genuinely high reward before declaring the system mature.
         let reward_std = self.std_f32(&self.reward_history);
-        let reward_cv = if reward_fast.abs() > 0.01 { reward_std / reward_fast.abs() } else { 1.0 };
+        let reward_cv = if reward_fast.abs() > 0.01 {
+            reward_std / reward_fast.abs()
+        } else {
+            1.0
+        };
         // Mature: require 2000+ ticks of history. At medium_period=10 and 10 steps/image,
         // that's 2000 images. Prevents premature Mature during the critical learning phase
         // where reward_slow inflates from early high-accuracy windows.
         // Recovery experiment proved: pm=2.16 (Differentiating) → 49%, pm=0.60 (Mature) → 27%.
-        if reward_slow > 0.3 && reward_cv < 0.15 && reward_trend.abs() < 0.005 * slow_abs
-            && self.reward_history.len() >= 2000
+        if reward_slow > 0.3
+            && reward_cv < 0.15
+            && reward_trend.abs() < 0.005 * slow_abs
+            && self.total_updates >= 2000
         {
             return DevelopmentalStage::Mature;
         }
@@ -567,8 +712,11 @@ impl AllostasisPredictor {
         // IS the feature: cortical learning alternates theta bursts (exploration)
         // with sharp-wave ripples (consolidation). Mature at 2000 prevents
         // permanent throttling; Consolidating at 500 provides periodic stabilization.
-        if reward_slow > 0.05 && reward_fast > reward_slow * 0.95 && reward_trend.abs() < 0.05 * slow_abs
-            && self.reward_history.len() >= 500 {
+        if reward_slow > 0.05
+            && reward_fast > reward_slow * 0.95
+            && reward_trend.abs() < 0.05 * slow_abs
+            && self.reward_history.len() >= 500
+        {
             return DevelopmentalStage::Consolidating;
         }
 
@@ -585,9 +733,23 @@ impl AllostasisPredictor {
         DevelopmentalStage::Differentiating
     }
 
+    /// Returns true if anti-hub scaling should be applied.
+    /// This is biologically appropriate mainly in Mature and Consolidating stages
+    /// when selective feature detectors have formed and need protection from
+    /// indiscriminate hubs. In early stages (Proliferating, Differentiating),
+    /// uniform activity patterns are normal and should not be suppressed.
+    pub fn should_apply_anti_hub_scaling(&self) -> bool {
+        matches!(
+            self.stage,
+            DevelopmentalStage::Mature | DevelopmentalStage::Consolidating
+        )
+    }
+
     /// Compute standard deviation of f32 history.
     fn std_f32(&self, history: &VecDeque<f32>) -> f32 {
-        if history.len() < 2 { return 0.0; }
+        if history.len() < 2 {
+            return 0.0;
+        }
         let n = history.len() as f32;
         let mean: f32 = history.iter().sum::<f32>() / n;
         let variance: f32 = history.iter().map(|&x| (x - mean).powi(2)).sum::<f32>() / n;
@@ -603,7 +765,9 @@ impl AllostasisPredictor {
         let recent = history.iter().rev().take(n / 2).sum::<u32>() as f32 / (n / 2) as f32;
         let older = history.iter().take(n / 2).sum::<u32>() as f32 / (n / 2) as f32;
         let mean = (recent + older) / 2.0;
-        if mean < 1.0 { return 0.0; }
+        if mean < 1.0 {
+            return 0.0;
+        }
         (recent - older) / mean
     }
 
@@ -752,8 +916,10 @@ impl Endoquilibrium {
             ch.arousal_gain += deficit * cfg.fr_deficit_arousal_k;
             ch.novelty_gain += deficit * cfg.fr_deficit_novelty_k;
             interventions.push(Intervention {
-                rule: "firing_rate_low".into(), vital: "fr_associative".into(),
-                actual: fr_a, setpoint: sp.fr_assoc_min,
+                rule: "firing_rate_low".into(),
+                vital: "fr_associative".into(),
+                actual: fr_a,
+                setpoint: sp.fr_assoc_min,
                 lever: "threshold_bias/arousal/novelty".into(),
                 adjustment: -deficit,
             });
@@ -763,8 +929,10 @@ impl Endoquilibrium {
             ch.threshold_bias += excess * cfg.fr_excess_threshold_k;
             ch.homeostasis_gain += excess * cfg.fr_excess_homeo_k;
             interventions.push(Intervention {
-                rule: "firing_rate_high".into(), vital: "fr_associative".into(),
-                actual: fr_a, setpoint: sp.fr_assoc_max,
+                rule: "firing_rate_high".into(),
+                vital: "fr_associative".into(),
+                actual: fr_a,
+                setpoint: sp.fr_assoc_max,
                 lever: "threshold_bias/homeostasis".into(),
                 adjustment: excess,
             });
@@ -775,8 +943,10 @@ impl Endoquilibrium {
             ch.novelty_gain += cfg.elig_low_novelty_k;
             ch.plasticity_mult *= cfg.elig_low_plast_k;
             interventions.push(Intervention {
-                rule: "eligibility_low".into(), vital: "eligibility_density".into(),
-                actual: elig, setpoint: sp.elig_min,
+                rule: "eligibility_low".into(),
+                vital: "eligibility_density".into(),
+                actual: elig,
+                setpoint: sp.elig_min,
                 lever: "novelty/plasticity_mult".into(),
                 adjustment: sp.elig_min - elig,
             });
@@ -785,8 +955,10 @@ impl Endoquilibrium {
             ch.homeostasis_gain += cfg.elig_high_homeo_k;
             ch.plasticity_mult *= cfg.elig_high_plast_k;
             interventions.push(Intervention {
-                rule: "eligibility_high".into(), vital: "eligibility_density".into(),
-                actual: elig, setpoint: sp.elig_max,
+                rule: "eligibility_high".into(),
+                vital: "eligibility_density".into(),
+                actual: elig,
+                setpoint: sp.elig_max,
                 lever: "homeostasis/plasticity_mult".into(),
                 adjustment: elig - sp.elig_max,
             });
@@ -797,8 +969,10 @@ impl Endoquilibrium {
             ch.novelty_gain += cfg.entropy_low_novelty_k;
             ch.plasticity_mult *= cfg.entropy_low_plast_k;
             interventions.push(Intervention {
-                rule: "entropy_collapse".into(), vital: "weight_entropy".into(),
-                actual: entropy, setpoint: sp.entropy_min,
+                rule: "entropy_collapse".into(),
+                vital: "weight_entropy".into(),
+                actual: entropy,
+                setpoint: sp.entropy_min,
                 lever: "novelty/plasticity_mult".into(),
                 adjustment: sp.entropy_min - entropy,
             });
@@ -807,8 +981,10 @@ impl Endoquilibrium {
             ch.plasticity_mult *= cfg.entropy_high_plast_k;
             ch.homeostasis_gain += cfg.entropy_high_homeo_k;
             interventions.push(Intervention {
-                rule: "entropy_explosion".into(), vital: "weight_entropy".into(),
-                actual: entropy, setpoint: sp.entropy_max,
+                rule: "entropy_explosion".into(),
+                vital: "weight_entropy".into(),
+                actual: entropy,
+                setpoint: sp.entropy_max,
                 lever: "plasticity_mult/homeostasis".into(),
                 adjustment: entropy - sp.entropy_max,
             });
@@ -823,8 +999,10 @@ impl Endoquilibrium {
             let excess = fraction - target;
             if excess > 0.15 {
                 interventions.push(Intervention {
-                    rule: "type_imbalance".into(), vital: "cell_type_fraction".into(),
-                    actual: fraction, setpoint: target,
+                    rule: "type_imbalance".into(),
+                    vital: "cell_type_fraction".into(),
+                    actual: fraction,
+                    setpoint: target,
                     lever: "division_threshold_mult/pruning_threshold_mult".into(),
                     adjustment: excess,
                 });
@@ -845,8 +1023,10 @@ impl Endoquilibrium {
         if vitals.tag_count > 100 && vitals.capture_count == 0 {
             ch.reward_gain *= cfg.tag_capture_reward_boost;
             interventions.push(Intervention {
-                rule: "tag_capture_stalled".into(), vital: "tag_capture_rate".into(),
-                actual: 0.0, setpoint: 0.02,
+                rule: "tag_capture_stalled".into(),
+                vital: "tag_capture_rate".into(),
+                actual: 0.0,
+                setpoint: 0.02,
                 lever: "reward_gain".into(),
                 adjustment: cfg.tag_capture_reward_boost - 1.0,
             });
@@ -871,8 +1051,10 @@ impl Endoquilibrium {
         ch.plasticity_mult *= pm_stage;
         if cg != 1.0 {
             interventions.push(Intervention {
-                rule: "stage_consolidation".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_consolidation".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "consolidation_gain/plasticity_mult".into(),
                 adjustment: cg - 1.0,
             });
@@ -885,8 +1067,10 @@ impl Endoquilibrium {
             ch.novelty_gain = 0.0;
             ch.homeostasis_gain = 2.0;
             interventions.push(Intervention {
-                rule: "energy_critical".into(), vital: "energy_utilization".into(),
-                actual: energy, setpoint: 0.70,
+                rule: "energy_critical".into(),
+                vital: "energy_utilization".into(),
+                actual: energy,
+                setpoint: 0.70,
                 lever: "plasticity/novelty/homeostasis".into(),
                 adjustment: energy - 0.95,
             });
@@ -895,8 +1079,10 @@ impl Endoquilibrium {
             ch.plasticity_mult *= 0.3;
             ch.novelty_gain *= 0.2;
             interventions.push(Intervention {
-                rule: "energy_emergency".into(), vital: "energy_utilization".into(),
-                actual: energy, setpoint: 0.70,
+                rule: "energy_emergency".into(),
+                vital: "energy_utilization".into(),
+                actual: energy,
+                setpoint: 0.70,
                 lever: "plasticity/novelty".into(),
                 adjustment: energy - 0.85,
             });
@@ -904,8 +1090,10 @@ impl Endoquilibrium {
             // Pressure
             ch.plasticity_mult *= 0.7;
             interventions.push(Intervention {
-                rule: "energy_pressure".into(), vital: "energy_utilization".into(),
-                actual: energy, setpoint: 0.70,
+                rule: "energy_pressure".into(),
+                vital: "energy_utilization".into(),
+                actual: energy,
+                setpoint: 0.70,
                 lever: "plasticity_mult".into(),
                 adjustment: energy - 0.70,
             });
@@ -922,8 +1110,10 @@ impl Endoquilibrium {
         ch.winner_adaptation_mult = wam;
         if (wam - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_winner_adaptation".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_winner_adaptation".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "winner_adaptation_mult".into(),
                 adjustment: wam - 1.0,
             });
@@ -940,7 +1130,8 @@ impl Endoquilibrium {
         ch.capture_threshold_mult = ctm;
         if ctm != 1.0 {
             interventions.push(Intervention {
-                rule: "capture_threshold_health".into(), vital: "ticks_since_capture".into(),
+                rule: "capture_threshold_health".into(),
+                vital: "ticks_since_capture".into(),
                 actual: self.ticks_since_last_capture as f32,
                 setpoint: cfg.tag_capture_stale_ticks as f32,
                 lever: "capture_threshold_mult".into(),
@@ -950,17 +1141,19 @@ impl Endoquilibrium {
 
         // ── Rule 10: Rollback PE Threshold Multiplier (stage-dependent) ──
         let rpm = match self.predictor.stage {
-            DevelopmentalStage::Proliferating => 1.5,   // tolerant during growth
+            DevelopmentalStage::Proliferating => 1.5, // tolerant during growth
             DevelopmentalStage::Differentiating => 1.0,
             DevelopmentalStage::Consolidating => 0.7,
-            DevelopmentalStage::Mature => 0.5,           // strict when mature
-            DevelopmentalStage::Stressed => 0.25,        // very strict under stress
+            DevelopmentalStage::Mature => 0.5, // strict when mature
+            DevelopmentalStage::Stressed => 0.25, // very strict under stress
         };
         ch.rollback_pe_threshold_mult = rpm;
         if (rpm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_rollback_sensitivity".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_rollback_sensitivity".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "rollback_pe_threshold_mult".into(),
                 adjustment: rpm - 1.0,
             });
@@ -1007,8 +1200,10 @@ impl Endoquilibrium {
         ch.slow_trace_leak = stl;
         if (stl - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_slow_trace_leak".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_slow_trace_leak".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "slow_trace_leak".into(),
                 adjustment: stl - 1.0,
             });
@@ -1028,8 +1223,10 @@ impl Endoquilibrium {
         ch.division_threshold_mult = dtm;
         if (dtm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_division_threshold".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_division_threshold".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "division_threshold_mult".into(),
                 adjustment: dtm - 1.0,
             });
@@ -1048,8 +1245,10 @@ impl Endoquilibrium {
         ch.pruning_threshold_mult = ptm;
         if (ptm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_pruning_threshold".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_pruning_threshold".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "pruning_threshold_mult".into(),
                 adjustment: ptm - 1.0,
             });
@@ -1068,8 +1267,10 @@ impl Endoquilibrium {
         ch.frustration_sensitivity_mult = fsm;
         if (fsm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_frustration_sensitivity".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_frustration_sensitivity".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "frustration_sensitivity_mult".into(),
                 adjustment: fsm - 1.0,
             });
@@ -1088,8 +1289,10 @@ impl Endoquilibrium {
         ch.migration_rate_mult = mrm;
         if (mrm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_migration_rate".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_migration_rate".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "migration_rate_mult".into(),
                 adjustment: mrm - 1.0,
             });
@@ -1108,8 +1311,10 @@ impl Endoquilibrium {
         ch.synaptogenesis_threshold_mult = stm;
         if (stm - 1.0).abs() > 0.01 {
             interventions.push(Intervention {
-                rule: "stage_synaptogenesis_threshold".into(), vital: "developmental_stage".into(),
-                actual: 0.0, setpoint: 1.0,
+                rule: "stage_synaptogenesis_threshold".into(),
+                vital: "developmental_stage".into(),
+                actual: 0.0,
+                setpoint: 1.0,
                 lever: "synaptogenesis_threshold_mult".into(),
                 adjustment: stm - 1.0,
             });
@@ -1124,25 +1329,66 @@ impl Endoquilibrium {
         self.channels.reward_gain = lerp(self.channels.reward_gain, raw.reward_gain, a);
         self.channels.novelty_gain = lerp(self.channels.novelty_gain, raw.novelty_gain, a);
         self.channels.arousal_gain = lerp(self.channels.arousal_gain, raw.arousal_gain, a);
-        self.channels.homeostasis_gain = lerp(self.channels.homeostasis_gain, raw.homeostasis_gain, a);
+        self.channels.homeostasis_gain =
+            lerp(self.channels.homeostasis_gain, raw.homeostasis_gain, a);
         self.channels.threshold_bias = lerp(self.channels.threshold_bias, raw.threshold_bias, a);
         self.channels.plasticity_mult = lerp(self.channels.plasticity_mult, raw.plasticity_mult, a);
-        self.channels.consolidation_gain = lerp(self.channels.consolidation_gain, raw.consolidation_gain, a);
-        self.channels.winner_adaptation_mult = lerp(self.channels.winner_adaptation_mult, raw.winner_adaptation_mult, a);
-        self.channels.capture_threshold_mult = lerp(self.channels.capture_threshold_mult, raw.capture_threshold_mult, a);
-        self.channels.rollback_pe_threshold_mult = lerp(self.channels.rollback_pe_threshold_mult, raw.rollback_pe_threshold_mult, a);
-        self.channels.tau_eligibility_mult = lerp(self.channels.tau_eligibility_mult, raw.tau_eligibility_mult, a);
+        self.channels.consolidation_gain =
+            lerp(self.channels.consolidation_gain, raw.consolidation_gain, a);
+        self.channels.winner_adaptation_mult = lerp(
+            self.channels.winner_adaptation_mult,
+            raw.winner_adaptation_mult,
+            a,
+        );
+        self.channels.capture_threshold_mult = lerp(
+            self.channels.capture_threshold_mult,
+            raw.capture_threshold_mult,
+            a,
+        );
+        self.channels.rollback_pe_threshold_mult = lerp(
+            self.channels.rollback_pe_threshold_mult,
+            raw.rollback_pe_threshold_mult,
+            a,
+        );
+        self.channels.tau_eligibility_mult = lerp(
+            self.channels.tau_eligibility_mult,
+            raw.tau_eligibility_mult,
+            a,
+        );
         self.channels.slow_trace_leak = lerp(self.channels.slow_trace_leak, raw.slow_trace_leak, a);
-        self.channels.division_threshold_mult = lerp(self.channels.division_threshold_mult, raw.division_threshold_mult, a);
-        self.channels.pruning_threshold_mult = lerp(self.channels.pruning_threshold_mult, raw.pruning_threshold_mult, a);
-        self.channels.frustration_sensitivity_mult = lerp(self.channels.frustration_sensitivity_mult, raw.frustration_sensitivity_mult, a);
-        self.channels.migration_rate_mult = lerp(self.channels.migration_rate_mult, raw.migration_rate_mult, a);
-        self.channels.synaptogenesis_threshold_mult = lerp(self.channels.synaptogenesis_threshold_mult, raw.synaptogenesis_threshold_mult, a);
+        self.channels.division_threshold_mult = lerp(
+            self.channels.division_threshold_mult,
+            raw.division_threshold_mult,
+            a,
+        );
+        self.channels.pruning_threshold_mult = lerp(
+            self.channels.pruning_threshold_mult,
+            raw.pruning_threshold_mult,
+            a,
+        );
+        self.channels.frustration_sensitivity_mult = lerp(
+            self.channels.frustration_sensitivity_mult,
+            raw.frustration_sensitivity_mult,
+            a,
+        );
+        self.channels.migration_rate_mult = lerp(
+            self.channels.migration_rate_mult,
+            raw.migration_rate_mult,
+            a,
+        );
+        self.channels.synaptogenesis_threshold_mult = lerp(
+            self.channels.synaptogenesis_threshold_mult,
+            raw.synaptogenesis_threshold_mult,
+            a,
+        );
         self.channels.clamp();
         // Apply plasticity floor after clamping — prevents Mature from suppressing learning
         // below the configured minimum (useful for supervised tasks).
         if self.config.plasticity_floor > 0.0 {
-            self.channels.plasticity_mult = self.channels.plasticity_mult.max(self.config.plasticity_floor);
+            self.channels.plasticity_mult = self
+                .channels
+                .plasticity_mult
+                .max(self.config.plasticity_floor);
         }
     }
 
@@ -1218,6 +1464,11 @@ impl Endoquilibrium {
     pub fn target_assoc_firing_rate(&self) -> f64 {
         ((self.setpoints.fr_assoc_min + self.setpoints.fr_assoc_max) / 2.0) as f64
     }
+
+    /// Delegates to AllostasisPredictor — anti-hub scaling is stage-gated.
+    pub fn should_apply_anti_hub_scaling(&self) -> bool {
+        self.predictor.should_apply_anti_hub_scaling()
+    }
 }
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
@@ -1254,58 +1505,91 @@ mod tests {
 
     #[test]
     fn test_rule1_fr_low() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Feed 0% FR for enough ticks that fast EMA drops
         for _ in 0..100 {
             endo.tick(make_vitals(0.0, 0.3, 3.0, 0.5));
         }
         // threshold_bias should be negative (lowering thresholds)
-        assert!(endo.channels.threshold_bias < 0.0,
-            "threshold_bias should be negative when FR=0%, got {}", endo.channels.threshold_bias);
+        assert!(
+            endo.channels.threshold_bias < 0.0,
+            "threshold_bias should be negative when FR=0%, got {}",
+            endo.channels.threshold_bias
+        );
         // arousal and novelty should be elevated
-        assert!(endo.channels.arousal_gain > 1.0,
-            "arousal_gain should be >1.0, got {}", endo.channels.arousal_gain);
+        assert!(
+            endo.channels.arousal_gain > 1.0,
+            "arousal_gain should be >1.0, got {}",
+            endo.channels.arousal_gain
+        );
     }
 
     #[test]
     fn test_rule1_fr_high() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         for _ in 0..100 {
             endo.tick(make_vitals(0.40, 0.3, 3.0, 0.5));
         }
         // threshold_bias should be positive (raising thresholds)
-        assert!(endo.channels.threshold_bias > 0.0,
-            "threshold_bias should be positive when FR=40%, got {}", endo.channels.threshold_bias);
+        assert!(
+            endo.channels.threshold_bias > 0.0,
+            "threshold_bias should be positive when FR=40%, got {}",
+            endo.channels.threshold_bias
+        );
         assert!(endo.channels.homeostasis_gain > 1.0);
     }
 
     #[test]
     fn test_rule3_entropy_collapse() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         for _ in 0..100 {
             endo.tick(make_vitals(0.10, 0.3, 0.5, 0.5)); // entropy=0.5, well below min
         }
         // Novelty should be boosted, plasticity elevated
-        assert!(endo.channels.novelty_gain > 1.0,
-            "novelty should boost on entropy collapse, got {}", endo.channels.novelty_gain);
-        assert!(endo.channels.plasticity_mult > 1.0,
-            "plasticity should boost on entropy collapse, got {}", endo.channels.plasticity_mult);
+        assert!(
+            endo.channels.novelty_gain > 1.0,
+            "novelty should boost on entropy collapse, got {}",
+            endo.channels.novelty_gain
+        );
+        assert!(
+            endo.channels.plasticity_mult > 1.0,
+            "plasticity should boost on entropy collapse, got {}",
+            endo.channels.plasticity_mult
+        );
     }
 
     #[test]
     fn test_rule6_energy_critical() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         for _ in 0..200 {
             endo.tick(make_vitals(0.10, 0.3, 3.0, 0.96));
         }
         // plasticity should be near zero, homeostasis maxed
-        assert!(endo.channels.plasticity_mult < 0.2,
-            "plasticity should be near 0 at critical energy, got {}", endo.channels.plasticity_mult);
+        assert!(
+            endo.channels.plasticity_mult < 0.2,
+            "plasticity should be near 0 at critical energy, got {}",
+            endo.channels.plasticity_mult
+        );
     }
 
     #[test]
     fn test_smoothing_clamps() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Even with extreme vitals, channels stay within bounds
         for _ in 0..500 {
             endo.tick(make_vitals(0.0, 0.0, 0.0, 0.99));
@@ -1322,7 +1606,10 @@ mod tests {
 
     #[test]
     fn test_ema_convergence() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         let target_fr = 0.15;
         // Feed constant vitals
         for _ in 0..600 {
@@ -1330,17 +1617,28 @@ mod tests {
         }
         // Fast EMA should be very close (within 1%)
         let fast_fr = endo.predictor.fast_emas.fr_associative;
-        assert!((fast_fr - target_fr).abs() < 0.01,
-            "fast EMA should converge to {}, got {}", target_fr, fast_fr);
+        assert!(
+            (fast_fr - target_fr).abs() < 0.01,
+            "fast EMA should converge to {}, got {}",
+            target_fr,
+            fast_fr
+        );
         // Slow EMA should be close (within 5% after 600 ticks with tau=500)
         let slow_fr = endo.predictor.slow_emas.fr_associative;
-        assert!((slow_fr - target_fr).abs() < target_fr * 0.15,
-            "slow EMA should approach {}, got {}", target_fr, slow_fr);
+        assert!(
+            (slow_fr - target_fr).abs() < target_fr * 0.15,
+            "slow EMA should approach {}, got {}",
+            target_fr,
+            slow_fr
+        );
     }
 
     #[test]
     fn test_stage_detection_proliferating() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Too little reward history → Proliferating
         for _ in 0..15 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
@@ -1352,7 +1650,10 @@ mod tests {
 
     #[test]
     fn test_stage_detection_differentiating() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Feed rising reward → Differentiating
         for i in 0..100 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
@@ -1364,13 +1665,16 @@ mod tests {
 
     #[test]
     fn test_stage_detection_mature() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Feed stable reward with low variance → Mature
-        // Small jitter so each tick registers as a new reward value
-        // (reward_history deduplicates exact repeats to prevent artificial flatness)
-        for i in 0..200 {
+        // Needs 2000+ ticks (Mature history gate raised to prevent premature triggering)
+        // Alternate between two close values to pass dedup while keeping cv low and trend ~0
+        for i in 0..2500 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-            v.reward_avg = 195.0 + (i as f32) * 0.001;
+            v.reward_avg = 195.0 + if i % 2 == 0 { 0.01 } else { -0.01 };
             endo.tick(v);
         }
         assert_eq!(endo.stage(), DevelopmentalStage::Mature);
@@ -1378,7 +1682,10 @@ mod tests {
 
     #[test]
     fn test_stage_detection_stressed() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Build up a baseline, then drop reward → Stressed
         for i in 0..100 {
             let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
@@ -1401,7 +1708,10 @@ mod tests {
 
     #[test]
     fn test_healthy_vitals_stable() {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         // Feed perfectly healthy vitals with stable reward
         // Small jitter to bypass reward_history deduplication
         for i in 0..200 {
@@ -1410,10 +1720,16 @@ mod tests {
             endo.tick(v);
         }
         // Channels should be reasonable (stage may be Mature with pm_stage=0.5)
-        assert!((endo.channels.threshold_bias).abs() < 0.1,
-            "healthy vitals should produce near-zero bias, got {}", endo.channels.threshold_bias);
-        assert!(endo.channels.plasticity_mult >= 0.1,
-            "plasticity should stay within bounds, got {}", endo.channels.plasticity_mult);
+        assert!(
+            (endo.channels.threshold_bias).abs() < 0.1,
+            "healthy vitals should produce near-zero bias, got {}",
+            endo.channels.threshold_bias
+        );
+        assert!(
+            endo.channels.plasticity_mult >= 0.1,
+            "plasticity should stay within bounds, got {}",
+            endo.channels.plasticity_mult
+        );
         assert!(endo.last_diag.health_score > 0.7);
     }
 
@@ -1422,7 +1738,10 @@ mod tests {
     /// Helper: drive endo into a specific stage and return the channel state.
     /// Patterns match the passing stage detection tests exactly (with jitter).
     fn drive_to_stage(stage: DevelopmentalStage) -> ChannelState {
-        let mut endo = Endoquilibrium::new(EndoConfig { enabled: true, ..Default::default() });
+        let mut endo = Endoquilibrium::new(EndoConfig {
+            enabled: true,
+            ..Default::default()
+        });
         match stage {
             DevelopmentalStage::Proliferating => {
                 for _ in 0..15 {
@@ -1439,9 +1758,10 @@ mod tests {
                 }
             }
             DevelopmentalStage::Mature => {
-                for i in 0..200 {
+                // Needs 2000+ ticks to pass Mature history gate
+                for i in 0..2500 {
                     let mut v = make_vitals(0.10, 0.3, 3.0, 0.5);
-                    v.reward_avg = 195.0 + (i as f32) * 0.001;
+                    v.reward_avg = 195.0 + if i % 2 == 0 { 0.01 } else { -0.01 };
                     endo.tick(v);
                 }
             }
@@ -1480,13 +1800,22 @@ mod tests {
         let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
         let mature = drive_to_stage(DevelopmentalStage::Mature);
 
-        assert!(prolif.division_threshold_mult < 1.0,
-            "Proliferating should lower division threshold, got {}", prolif.division_threshold_mult);
-        assert!(mature.division_threshold_mult > 1.0,
-            "Mature should raise division threshold, got {}", mature.division_threshold_mult);
-        assert!(mature.division_threshold_mult > prolif.division_threshold_mult,
+        assert!(
+            prolif.division_threshold_mult < 1.0,
+            "Proliferating should lower division threshold, got {}",
+            prolif.division_threshold_mult
+        );
+        assert!(
+            mature.division_threshold_mult > 1.0,
+            "Mature should raise division threshold, got {}",
+            mature.division_threshold_mult
+        );
+        assert!(
+            mature.division_threshold_mult > prolif.division_threshold_mult,
             "Mature dtm ({}) should be higher than Proliferating ({})",
-            mature.division_threshold_mult, prolif.division_threshold_mult);
+            mature.division_threshold_mult,
+            prolif.division_threshold_mult
+        );
     }
 
     #[test]
@@ -1494,10 +1823,16 @@ mod tests {
         let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
         let mature = drive_to_stage(DevelopmentalStage::Mature);
 
-        assert!(prolif.pruning_threshold_mult < 1.0,
-            "Proliferating should make pruning harder, got {}", prolif.pruning_threshold_mult);
-        assert!(mature.pruning_threshold_mult > 1.0,
-            "Mature should make pruning easier, got {}", mature.pruning_threshold_mult);
+        assert!(
+            prolif.pruning_threshold_mult < 1.0,
+            "Proliferating should make pruning harder, got {}",
+            prolif.pruning_threshold_mult
+        );
+        assert!(
+            mature.pruning_threshold_mult > 1.0,
+            "Mature should make pruning easier, got {}",
+            mature.pruning_threshold_mult
+        );
     }
 
     #[test]
@@ -1505,10 +1840,16 @@ mod tests {
         let prolif = drive_to_stage(DevelopmentalStage::Proliferating);
         let mature = drive_to_stage(DevelopmentalStage::Mature);
 
-        assert!(prolif.frustration_sensitivity_mult > 1.0,
-            "Proliferating should be more tolerant, got {}", prolif.frustration_sensitivity_mult);
-        assert!(mature.frustration_sensitivity_mult < 1.0,
-            "Mature should be more sensitive, got {}", mature.frustration_sensitivity_mult);
+        assert!(
+            prolif.frustration_sensitivity_mult > 1.0,
+            "Proliferating should be more tolerant, got {}",
+            prolif.frustration_sensitivity_mult
+        );
+        assert!(
+            mature.frustration_sensitivity_mult < 1.0,
+            "Mature should be more sensitive, got {}",
+            mature.frustration_sensitivity_mult
+        );
     }
 
     #[test]
@@ -1517,10 +1858,16 @@ mod tests {
 
         // Stressed: division slightly easier than default (0.9 < 1.0),
         // frustration very sensitive (0.5), pruning neutral (1.0).
-        assert!(stressed.division_threshold_mult < 1.0,
-            "Stressed should allow some division for escape, got {}", stressed.division_threshold_mult);
-        assert!(stressed.frustration_sensitivity_mult < 1.0,
-            "Stressed should be frustration-sensitive, got {}", stressed.frustration_sensitivity_mult);
+        assert!(
+            stressed.division_threshold_mult < 1.0,
+            "Stressed should allow some division for escape, got {}",
+            stressed.division_threshold_mult
+        );
+        assert!(
+            stressed.frustration_sensitivity_mult < 1.0,
+            "Stressed should be frustration-sensitive, got {}",
+            stressed.frustration_sensitivity_mult
+        );
     }
 
     #[test]
@@ -1532,12 +1879,24 @@ mod tests {
             DevelopmentalStage::Stressed,
         ] {
             let ch = drive_to_stage(stage);
-            assert!(ch.division_threshold_mult >= 0.5 && ch.division_threshold_mult <= 2.0,
-                "{:?}: dtm {} out of range", stage, ch.division_threshold_mult);
-            assert!(ch.pruning_threshold_mult >= 0.5 && ch.pruning_threshold_mult <= 2.0,
-                "{:?}: ptm {} out of range", stage, ch.pruning_threshold_mult);
-            assert!(ch.frustration_sensitivity_mult >= 0.5 && ch.frustration_sensitivity_mult <= 2.0,
-                "{:?}: fsm {} out of range", stage, ch.frustration_sensitivity_mult);
+            assert!(
+                ch.division_threshold_mult >= 0.5 && ch.division_threshold_mult <= 2.0,
+                "{:?}: dtm {} out of range",
+                stage,
+                ch.division_threshold_mult
+            );
+            assert!(
+                ch.pruning_threshold_mult >= 0.5 && ch.pruning_threshold_mult <= 2.0,
+                "{:?}: ptm {} out of range",
+                stage,
+                ch.pruning_threshold_mult
+            );
+            assert!(
+                ch.frustration_sensitivity_mult >= 0.5 && ch.frustration_sensitivity_mult <= 2.0,
+                "{:?}: fsm {} out of range",
+                stage,
+                ch.frustration_sensitivity_mult
+            );
         }
     }
 }

@@ -115,6 +115,12 @@ pub struct Diagnostics {
     /// Shannon entropy of per-morphon firing counts (normalized [0,1]).
     /// Computed at episode end; NaN between episodes.
     pub winner_diversity_entropy: f64,
+
+    // === Morphogenesis rate counters (rolling, reset each glacial tick) ===
+    /// Division events in the most recent glacial tick.
+    pub division_events_recent: u32,
+    /// Pruning events in the most recent glacial tick.
+    pub pruning_events_recent: u32,
 }
 
 impl Diagnostics {

@@ -3,14 +3,12 @@
 //! Uses the Dual-Clock Architecture (Section 3.8) to separate fast inference
 //! from slow morphogenesis, with homeostatic protection mechanisms throughout.
 
-use rand::Rng;
-use serde::{Deserialize, Serialize};
 use crate::developmental::{self, DevelopmentalConfig, TargetMorphology};
 use crate::diagnostics::Diagnostics;
 use crate::field::{FieldConfig, MorphonField};
-use crate::lineage::{self, LineageTree};
 use crate::homeostasis::{self, HomeostasisParams};
 use crate::learning::{self, LearningParams};
+use crate::lineage::{self, LineageTree};
 use crate::memory::TripleMemory;
 use crate::morphogenesis::{self, Cluster, MorphogenesisParams, MorphogenesisReport};
 use crate::morphon::{MetabolicConfig, Morphon};
@@ -19,8 +17,10 @@ use crate::resonance::ResonanceEngine;
 use crate::scheduler::SchedulerConfig;
 use crate::topology::Topology;
 use crate::types::*;
+use rand::Rng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Configuration for creating a new MI System.
@@ -76,8 +76,7 @@ impl SystemConfig {
     /// Load a configuration from a JSON file.
     pub fn load_json(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         let json = std::fs::read_to_string(path)?;
-        serde_json::from_str(&json)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        serde_json::from_str(&json).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
     }
 }
 
@@ -262,12 +261,12 @@ impl System {
 
         // Resolve effective morphon cap: governance takes precedence over morphogenesis.
         // The governance cap is a constitutional constraint the system cannot override.
-        let effective_max_morphons = config.governance.max_morphons.unwrap_or_else(||
+        let effective_max_morphons = config.governance.max_morphons.unwrap_or_else(|| {
             config.morphogenesis.resolve_max_morphons(
                 config.developmental.target_input_size,
                 config.developmental.target_output_size,
             )
-        );
+        });
 
         let (mut morphons, topology, next_id) =
             developmental::develop(&config.developmental, &config.homeostasis, &mut rng);
@@ -312,13 +311,15 @@ impl System {
         // Initialize DFA feedback weights: Motor → Associative (fixed random).
         // Each Associative morphon gets a random projection weight from each Motor.
         // These weights are NEVER updated — the forward weights align to them.
-        let all_assoc_ids: Vec<MorphonId> = morphons.values()
+        let all_assoc_ids: Vec<MorphonId> = morphons
+            .values()
             .filter(|m| m.cell_type == CellType::Associative)
             .map(|m| m.id)
             .collect();
         let mut feedback_weights: HashMap<MorphonId, Vec<(MorphonId, f64)>> = HashMap::new();
         for (i, &aid) in all_assoc_ids.iter().enumerate() {
-            let motor_weights: Vec<(MorphonId, f64)> = motor_ids.iter()
+            let motor_weights: Vec<(MorphonId, f64)> = motor_ids
+                .iter()
                 .enumerate()
                 .map(|(j, &mid)| {
                     // Deterministic pseudo-random weight from morphon IDs
@@ -351,7 +352,7 @@ impl System {
             feedback_weights,
             readout_weights: Vec::new(), // initialized below after struct creation
             readout_bias: Vec::new(),
-            use_analog_readout: false,   // off by default, enabled per-task
+            use_analog_readout: false, // off by default, enabled per-task
             next_morphon_id: next_id,
             next_cluster_id: 0,
             step_count: 0,
@@ -365,7 +366,7 @@ impl System {
             consolidation_gate: 10.0, // consolidate once above random baseline
             peak_performance: 0.0,
             running_avg_steps: 9.0, // initialize to random baseline
-            field: None, // initialized below
+            field: None,            // initialized below
             endo,
             effective_max_morphons,
             cached_maintenance_costs: HashMap::new(),
@@ -375,9 +376,17 @@ impl System {
         if system.config.field.enabled {
             // Auto-add Identity layer if target morphology is configured
             if system.config.target_morphology.is_some()
-                && !system.config.field.active_layers.contains(&crate::field::FieldType::Identity)
+                && !system
+                    .config
+                    .field
+                    .active_layers
+                    .contains(&crate::field::FieldType::Identity)
             {
-                system.config.field.active_layers.push(crate::field::FieldType::Identity);
+                system
+                    .config
+                    .field
+                    .active_layers
+                    .push(crate::field::FieldType::Identity);
             }
             system.field = Some(MorphonField::new(system.config.field.clone()));
         }
@@ -401,7 +410,8 @@ impl System {
             if n_inputs > 0 {
                 let noise_input: Vec<f64> = (0..n_inputs)
                     .map(|i| {
-                        let v = ((i as u64).wrapping_mul(step.wrapping_add(997)) % 1000) as f64 / 1000.0;
+                        let v = ((i as u64).wrapping_mul(step.wrapping_add(997)) % 1000) as f64
+                            / 1000.0;
                         0.5 + v * 1.0
                     })
                     .collect();
@@ -429,8 +439,8 @@ impl System {
             m.input_accumulator = 0.0;
             m.refractory_timer = 0.0;
             m.energy = 1.0; // restore full energy after warm-up
-            // Lower Associative threshold to 60% of default — ensures 5-10% firing rate
-            // so the readout has diverse activity patterns to learn from.
+                            // Lower Associative threshold to 60% of default — ensures 5-10% firing rate
+                            // so the readout has diverse activity patterns to learn from.
             if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
                 m.threshold *= 0.6;
             }
@@ -512,116 +522,131 @@ impl System {
                     // iSTDP tunes their weights on the medium path.
                     self.kwta_winners.clear();
                 }
-                CompetitionMode::GlobalKWTA { fraction, local_radius, local_k } => {
-            let kwta_fraction = *fraction;
-            let local_radius = *local_radius;
-            let local_k = *local_k;
+                CompetitionMode::GlobalKWTA {
+                    fraction,
+                    local_radius,
+                    local_k,
+                } => {
+                    let kwta_fraction = *fraction;
+                    let local_radius = *local_radius;
+                    let local_k = *local_k;
 
-            // Collect associative/stem morphons with degree-normalized input.
-            let mut assoc_data: Vec<(MorphonId, f64)> = self.morphons.values()
-                .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
-                .map(|m| {
-                    let in_degree = self.topology.degree(m.id).max(1);
-                    (m.id, m.input_accumulator / in_degree as f64)
-                })
-                .collect();
-
-            if !assoc_data.is_empty() {
-                let winners = if local_radius > 0.0 {
-                    // === LOCAL k-WTA: spatial neighborhoods in Poincare ball ===
-                    let local_k = local_k;
-                    let mut global_winners: std::collections::HashSet<MorphonId> =
-                        std::collections::HashSet::new();
-
-                    // Cache positions to avoid repeated borrow
-                    let positions: Vec<(MorphonId, f64, crate::types::HyperbolicPoint)> = assoc_data.iter()
-                        .filter_map(|&(id, input)| {
-                            self.morphons.get(&id).map(|m| (id, input, m.position.clone()))
+                    // Collect associative/stem morphons with degree-normalized input.
+                    let mut assoc_data: Vec<(MorphonId, f64)> = self
+                        .morphons
+                        .values()
+                        .filter(|m| {
+                            m.cell_type == CellType::Associative || m.cell_type == CellType::Stem
+                        })
+                        .map(|m| {
+                            let in_degree = self.topology.degree(m.id).max(1);
+                            (m.id, m.input_accumulator / in_degree as f64)
                         })
                         .collect();
 
-                    for i in 0..positions.len() {
-                        let (center_id, _, ref center_pos) = positions[i];
+                    if !assoc_data.is_empty() {
+                        let winners = if local_radius > 0.0 {
+                            // === LOCAL k-WTA: spatial neighborhoods in Poincare ball ===
+                            let local_k = local_k;
+                            let mut global_winners: std::collections::HashSet<MorphonId> =
+                                std::collections::HashSet::new();
 
-                        // Find neighbors within radius (including self)
-                        let mut neighborhood: Vec<(MorphonId, f64)> = positions.iter()
-                            .filter(|(_, _, pos)| center_pos.distance(pos) < local_radius)
-                            .map(|&(id, input, _)| (id, input))
-                            .collect();
+                            // Cache positions to avoid repeated borrow
+                            let positions: Vec<(MorphonId, f64, crate::types::HyperbolicPoint)> =
+                                assoc_data
+                                    .iter()
+                                    .filter_map(|&(id, input)| {
+                                        self.morphons
+                                            .get(&id)
+                                            .map(|m| (id, input, m.position.clone()))
+                                    })
+                                    .collect();
 
-                        if neighborhood.len() <= local_k {
-                            // Everyone wins in tiny neighborhoods
-                            for &(id, _) in &neighborhood {
-                                global_winners.insert(id);
-                            }
-                            continue;
-                        }
+                            for i in 0..positions.len() {
+                                let (center_id, _, ref center_pos) = positions[i];
 
-                        // Top-k by input in this neighborhood
-                        neighborhood.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-                        for &(id, _) in &neighborhood[..local_k.min(neighborhood.len())] {
-                            global_winners.insert(id);
-                        }
-                    }
+                                // Find neighbors within radius (including self)
+                                let mut neighborhood: Vec<(MorphonId, f64)> = positions
+                                    .iter()
+                                    .filter(|(_, _, pos)| center_pos.distance(pos) < local_radius)
+                                    .map(|&(id, input, _)| (id, input))
+                                    .collect();
 
-                    // Suppress non-winners + anti-Hebbian LTD signal
-                    for &(id, _) in &assoc_data {
-                        if !global_winners.contains(&id) {
-                            if let Some(m) = self.morphons.get_mut(&id) {
-                                m.input_accumulator = 0.0;
-                            }
-                            let incoming = self.topology.incoming_synapses_mut(id);
-                            for (_, edge_idx) in incoming {
-                                if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                                    syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                                if neighborhood.len() <= local_k {
+                                    // Everyone wins in tiny neighborhoods
+                                    for &(id, _) in &neighborhood {
+                                        global_winners.insert(id);
+                                    }
+                                    continue;
+                                }
+
+                                // Top-k by input in this neighborhood
+                                neighborhood.sort_by(|a, b| {
+                                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                for &(id, _) in &neighborhood[..local_k.min(neighborhood.len())] {
+                                    global_winners.insert(id);
                                 }
                             }
-                        }
-                    }
 
-                    global_winners.into_iter().collect::<Vec<_>>()
-                } else {
-                    // === GLOBAL k-WTA (legacy) ===
-                    let k = (assoc_data.len() as f64 * kwta_fraction).ceil() as usize;
-                    let k = k.max(3).min(20).min(assoc_data.len());
-
-                    // Use select_nth_unstable for O(N) partitioning instead of O(N log N) sort.
-                    // We only need top-k, not full ordering.
-                    if k < assoc_data.len() {
-                        assoc_data.select_nth_unstable_by(k, |a, b| {
-                            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    }
-
-                    // Suppress non-winners AND inject anti-Hebbian LTD signal.
-                    // Biology: lateral inhibition hyperpolarizes losers, driving LTD
-                    // on their active incoming synapses. Without this, non-winners
-                    // get zero learning signal and never specialize away from shared
-                    // initial weight patterns → mode collapse on classification tasks.
-                    let suppressed_ids: Vec<MorphonId> = assoc_data[k..].iter()
-                        .map(|(id, _)| *id).collect();
-                    for &id in &suppressed_ids {
-                        if let Some(m) = self.morphons.get_mut(&id) {
-                            m.input_accumulator = 0.0;
-                        }
-                    }
-                    // Inject post_trace on suppressed neurons' incoming synapses so
-                    // that pre-fired sensory neurons drive LTD (a_minus × post_trace).
-                    // This teaches suppressed neurons "this input is not yours."
-                    for &id in &suppressed_ids {
-                        let incoming = self.topology.incoming_synapses_mut(id);
-                        for (_, edge_idx) in incoming {
-                            if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                                syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                            // Suppress non-winners + anti-Hebbian LTD signal
+                            for &(id, _) in &assoc_data {
+                                if !global_winners.contains(&id) {
+                                    if let Some(m) = self.morphons.get_mut(&id) {
+                                        m.input_accumulator = 0.0;
+                                    }
+                                    let incoming = self.topology.incoming_synapses_mut(id);
+                                    for (_, edge_idx) in incoming {
+                                        if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                            syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                                        }
+                                    }
+                                }
                             }
-                        }
+
+                            global_winners.into_iter().collect::<Vec<_>>()
+                        } else {
+                            // === GLOBAL k-WTA (legacy) ===
+                            let k = (assoc_data.len() as f64 * kwta_fraction).ceil() as usize;
+                            let k = k.max(3).min(20).min(assoc_data.len());
+
+                            // Use select_nth_unstable for O(N) partitioning instead of O(N log N) sort.
+                            // We only need top-k, not full ordering.
+                            if k < assoc_data.len() {
+                                assoc_data.select_nth_unstable_by(k, |a, b| {
+                                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                            }
+
+                            // Suppress non-winners AND inject anti-Hebbian LTD signal.
+                            // Biology: lateral inhibition hyperpolarizes losers, driving LTD
+                            // on their active incoming synapses. Without this, non-winners
+                            // get zero learning signal and never specialize away from shared
+                            // initial weight patterns → mode collapse on classification tasks.
+                            let suppressed_ids: Vec<MorphonId> =
+                                assoc_data[k..].iter().map(|(id, _)| *id).collect();
+                            for &id in &suppressed_ids {
+                                if let Some(m) = self.morphons.get_mut(&id) {
+                                    m.input_accumulator = 0.0;
+                                }
+                            }
+                            // Inject post_trace on suppressed neurons' incoming synapses so
+                            // that pre-fired sensory neurons drive LTD (a_minus × post_trace).
+                            // This teaches suppressed neurons "this input is not yours."
+                            for &id in &suppressed_ids {
+                                let incoming = self.topology.incoming_synapses_mut(id);
+                                for (_, edge_idx) in incoming {
+                                    if let Some(syn) = self.topology.synapse_mut(edge_idx) {
+                                        syn.post_trace = (syn.post_trace + 0.3).min(1.0);
+                                    }
+                                }
+                            }
+
+                            assoc_data[..k].iter().map(|(id, _)| *id).collect()
+                        };
+
+                        self.kwta_winners = winners;
                     }
-
-                    assoc_data[..k].iter().map(|(id, _)| *id).collect()
-                };
-
-                self.kwta_winners = winners;
-            }
                 } // end GlobalKWTA
             } // end match competition_mode
         }
@@ -632,7 +657,8 @@ impl System {
         // Higher mult → higher threshold → more tolerant (Proliferating).
         // Lower mult → lower threshold → more sensitive (Mature).
         let mut frustration_config = self.config.morphogenesis.frustration.clone();
-        frustration_config.stagnation_threshold *= self.endo.channels.frustration_sensitivity_mult as f64;
+        frustration_config.stagnation_threshold *=
+            self.endo.channels.frustration_sensitivity_mult as f64;
         let frustration_config = &frustration_config;
         let threshold_bias = self.endo.channels.threshold_bias as f64;
         // Recompute maintenance costs only on slow ticks (topology changes)
@@ -640,14 +666,21 @@ impl System {
         // distance calculations every step.
         if tick.slow || self.cached_maintenance_costs.is_empty() {
             let synapse_cost_base = metabolic.synapse_cost;
-            self.cached_maintenance_costs = self.morphons.keys()
+            self.cached_maintenance_costs = self
+                .morphons
+                .keys()
                 .map(|&id| {
-                    let total_cost: f64 = self.topology.outgoing(id)
+                    let total_cost: f64 = self
+                        .topology
+                        .outgoing(id)
                         .into_iter()
                         .map(|(target_id, synapse)| {
-                            let distance_factor = self.morphons.get(&target_id)
+                            let distance_factor = self
+                                .morphons
+                                .get(&target_id)
                                 .map(|target| {
-                                    let dist = self.morphons[&id].position.distance(&target.position);
+                                    let dist =
+                                        self.morphons[&id].position.distance(&target.position);
                                     1.0 + dist * 0.5
                                 })
                                 .unwrap_or(1.0);
@@ -660,7 +693,11 @@ impl System {
                 .collect();
         }
         {
-            let System { ref cached_maintenance_costs, ref mut morphons, .. } = *self;
+            let System {
+                ref cached_maintenance_costs,
+                ref mut morphons,
+                ..
+            } = *self;
             #[cfg(feature = "parallel")]
             morphons.par_iter_mut().for_each(|(id, m)| {
                 let cost = cached_maintenance_costs.get(id).copied().unwrap_or(0.0);
@@ -695,13 +732,17 @@ impl System {
             let draw_per_tick = self.config.metabolic.cluster_energy_draw_per_tick;
 
             // Collect cluster member lists to avoid borrow conflicts
-            let cluster_data: Vec<(ClusterId, Vec<MorphonId>)> = self.clusters.iter()
+            let cluster_data: Vec<(ClusterId, Vec<MorphonId>)> = self
+                .clusters
+                .iter()
                 .map(|(&cid, c)| (cid, c.members.clone()))
                 .collect();
 
             for (cid, members) in &cluster_data {
                 let member_count = members.len();
-                if member_count == 0 { continue; }
+                if member_count == 0 {
+                    continue;
+                }
 
                 // 1. Cluster overhead cost (V3 — kept for backward compat)
                 if cluster_overhead > 0.0 {
@@ -715,9 +756,8 @@ impl System {
                 // 2. Each fused morphon draws from the shared pool
                 if let Some(cluster) = self.clusters.get_mut(cid) {
                     for &mid in members {
-                        let actual_draw = draw_per_tick.min(
-                            cluster.shared_energy_pool / member_count as f64
-                        );
+                        let actual_draw =
+                            draw_per_tick.min(cluster.shared_energy_pool / member_count as f64);
                         if actual_draw > 0.0 {
                             if let Some(m) = self.morphons.get_mut(&mid) {
                                 m.energy = (m.energy + actual_draw).min(1.0);
@@ -740,10 +780,12 @@ impl System {
                 }
 
                 // 4. Cluster-level homeostasis: shared setpoint → member thresholds
-                let cluster_mean_rate: f64 = members.iter()
+                let cluster_mean_rate: f64 = members
+                    .iter()
                     .filter_map(|mid| self.morphons.get(mid))
                     .map(|m| m.activity_history.mean())
-                    .sum::<f64>() / member_count as f64;
+                    .sum::<f64>()
+                    / member_count as f64;
 
                 if let Some(cluster) = self.clusters.get_mut(cid) {
                     cluster.shared_homeostatic_setpoint +=
@@ -784,8 +826,9 @@ impl System {
                 match &self.config.homeostasis.competition_mode {
                     CompetitionMode::LocalInhibition { .. } => {
                         for m in self.morphons.values_mut() {
-                            if m.fired && (m.cell_type == CellType::Associative
-                                || m.cell_type == CellType::Stem)
+                            if m.fired
+                                && (m.cell_type == CellType::Associative
+                                    || m.cell_type == CellType::Stem)
                             {
                                 m.threshold += boost;
                             }
@@ -824,19 +867,27 @@ impl System {
         {
             let td_err = self.last_td_error;
             // Compute error vector: TD error × each motor morphon's centered potential
-            let error_vec: Vec<(MorphonId, f64)> = self.output_ports.iter()
-                .filter_map(|&mid| self.morphons.get(&mid).map(|m| {
-                    let sig = 1.0 / (1.0 + (-m.potential).exp());
-                    (mid, td_err * (sig - 0.5) * 2.0)
-                }))
+            let error_vec: Vec<(MorphonId, f64)> = self
+                .output_ports
+                .iter()
+                .filter_map(|&mid| {
+                    self.morphons.get(&mid).map(|m| {
+                        let sig = 1.0 / (1.0 + (-m.potential).exp());
+                        (mid, td_err * (sig - 0.5) * 2.0)
+                    })
+                })
                 .collect();
 
             // Project error to each Associative morphon through fixed random weights
             let feedback_strength = 1.0;
             for (&assoc_id, weights) in &self.feedback_weights {
-                let feedback: f64 = weights.iter()
+                let feedback: f64 = weights
+                    .iter()
                     .filter_map(|(mid, bw)| {
-                        error_vec.iter().find(|(id, _)| id == mid).map(|(_, e)| bw * e)
+                        error_vec
+                            .iter()
+                            .find(|(id, _)| id == mid)
+                            .map(|(_, e)| bw * e)
                     })
                     .sum();
 
@@ -852,8 +903,12 @@ impl System {
         // === ENDOQUILIBRIUM (before learning) ===
         if self.endo.config.enabled && tick.medium {
             let vitals = crate::endoquilibrium::sense_vitals(
-                &self.morphons, &self.topology, &self.diag, self.step_count,
+                &self.morphons,
+                &self.topology,
+                &self.diag,
+                self.step_count,
                 self.recent_performance,
+                &self.clusters,
             );
             self.endo.tick(vitals);
             // Clear episode-gated capture count now that endo has consumed it.
@@ -883,14 +938,19 @@ impl System {
         // === iSTDP: Update inhibitory interneuron synapses (medium path) ===
         if tick.medium {
             if let crate::homeostasis::CompetitionMode::LocalInhibition {
-                istdp_rate, target_rate: target_rate_override, ..
-            } = &self.config.homeostasis.competition_mode {
+                istdp_rate,
+                target_rate: target_rate_override,
+                ..
+            } = &self.config.homeostasis.competition_mode
+            {
                 let istdp_rate = *istdp_rate;
-                let target_rate = target_rate_override
-                    .unwrap_or_else(|| self.endo.target_assoc_firing_rate());
+                let target_rate =
+                    target_rate_override.unwrap_or_else(|| self.endo.target_assoc_firing_rate());
 
                 // Collect interneuron IDs
-                let inh_ids: Vec<MorphonId> = self.morphons.values()
+                let inh_ids: Vec<MorphonId> = self
+                    .morphons
+                    .values()
                     .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
                     .map(|m| m.id)
                     .collect();
@@ -899,9 +959,12 @@ impl System {
                     // Collect post-morphon firing rates before mutating topology
                     let targets: Vec<(MorphonId, petgraph::graph::EdgeIndex)> =
                         self.topology.outgoing_synapses_mut(inh_id);
-                    let target_rates: Vec<(petgraph::graph::EdgeIndex, f64)> = targets.iter()
+                    let target_rates: Vec<(petgraph::graph::EdgeIndex, f64)> = targets
+                        .iter()
                         .map(|(target_id, edge_idx)| {
-                            let post_rate = self.morphons.get(target_id)
+                            let post_rate = self
+                                .morphons
+                                .get(target_id)
                                 .map(|m| m.activity_history.mean())
                                 .unwrap_or(0.0);
                             (*edge_idx, post_rate)
@@ -912,7 +975,11 @@ impl System {
                     for (edge_idx, post_rate) in target_rates {
                         if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
                             crate::learning::update_istdp(
-                                synapse, post_rate, target_rate, istdp_rate, dt,
+                                synapse,
+                                post_rate,
+                                target_rate,
+                                istdp_rate,
+                                dt,
                             );
                         }
                     }
@@ -932,7 +999,8 @@ impl System {
             // slow_trace_leak > 1 = faster decay = divide tau. Both compose multiplicatively.
             let mut learning_params = self.config.learning.clone();
             let trace_leak = self.endo.channels.slow_trace_leak.max(0.1) as f64;
-            learning_params.tau_eligibility *= self.endo.channels.tau_eligibility_mult as f64 / trace_leak;
+            learning_params.tau_eligibility *=
+                self.endo.channels.tau_eligibility_mult as f64 / trace_leak;
 
             let critic_set: std::collections::HashSet<MorphonId> =
                 self.critic_ports.iter().copied().collect();
@@ -965,24 +1033,56 @@ impl System {
                     // === ACTOR: Three-factor learning ===
                     // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
                     // Associative morphons: DFA feedback signal (neuron-specific credit)
-                    let (post_activity, post_receptors, post_sensitivity, feedback_sig, is_assoc, plast_rate, astro_state, post_ct) =
-                        self.morphons.get(&id)
-                            .map(|m| {
-                                let activity = if m.cell_type == CellType::Motor {
-                                    let sig = 1.0 / (1.0 + (-m.potential).exp());
-                                    (sig - 0.5) * 2.0
+                    let (
+                        post_activity,
+                        post_receptors,
+                        post_sensitivity,
+                        feedback_sig,
+                        is_assoc,
+                        plast_rate,
+                        astro_state,
+                        post_ct,
+                    ) = self
+                        .morphons
+                        .get(&id)
+                        .map(|m| {
+                            let activity = if m.cell_type == CellType::Motor {
+                                let sig = 1.0 / (1.0 + (-m.potential).exp());
+                                (sig - 0.5) * 2.0
+                            } else {
+                                if m.fired {
+                                    1.0
                                 } else {
-                                    if m.fired { 1.0 } else { 0.0 }
-                                };
-                                let is_a = m.cell_type == CellType::Associative
-                                    || m.cell_type == CellType::Stem;
-                                (activity, m.receptors.clone(), m.receptor_sensitivity.clone(),
-                                 m.feedback_signal, is_a, m.plasticity_rate,
-                                 m.astrocytic_state, m.cell_type)
-                            })
-                            .unwrap_or((0.0, Default::default(), Default::default(), 0.0, false, 1.0, 0.5, CellType::Stem));
+                                    0.0
+                                }
+                            };
+                            let is_a = m.cell_type == CellType::Associative
+                                || m.cell_type == CellType::Stem;
+                            (
+                                activity,
+                                m.receptors.clone(),
+                                m.receptor_sensitivity.clone(),
+                                m.feedback_signal,
+                                is_a,
+                                m.plasticity_rate,
+                                m.astrocytic_state,
+                                m.cell_type,
+                            )
+                        })
+                        .unwrap_or((
+                            0.0,
+                            Default::default(),
+                            Default::default(),
+                            0.0,
+                            false,
+                            1.0,
+                            0.5,
+                            CellType::Stem,
+                        ));
                     // Astrocytic gate: sigmoid(a - threshold). Bypassed for Modulatory/InhibitoryInterneuron.
-                    let astro_gate = if post_ct == CellType::Modulatory || post_ct == CellType::InhibitoryInterneuron {
+                    let astro_gate = if post_ct == CellType::Modulatory
+                        || post_ct == CellType::InhibitoryInterneuron
+                    {
                         1.0
                     } else {
                         let th = self.config.homeostasis.threshold_astrocytic;
@@ -1010,16 +1110,25 @@ impl System {
                                 // pre_trace persists ~10 steps after firing — "is this synapse
                                 // carrying signal?" — the right gate for targeted DFA updates.
                                 // Biologically: climbing fibers override STDP timing requirements.
-                                let dfa_lr = 0.02 * plast_rate * self.endo.channels.plasticity_mult as f64 * astro_gate; // scaled by Anchor/Sail + Endo + astrocytic gate
+                                let dfa_lr = 0.02
+                                    * plast_rate
+                                    * self.endo.channels.plasticity_mult as f64
+                                    * astro_gate; // scaled by Anchor/Sail + Endo + astrocytic gate
                                 let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
                                 let weight_decay = 0.001 * synapse.weight;
-                                let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr - weight_decay) * consolidation_scale;
+                                let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr
+                                    - weight_decay)
+                                    * consolidation_scale;
                                 synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
 
                                 // V3: Record reinforcement event
                                 if delta_w.abs() > 0.001 {
                                     if let Some(ref mut j) = synapse.justification {
-                                        j.record_reinforcement(self.step_count, delta_w, self.modulation.reward);
+                                        j.record_reinforcement(
+                                            self.step_count,
+                                            delta_w,
+                                            self.modulation.reward,
+                                        );
                                     }
                                 }
 
@@ -1028,7 +1137,10 @@ impl System {
                                 // episode end where performance-relative decisions are made.
                                 let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
                                 if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
-                                    synapse.tag = (synapse.tag + dfa_strength * self.config.learning.tag_accumulation_rate).min(1.0);
+                                    synapse.tag = (synapse.tag
+                                        + dfa_strength
+                                            * self.config.learning.tag_accumulation_rate)
+                                        .min(1.0);
                                     synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
                                 }
                                 synapse.age += 1;
@@ -1038,8 +1150,10 @@ impl System {
                             } else {
                                 // Standard three-factor for Motor, Sensory, Modulatory
                                 // Scaled by per-morphon plasticity_rate (Anchor/Sail) × Endo plasticity_mult
-                                let plasticity = self.modulation.plasticity_rate() * plast_rate
-                                    * self.endo.channels.plasticity_mult as f64 * astro_gate;
+                                let plasticity = self.modulation.plasticity_rate()
+                                    * plast_rate
+                                    * self.endo.channels.plasticity_mult as f64
+                                    * astro_gate;
                                 let endo_gains = [
                                     self.endo.channels.reward_gain as f64,
                                     self.endo.channels.novelty_gain as f64,
@@ -1063,7 +1177,11 @@ impl System {
                                 let delta_w_3f = synapse.weight - weight_before;
                                 if delta_w_3f.abs() > 0.001 {
                                     if let Some(ref mut j) = synapse.justification {
-                                        j.record_reinforcement(self.step_count, delta_w_3f, self.modulation.reward);
+                                        j.record_reinforcement(
+                                            self.step_count,
+                                            delta_w_3f,
+                                            self.modulation.reward,
+                                        );
                                     }
                                 }
                                 // L2 weight decay on all three-factor synapses
@@ -1083,25 +1201,37 @@ impl System {
             let hsd_rate = self.config.learning.heterosynaptic_depression;
             let wmax = self.config.learning.weight_max;
             let frustration_enabled = self.config.morphogenesis.frustration.enabled;
-            let perturb_scale = self.config.morphogenesis.frustration.weight_perturbation_scale;
+            let perturb_scale = self
+                .config
+                .morphogenesis
+                .frustration
+                .weight_perturbation_scale;
 
             // Snapshot morphon states to avoid borrow conflicts with topology
-            let morphon_states: Vec<(MorphonId, bool, f64, f64, bool, f64, bool)> = self.morphons.values()
-                .map(|m| (
-                    m.id,
-                    m.fired,
-                    m.activity_history.mean(),
-                    m.plasticity_rate,
-                    m.frustration.exploration_mode,
-                    m.frustration.frustration_level,
-                    m.cell_type == CellType::Associative || m.cell_type == CellType::Stem,
-                ))
+            let morphon_states: Vec<(MorphonId, bool, f64, f64, bool, f64, bool)> = self
+                .morphons
+                .values()
+                .map(|m| {
+                    (
+                        m.id,
+                        m.fired,
+                        m.activity_history.mean(),
+                        m.plasticity_rate,
+                        m.frustration.exploration_mode,
+                        m.frustration.frustration_level,
+                        m.cell_type == CellType::Associative || m.cell_type == CellType::Stem,
+                    )
+                })
                 .collect();
 
-            for &(id, fired, post_rate, plasticity_rate, in_exploration, frust_level, is_assoc) in &morphon_states {
+            for &(id, fired, post_rate, plasticity_rate, in_exploration, frust_level, is_assoc) in
+                &morphon_states
+            {
                 let incoming = self.topology.incoming_synapses_mut(id);
                 let edge_data: Vec<(MorphonId, petgraph::graph::EdgeIndex)> = incoming;
-                if edge_data.is_empty() { continue; }
+                if edge_data.is_empty() {
+                    continue;
+                }
 
                 // --- Pass 1 (assoc only): compute L1 norm for weight normalization ---
                 let (norm_scale, do_normalize) = if is_assoc {
@@ -1148,8 +1278,10 @@ impl System {
 
                         // (d) Frustration-driven weight perturbation
                         if frustration_enabled && in_exploration && !synapse.consolidated {
-                            let hash = (id.wrapping_mul(synapse.age).wrapping_add(31337) % 10000) as f64
-                                / 5000.0 - 1.0;
+                            let hash = (id.wrapping_mul(synapse.age).wrapping_add(31337) % 10000)
+                                as f64
+                                / 5000.0
+                                - 1.0;
                             let delta = hash * perturb_scale * frust_level * wmax;
                             synapse.weight += delta;
                         }
@@ -1202,7 +1334,8 @@ impl System {
 
             let mut slow_params = self.config.morphogenesis.clone();
             slow_params.migration_rate *= self.endo.channels.migration_rate_mult as f64;
-            slow_params.synaptogenesis_threshold *= self.endo.channels.synaptogenesis_threshold_mult as f64;
+            slow_params.synaptogenesis_threshold *=
+                self.endo.channels.synaptogenesis_threshold_mult as f64;
 
             let slow_report = morphogenesis::step_slow(
                 &mut self.morphons,
@@ -1219,13 +1352,15 @@ impl System {
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
             report.migrations = slow_report.migrations;
+            self.diag.pruning_events_recent = slow_report.synapses_pruned as u32;
 
             // V2: Update bioelectric field — write morphon states, diffuse
             if let Some(ref mut field) = self.field {
                 field.write_from_morphons(&self.morphons);
                 field.diffuse();
                 // Update diagnostics with field metrics
-                if let Some(pe_layer) = field.layers.get(&crate::field::FieldType::PredictionError) {
+                if let Some(pe_layer) = field.layers.get(&crate::field::FieldType::PredictionError)
+                {
                     self.diag.field_pe_max = pe_layer.max();
                     self.diag.field_pe_mean = pe_layer.mean();
                 }
@@ -1250,10 +1385,16 @@ impl System {
             // energy pressure suppresses wrapping under metabolic stress.
             // Energy pressure from Associative morphons only — Sensory/Motor energy
             // isn't meaningful for myelination stress (they don't fire competitively).
-            let (assoc_energy_sum, assoc_count) = self.morphons.values()
+            let (assoc_energy_sum, assoc_count) = self
+                .morphons
+                .values()
                 .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
                 .fold((0.0_f64, 0usize), |(sum, n), m| (sum + m.energy, n + 1));
-            let avg_energy = if assoc_count > 0 { assoc_energy_sum / assoc_count as f64 } else { 1.0 };
+            let avg_energy = if assoc_count > 0 {
+                assoc_energy_sum / assoc_count as f64
+            } else {
+                1.0
+            };
             let myelin_ctx = crate::morphon::MyelinationContext {
                 arousal: self.modulation.arousal,
                 reward: self.modulation.reward,
@@ -1269,11 +1410,8 @@ impl System {
             // Checkpoint before structural changes
             let all_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();
             let count_before = self.morphons.len();
-            let checkpoint = homeostasis::create_checkpoint(
-                &all_ids,
-                &self.morphons,
-                &self.topology,
-            );
+            let checkpoint =
+                homeostasis::create_checkpoint(&all_ids, &self.morphons, &self.topology);
 
             // Apply Endo Phase B lever: division_threshold_mult scales division_threshold.
             let mut glacial_params = self.config.morphogenesis.clone();
@@ -1294,19 +1432,30 @@ impl System {
                 &mut rng,
                 self.config.target_morphology.as_ref(),
                 self.step_count,
+                &self.config.homeostasis.competition_mode,
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;
+            self.diag.division_events_recent = glacial_report.morphons_born as u32;
+            self.diag.pruning_events_recent = glacial_report.morphons_died as u32;
 
             // Wire newly born Associative morphons to nearby InhibitoryInterneurons
             if report.morphons_born > 0 {
-                let new_ids: Vec<MorphonId> = self.morphons.keys()
-                    .filter(|&&id| id >= self.next_morphon_id.saturating_sub(report.morphons_born as u64 + 10))
+                let new_ids: Vec<MorphonId> = self
+                    .morphons
+                    .keys()
+                    .filter(|&&id| {
+                        id >= self
+                            .next_morphon_id
+                            .saturating_sub(report.morphons_born as u64 + 10)
+                    })
                     .copied()
                     .collect();
                 morphogenesis::wire_to_nearby_interneurons(
-                    &self.morphons, &mut self.topology,
-                    &self.config.homeostasis.competition_mode, &new_ids,
+                    &self.morphons,
+                    &mut self.topology,
+                    &self.config.homeostasis.competition_mode,
+                    &new_ids,
                 );
             }
 
@@ -1328,16 +1477,21 @@ impl System {
                 // Write Identity field layer (if field is enabled and has Identity layer)
                 if let Some(ref mut field) = self.field {
                     // Pre-compute projections before borrowing layers mutably
-                    let projections: Vec<(usize, usize, i32, f64)> = target.regions.iter()
+                    let projections: Vec<(usize, usize, i32, f64)> = target
+                        .regions
+                        .iter()
                         .map(|region| {
                             let (cx, cy) = field.project(&region.center);
-                            let grid_radius = (region.radius * field.config.resolution as f64 / 2.0).ceil() as i32;
+                            let grid_radius = (region.radius * field.config.resolution as f64 / 2.0)
+                                .ceil() as i32;
                             (cx, cy, grid_radius, region.identity_strength)
                         })
                         .collect();
                     let res = field.config.resolution as i32;
 
-                    if let Some(identity_layer) = field.layers.get_mut(&crate::field::FieldType::Identity) {
+                    if let Some(identity_layer) =
+                        field.layers.get_mut(&crate::field::FieldType::Identity)
+                    {
                         identity_layer.data.fill(0.0);
                         for (cx, cy, grid_radius, strength) in &projections {
                             for dy in -grid_radius..=*grid_radius {
@@ -1387,7 +1541,8 @@ impl System {
                 .collect();
             // Apply Endo's rollback sensitivity multiplier
             let mut effective_homeo = self.config.homeostasis.clone();
-            effective_homeo.rollback_pe_threshold *= self.endo.channels.rollback_pe_threshold_mult as f64;
+            effective_homeo.rollback_pe_threshold *=
+                self.endo.channels.rollback_pe_threshold_mult as f64;
             if homeostasis::should_rollback(
                 &checkpoint,
                 &surviving_ids,
@@ -1406,12 +1561,12 @@ impl System {
             let is_mature = matches!(
                 self.endo.stage(),
                 crate::endoquilibrium::DevelopmentalStage::Mature
-                | crate::endoquilibrium::DevelopmentalStage::Consolidating
+                    | crate::endoquilibrium::DevelopmentalStage::Consolidating
             );
             let total_firing: usize = self.diag.firing_by_type.values().map(|(f, _)| *f).sum();
             let total_morphons: usize = self.diag.firing_by_type.values().map(|(_, t)| *t).sum();
-            let is_low_activity = total_morphons == 0
-                || (total_firing as f64 / total_morphons as f64) < 0.05;
+            let is_low_activity =
+                total_morphons == 0 || (total_firing as f64 / total_morphons as f64) < 0.05;
 
             if is_mature || is_low_activity {
                 self.dream_cycle();
@@ -1420,8 +1575,16 @@ impl System {
 
         // === HOMEOSTASIS ===
         if tick.homeostasis {
-            homeostasis::synaptic_scaling(&self.morphons, &mut self.topology, self.config.learning.weight_max);
-            homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
+            homeostasis::synaptic_scaling(
+                &self.morphons,
+                &mut self.topology,
+                self.config.learning.weight_max,
+            );
+            // Apply anti-hub scaling only when selective features have formed (Mature/Consolidating stages)
+            // Prevents depression of useful distributed activity in early learning phases
+            if self.endo.should_apply_anti_hub_scaling() {
+                homeostasis::anti_hub_scaling(&self.morphons, &mut self.topology);
+            }
             homeostasis::inter_cluster_inhibition(
                 &mut self.morphons,
                 &self.clusters,
@@ -1532,8 +1695,11 @@ impl System {
                 self.diag.epistemic_hypothesis = hypothesis;
                 self.diag.epistemic_outdated = outdated;
                 self.diag.epistemic_contested = contested;
-                self.diag.avg_skepticism = if self.clusters.is_empty() { 0.0 }
-                    else { skepticism_sum / self.clusters.len() as f64 };
+                self.diag.avg_skepticism = if self.clusters.is_empty() {
+                    0.0
+                } else {
+                    skepticism_sum / self.clusters.len() as f64
+                };
             }
         }
 
@@ -1548,7 +1714,9 @@ impl System {
                 morphon.position.curvature = morphon.position.curvature.clamp(0.1, 5.0);
             };
             #[cfg(feature = "parallel")]
-            self.morphons.par_iter_mut().for_each(|(_, m)| curvature_update(m));
+            self.morphons
+                .par_iter_mut()
+                .for_each(|(_, m)| curvature_update(m));
             #[cfg(not(feature = "parallel"))]
             self.morphons.values_mut().for_each(|m| curvature_update(m));
         }
@@ -1598,20 +1766,39 @@ impl System {
     /// Analog readout: weighted sum of associative layer potentials.
     /// V_j = Σ_i readout_weights[j][i] × sigmoid(P_i)
     fn read_output_analog(&self) -> Vec<f64> {
-        self.readout_weights.iter().enumerate().map(|(j, weights)| {
-            let bias = self.readout_bias.get(j).copied().unwrap_or(0.0);
-            let v: f64 = weights.iter().map(|(&id, &w)| {
-                let p = self.morphons.get(&id)
-                    .map(|m| if m.potential.is_finite() { m.potential.clamp(-10.0, 10.0) } else { 0.0 })
-                    .unwrap_or(0.0);
-                // Centered sigmoid: 0 at resting potential, ±0.5 range.
-                // Eliminates constant 0.5 offset that drowns discriminative signal.
-                let act = 1.0 / (1.0 + (-p).exp()) - 0.5;
-                w * act
-            }).sum();
-            let out = bias + v;
-            if out.is_finite() { out } else { 0.0 }
-        }).collect()
+        self.readout_weights
+            .iter()
+            .enumerate()
+            .map(|(j, weights)| {
+                let bias = self.readout_bias.get(j).copied().unwrap_or(0.0);
+                let v: f64 = weights
+                    .iter()
+                    .map(|(&id, &w)| {
+                        let p = self
+                            .morphons
+                            .get(&id)
+                            .map(|m| {
+                                if m.potential.is_finite() {
+                                    m.potential.clamp(-10.0, 10.0)
+                                } else {
+                                    0.0
+                                }
+                            })
+                            .unwrap_or(0.0);
+                        // Centered sigmoid: 0 at resting potential, ±0.5 range.
+                        // Eliminates constant 0.5 offset that drowns discriminative signal.
+                        let act = 1.0 / (1.0 + (-p).exp()) - 0.5;
+                        w * act
+                    })
+                    .sum();
+                let out = bias + v;
+                if out.is_finite() {
+                    out
+                } else {
+                    0.0
+                }
+            })
+            .collect()
     }
 
     /// Enable analog readout and initialize readout weights.
@@ -1654,7 +1841,9 @@ impl System {
     /// output port. Weights initialized to small random values (Xavier-scaled).
     /// Call this before training on classification tasks.
     pub fn enable_analog_readout(&mut self) {
-        let assoc_ids: Vec<MorphonId> = self.morphons.values()
+        let assoc_ids: Vec<MorphonId> = self
+            .morphons
+            .values()
             .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
             .map(|m| m.id)
             .collect();
@@ -1664,14 +1853,19 @@ impl System {
         let mut rng = rand::rng();
         use rand::Rng;
 
-        self.readout_weights = (0..self.output_ports.len()).map(|_| {
-            assoc_ids.iter().map(|&id| {
-                (id, rng.random_range(-scale..scale))
-            }).collect()
-        }).collect();
+        self.readout_weights = (0..self.output_ports.len())
+            .map(|_| {
+                assoc_ids
+                    .iter()
+                    .map(|&id| (id, rng.random_range(-scale..scale)))
+                    .collect()
+            })
+            .collect();
 
         // Also include sensory morphons as direct input to readout
-        let sensory_ids: Vec<MorphonId> = self.morphons.values()
+        let sensory_ids: Vec<MorphonId> = self
+            .morphons
+            .values()
             .filter(|m| m.cell_type == CellType::Sensory)
             .map(|m| m.id)
             .collect();
@@ -1697,33 +1891,52 @@ impl System {
     ///
     /// Also backprojects the output error to hidden morphons via feedback_signal.
     pub fn train_readout(&mut self, correct_index: usize, learning_rate: f64) {
-        if !self.use_analog_readout || correct_index >= self.output_ports.len() { return; }
+        if !self.use_analog_readout || correct_index >= self.output_ports.len() {
+            return;
+        }
 
         let n_out = self.readout_weights.len();
         let outputs = self.read_output_analog();
-        if outputs.len() != n_out { return; }
+        if outputs.len() != n_out {
+            return;
+        }
 
         // Sanitize outputs — NaN from morphon potential overflow kills the chain
-        let outputs: Vec<f64> = outputs.iter().map(|&x| if x.is_finite() { x } else { 0.0 }).collect();
+        let outputs: Vec<f64> = outputs
+            .iter()
+            .map(|&x| if x.is_finite() { x } else { 0.0 })
+            .collect();
 
         // Softmax: exp(x_j) / Σ_k exp(x_k), with numerical stability (subtract max)
         let max_out = outputs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let exps: Vec<f64> = outputs.iter().map(|&x| (x - max_out).clamp(-50.0, 0.0).exp()).collect();
+        let exps: Vec<f64> = outputs
+            .iter()
+            .map(|&x| (x - max_out).clamp(-50.0, 0.0).exp())
+            .collect();
         let sum_exp: f64 = exps.iter().sum();
-        if sum_exp < 1e-10 { return; } // all outputs identical → no gradient
+        if sum_exp < 1e-10 {
+            return;
+        } // all outputs identical → no gradient
         let softmax: Vec<f64> = exps.iter().map(|e| e / sum_exp).collect();
 
         // Cross-entropy gradient: error_j = target_j - softmax_j
-        let errors: Vec<f64> = (0..n_out).map(|j| {
-            let target = if j == correct_index { 1.0 } else { 0.0 };
-            target - softmax[j]
-        }).collect();
+        let errors: Vec<f64> = (0..n_out)
+            .map(|j| {
+                let target = if j == correct_index { 1.0 } else { 0.0 };
+                target - softmax[j]
+            })
+            .collect();
 
         // Collect pre-synaptic activities (centered sigmoid: 0 at rest, ±0.5 range)
-        let activities: HashMap<MorphonId, f64> = self.readout_weights[0].keys()
+        let activities: HashMap<MorphonId, f64> = self.readout_weights[0]
+            .keys()
             .filter_map(|&id| {
                 self.morphons.get(&id).map(|m| {
-                    let p = if m.potential.is_finite() { m.potential } else { 0.0 };
+                    let p = if m.potential.is_finite() {
+                        m.potential
+                    } else {
+                        0.0
+                    };
                     (id, 1.0 / (1.0 + (-p.clamp(-10.0, 10.0)).exp()) - 0.5)
                 })
             })
@@ -1732,7 +1945,9 @@ impl System {
         // Delta rule on readout weights (no L2 decay — it was erasing the
         // discriminative signal that the supervised gradient builds)
         for j in 0..n_out {
-            if errors[j].abs() < 0.0001 { continue; }
+            if errors[j].abs() < 0.0001 {
+                continue;
+            }
             // Update bias
             if let Some(b) = self.readout_bias.get_mut(j) {
                 let bias_delta = learning_rate * errors[j];
@@ -1789,7 +2004,8 @@ impl System {
                         // Endo consolidation_gain lowers effective capture threshold.
                         // High cg = capture-friendly (stressed/proliferating), low = selective (mature).
                         let effective_threshold = self.config.learning.capture_threshold
-                            * self.endo.channels.capture_threshold_mult as f64 / cg;
+                            * self.endo.channels.capture_threshold_mult as f64
+                            / cg;
                         if syn.tag > effective_threshold && !syn.consolidated {
                             syn.consolidated = true;
                             syn.tag = 0.0;
@@ -1825,7 +2041,7 @@ impl System {
                 if let Some(m) = self.morphons.get_mut(&id) {
                     if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
                         let normalized_imp = imp / max_imp; // [0, 1]
-                        // Target plasticity: 0.2 for max importance, basal for zero importance
+                                                            // Target plasticity: 0.2 for max importance, basal for zero importance
                         let target = 0.2 + (1.0 - normalized_imp) * 0.8;
                         m.plasticity_rate += anchoring_rate * (target - m.plasticity_rate);
                         m.plasticity_rate = m.plasticity_rate.clamp(0.1, 2.5);
@@ -1930,7 +2146,9 @@ impl System {
         let total_fires: u64 = self.episode_fire_counts.values().sum();
         if total_fires > 0 {
             let n = self.episode_fire_counts.len();
-            let h: f64 = self.episode_fire_counts.values()
+            let h: f64 = self
+                .episode_fire_counts
+                .values()
                 .filter(|&&c| c > 0)
                 .map(|&c| {
                     let p = c as f64 / total_fires as f64;
@@ -1959,16 +2177,22 @@ impl System {
     /// Deconsolidated synapses can be re-learned and re-captured.
     fn deconsolidate_weakest(&mut self, fraction: f64) {
         // Collect all consolidated synapses with their weights
-        let mut consolidated: Vec<(petgraph::graph::EdgeIndex, f64)> = self.topology.graph
+        let mut consolidated: Vec<(petgraph::graph::EdgeIndex, f64)> = self
+            .topology
+            .graph
             .edge_indices()
             .filter_map(|ei| {
-                self.topology.graph.edge_weight(ei)
+                self.topology
+                    .graph
+                    .edge_weight(ei)
                     .filter(|s| s.consolidated)
                     .map(|s| (ei, s.weight.abs()))
             })
             .collect();
 
-        if consolidated.is_empty() { return; }
+        if consolidated.is_empty() {
+            return;
+        }
 
         // Sort by absolute weight (weakest first — these contributed least)
         consolidated.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -2018,7 +2242,9 @@ impl System {
     /// This is local (no chain rule), but provides output-specific credit to
     /// the hidden layer — the critical missing piece for classification tasks.
     pub fn inject_reward_at(&mut self, output_index: usize, strength: f64) {
-        let Some(&motor_id) = self.output_ports.get(output_index) else { return };
+        let Some(&motor_id) = self.output_ports.get(output_index) else {
+            return;
+        };
 
         // Hop 0: boost eligibility on motor's incoming synapses
         let motor_incoming = self.topology.incoming_synapses_mut(motor_id);
@@ -2041,7 +2267,9 @@ impl System {
         let decay = 0.5; // credit attenuates per hop
         for (pre_id, weight) in pre_ids_and_weights {
             let hop1_strength = strength * decay * weight.abs();
-            if hop1_strength < 0.01 { continue; }
+            if hop1_strength < 0.01 {
+                continue;
+            }
             let pre_incoming = self.topology.incoming_synapses_mut(pre_id);
             for (_, edge_idx) in pre_incoming {
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
@@ -2054,7 +2282,8 @@ impl System {
         // V3: Credit motor morphon energy for successful output.
         if strength > 0.0 {
             if let Some(m) = self.morphons.get_mut(&motor_id) {
-                m.energy = (m.energy + self.config.metabolic.reward_for_successful_output * strength)
+                m.energy = (m.energy
+                    + self.config.metabolic.reward_for_successful_output * strength)
                     .min(1.0);
             }
         }
@@ -2071,7 +2300,9 @@ impl System {
     /// from being strengthened by subsequent reward, without driving weights
     /// negative (which would permanently silence the motor morphon).
     pub fn inject_inhibition_at(&mut self, output_index: usize, strength: f64) {
-        let Some(&motor_id) = self.output_ports.get(output_index) else { return };
+        let Some(&motor_id) = self.output_ports.get(output_index) else {
+            return;
+        };
         let decay_factor = (1.0 - strength).max(0.0); // strength=0.3 → keep 70% of eligibility
 
         let motor_incoming = self.topology.incoming_synapses_mut(motor_id);
@@ -2177,7 +2408,9 @@ impl System {
     /// Active hidden neurons get their incoming synapses boosted (they should
     /// help fire the correct output). Inactive ones get no signal (not penalized).
     pub fn teach_hidden(&mut self, correct_index: usize, strength: f64) {
-        if correct_index >= self.output_ports.len() { return; }
+        if correct_index >= self.output_ports.len() {
+            return;
+        }
 
         // TARGET signal: 1.0 for correct class, 0.0 for incorrect.
         // This is the supervised signal — what the output SHOULD be.
@@ -2185,17 +2418,23 @@ impl System {
         let target_incorrect: f64 = 0.0;
         let n_incorrect = (self.output_ports.len() - 1).max(1) as f64;
 
-        let assoc_ids: Vec<MorphonId> = self.morphons.values()
+        let assoc_ids: Vec<MorphonId> = self
+            .morphons
+            .values()
             .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
             .map(|m| m.id)
             .collect();
 
         for assoc_id in assoc_ids {
-            let assoc_active = self.morphons.get(&assoc_id)
+            let assoc_active = self
+                .morphons
+                .get(&assoc_id)
                 .map(|m| if m.fired { 1.0 } else { 0.0 })
                 .unwrap_or(0.0);
 
-            if assoc_active < 0.01 { continue; } // inactive neurons get no signal
+            if assoc_active < 0.01 {
+                continue;
+            } // inactive neurons get no signal
 
             // Kappa-like agreement: how well does this hidden neuron's activity
             // correlate with the TARGET output pattern?
@@ -2227,7 +2466,9 @@ impl System {
 
             // Decay eligibility on outgoing synapses to INCORRECT motor morphons.
             for (i, &motor_id) in self.output_ports.iter().enumerate() {
-                if i == correct_index { continue; }
+                if i == correct_index {
+                    continue;
+                }
                 if let Some((ei, _)) = self.topology.synapse_between(assoc_id, motor_id) {
                     if let Some(syn) = self.topology.synapse_mut(ei) {
                         syn.eligibility *= 0.5; // decay, don't go negative
@@ -2249,24 +2490,34 @@ impl System {
     /// `correct_index`: which output should be 1.0 (others should be 0.0)
     /// `learning_rate`: step size (0.001-0.1 typical)
     pub fn teach_supervised(&mut self, correct_index: usize, learning_rate: f64) {
-        if correct_index >= self.output_ports.len() { return; }
+        if correct_index >= self.output_ports.len() {
+            return;
+        }
 
         // Build target vector: 1.0 for correct, 0.0 for others
         let n_out = self.output_ports.len();
-        let targets: Vec<f64> = (0..n_out).map(|i| if i == correct_index { 1.0 } else { 0.0 }).collect();
+        let targets: Vec<f64> = (0..n_out)
+            .map(|i| if i == correct_index { 1.0 } else { 0.0 })
+            .collect();
 
         // Get actual outputs (sigmoid of potential)
-        let outputs: Vec<f64> = self.output_ports.iter()
+        let outputs: Vec<f64> = self
+            .output_ports
+            .iter()
             .filter_map(|id| self.morphons.get(id))
             .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
             .collect();
 
-        if outputs.len() != n_out { return; }
+        if outputs.len() != n_out {
+            return;
+        }
 
         // Delta rule on ALL synapses feeding into each motor morphon
         for j in 0..n_out {
             let error_j = targets[j] - outputs[j];
-            if error_j.abs() < 0.001 { continue; }
+            if error_j.abs() < 0.001 {
+                continue;
+            }
 
             let motor_id = self.output_ports[j];
             let incoming = self.topology.incoming_synapses_mut(motor_id);
@@ -2276,16 +2527,23 @@ impl System {
                 // deadlock: neurons can't learn because they don't fire, and they
                 // don't fire because they haven't learned. Sigmoid gives a gradient
                 // signal even for cold neurons (sigmoid(0) = 0.5).
-                let pre_act = self.morphons.get(&pre_id)
+                let pre_act = self
+                    .morphons
+                    .get(&pre_id)
                     .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
                     .unwrap_or(0.0);
 
-                if pre_act < 0.01 { continue; } // skip only truly dead neurons
+                if pre_act < 0.01 {
+                    continue;
+                } // skip only truly dead neurons
 
                 if let Some(syn) = self.topology.synapse_mut(edge_idx) {
                     let delta_w = learning_rate * pre_act * error_j;
                     syn.weight += delta_w;
-                    syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
+                    syn.weight = syn.weight.clamp(
+                        -self.config.learning.weight_max,
+                        self.config.learning.weight_max,
+                    );
                 }
             }
         }
@@ -2295,16 +2553,22 @@ impl System {
         // by the hidden→motor weight, which is a local quantity).
         for j in 0..n_out {
             let error_j = targets[j] - outputs[j];
-            if error_j.abs() < 0.001 { continue; }
+            if error_j.abs() < 0.001 {
+                continue;
+            }
 
             let motor_id = self.output_ports[j];
-            let motor_incoming: Vec<(MorphonId, f64)> = self.topology.incoming(motor_id)
+            let motor_incoming: Vec<(MorphonId, f64)> = self
+                .topology
+                .incoming(motor_id)
                 .into_iter()
                 .map(|(pre_id, syn)| (pre_id, syn.weight))
                 .collect();
 
             for (hidden_id, w_hj) in motor_incoming {
-                let hidden_act = self.morphons.get(&hidden_id)
+                let hidden_act = self
+                    .morphons
+                    .get(&hidden_id)
                     .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
                     .unwrap_or(0.0);
                 // Local error for this hidden neuron from this output
@@ -2312,7 +2576,9 @@ impl System {
 
                 let hidden_incoming = self.topology.incoming_synapses_mut(hidden_id);
                 for (sens_id, edge_idx) in hidden_incoming {
-                    let sens_act = self.morphons.get(&sens_id)
+                    let sens_act = self
+                        .morphons
+                        .get(&sens_id)
                         .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
                         .unwrap_or(0.0);
 
@@ -2337,16 +2603,29 @@ impl System {
     ///
     /// Updates sensory→motor direct connections and hidden→motor connections
     /// using the input-port-mapped raw values.
-    pub fn teach_supervised_with_input(&mut self, input: &[f64], correct_index: usize, learning_rate: f64) {
-        if correct_index >= self.output_ports.len() { return; }
+    pub fn teach_supervised_with_input(
+        &mut self,
+        input: &[f64],
+        correct_index: usize,
+        learning_rate: f64,
+    ) {
+        if correct_index >= self.output_ports.len() {
+            return;
+        }
         let n_out = self.output_ports.len();
 
-        let targets: Vec<f64> = (0..n_out).map(|i| if i == correct_index { 1.0 } else { 0.0 }).collect();
-        let outputs: Vec<f64> = self.output_ports.iter()
+        let targets: Vec<f64> = (0..n_out)
+            .map(|i| if i == correct_index { 1.0 } else { 0.0 })
+            .collect();
+        let outputs: Vec<f64> = self
+            .output_ports
+            .iter()
             .filter_map(|id| self.morphons.get(id))
             .map(|m| 1.0 / (1.0 + (-m.potential).exp()))
             .collect();
-        if outputs.len() != n_out { return; }
+        if outputs.len() != n_out {
+            return;
+        }
 
         // Build a map from input_port MorphonId → raw input value
         let mut input_map = std::collections::HashMap::new();
@@ -2362,7 +2641,9 @@ impl System {
         // Delta rule: update weights on motor incoming synapses
         for j in 0..n_out {
             let error_j = targets[j] - outputs[j];
-            if error_j.abs() < 0.001 { continue; }
+            if error_j.abs() < 0.001 {
+                continue;
+            }
 
             let motor_id = self.output_ports[j];
             let incoming = self.topology.incoming_synapses_mut(motor_id);
@@ -2371,7 +2652,8 @@ impl System {
                 let pre_act = if let Some(&raw) = input_map.get(&pre_id) {
                     raw / 3.0 // normalize to ~[0,1]
                 } else {
-                    self.morphons.get(&pre_id)
+                    self.morphons
+                        .get(&pre_id)
                         .map(|m| (1.0 / (1.0 + (-m.potential).exp())).max(0.01))
                         .unwrap_or(0.0)
                 };
@@ -2381,7 +2663,10 @@ impl System {
                     let weight_decay = 0.001 * syn.weight;
                     let delta_w = learning_rate * pre_act * error_j - weight_decay;
                     syn.weight += delta_w;
-                    syn.weight = syn.weight.clamp(-self.config.learning.weight_max, self.config.learning.weight_max);
+                    syn.weight = syn.weight.clamp(
+                        -self.config.learning.weight_max,
+                        self.config.learning.weight_max,
+                    );
                 }
             }
         }
@@ -2440,7 +2725,9 @@ impl System {
             // as waking consolidation. Mature (cg=0.5) → selective dreaming.
             // Differentiating (cg=2.0) → aggressive replay consolidation.
             let cg = self.endo.channels.consolidation_gain as f64;
-            let candidates: Vec<petgraph::graph::EdgeIndex> = self.topology.graph
+            let candidates: Vec<petgraph::graph::EdgeIndex> = self
+                .topology
+                .graph
                 .edge_indices()
                 .filter(|&ei| {
                     self.topology.graph.edge_weight(ei).is_some_and(|syn| {
@@ -2485,7 +2772,8 @@ impl System {
                 {
                     // Refresh to small value (not prune) — give a second chance
                     let sign = if syn.weight >= 0.0 { 1.0 } else { -1.0 };
-                    let pseudo_random = ((syn.age.wrapping_mul(31).wrapping_add(7)) % 100) as f64 / 100.0;
+                    let pseudo_random =
+                        ((syn.age.wrapping_mul(31).wrapping_add(7)) % 100) as f64 / 100.0;
                     syn.weight = sign * reset_scale * (0.5 + 0.5 * pseudo_random);
                     syn.age = 0;
                     syn.usage_count = 0;
@@ -2507,25 +2795,30 @@ impl System {
             }
 
             // Internal PE variance
-            let pe_vals: Vec<f64> = cluster.members.iter()
+            let pe_vals: Vec<f64> = cluster
+                .members
+                .iter()
                 .filter_map(|mid| self.morphons.get(mid))
                 .map(|m| m.prediction_error)
                 .collect();
-            if pe_vals.is_empty() { continue; }
+            if pe_vals.is_empty() {
+                continue;
+            }
             let mean_pe = pe_vals.iter().sum::<f64>() / pe_vals.len() as f64;
-            let pe_variance = pe_vals.iter()
-                .map(|pe| (pe - mean_pe).powi(2))
-                .sum::<f64>() / pe_vals.len() as f64;
+            let pe_variance =
+                pe_vals.iter().map(|pe| (pe - mean_pe).powi(2)).sum::<f64>() / pe_vals.len() as f64;
 
             // External connectivity ratio
             let member_set: std::collections::HashSet<MorphonId> =
                 cluster.members.iter().copied().collect();
-            let external_connections: usize = cluster.members.iter()
+            let external_connections: usize = cluster
+                .members
+                .iter()
                 .flat_map(|&mid| self.topology.outgoing(mid))
                 .filter(|(nid, _)| !member_set.contains(nid))
                 .count();
-            let external_ratio = external_connections as f64
-                / (cluster.members.len() as f64 * 5.0).max(1.0);
+            let external_ratio =
+                external_connections as f64 / (cluster.members.len() as f64 * 5.0).max(1.0);
 
             // High internal variance + low external connectivity = anomaly
             if pe_variance > 0.1 && external_ratio < 0.3 {
@@ -2603,7 +2896,10 @@ impl System {
             assoc_activity_min: self.diag.assoc_activity_min,
             assoc_activity_max: self.diag.assoc_activity_max,
             assoc_activity_mean: self.diag.assoc_activity_mean,
-            region_health: self.config.target_morphology.as_ref()
+            region_health: self
+                .config
+                .target_morphology
+                .as_ref()
                 .map(|tm| tm.region_health(&self.morphons))
                 .unwrap_or_default(),
             field_pe_max: self.diag.field_pe_max,
@@ -2649,7 +2945,8 @@ impl System {
         if self.critic_ports.is_empty() {
             return 0.0;
         }
-        let sum: f64 = self.critic_ports
+        let sum: f64 = self
+            .critic_ports
             .iter()
             .filter_map(|id| self.morphons.get(id))
             .map(|m| m.potential)

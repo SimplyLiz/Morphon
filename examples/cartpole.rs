@@ -11,7 +11,7 @@
 
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::endoquilibrium::EndoConfig;
-use morphon_core::homeostasis::HomeostasisParams;
+use morphon_core::homeostasis::{CompetitionMode, HomeostasisParams};
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
 use morphon_core::morphon::MetabolicConfig;
@@ -126,7 +126,7 @@ impl Critic {
     }
 }
 
-fn create_system() -> System {
+fn create_system(competition_mode: CompetitionMode) -> System {
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
             seed_size: 60,
@@ -173,6 +173,7 @@ fn create_system() -> System {
         },
         homeostasis: HomeostasisParams {
             migration_cooldown_duration: 5.0,
+            competition_mode,
             ..Default::default()
         },
         lifecycle: LifecycleConfig {
@@ -287,6 +288,21 @@ fn parse_profile() -> &'static str {
     else { "quick" }
 }
 
+fn parse_competition_mode() -> CompetitionMode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--local-inhibition") {
+        CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,   // 1 interneuron per 10 excitatory (Brunel 2000 baseline)
+            istdp_rate: 0.005,        // Vogels et al. 2011; start conservative
+            initial_inh_weight: -0.3, // same as inter-cluster inhibitory synapses
+            inhibition_radius: 0.0,   // 0 = one interneuron per cluster (all members compete)
+            target_rate: None,        // derived from Endo's fr_assoc setpoints
+        }
+    } else {
+        CompetitionMode::default() // GlobalKWTA { fraction: 0.15, .. }
+    }
+}
+
 fn main() {
     let profile = parse_profile();
     let (num_episodes, max_steps) = match profile {
@@ -294,10 +310,18 @@ fn main() {
         "standard" => (1000, 500),
         _          => (200, 300),
     };
+    let competition_mode = parse_competition_mode();
+    let competition_label = match &competition_mode {
+        CompetitionMode::LocalInhibition { .. } => "LocalInhibition (iSTDP)",
+        CompetitionMode::GlobalKWTA { fraction, .. } => {
+            let _ = fraction; // silence unused warning
+            "GlobalKWTA"
+        }
+    };
 
-    println!("=== MORPHON CartPole Benchmark [{}] ===\n", profile);
+    println!("=== MORPHON CartPole Benchmark [{}] [{}] ===\n", profile, competition_label);
 
-    let mut system = create_system();
+    let mut system = create_system(competition_mode);
     let mut env = CartPole { x: 0.0, x_dot: 0.0, theta: 0.01, theta_dot: 0.0 };
     let mut critic = Critic::new();
     let mut rng = rand::rng();
