@@ -206,6 +206,69 @@ fn classify(system: &mut System, inputs: &[f64]) -> usize {
         .map(|(i, _)| i).unwrap_or(0)
 }
 
+/// Dump receptive fields of top-K associative morphons (by mean incoming weight magnitude)
+/// to a JSON file for paper figure generation. Each RF is a 28x28 grid of S→A weights.
+fn dump_receptive_fields(system: &System, k: usize) {
+    // Build sensory ID → pixel index map (assumes sensory morphons are pinned in order)
+    let mut sensory_ids: Vec<MorphonId> = system.morphons.values()
+        .filter(|m| m.cell_type == CellType::Sensory)
+        .map(|m| m.id)
+        .collect();
+    sensory_ids.sort();
+    let sens_to_idx: std::collections::HashMap<MorphonId, usize> = sensory_ids
+        .iter().enumerate().map(|(i, &id)| (id, i)).collect();
+
+    // Collect (assoc_id, mean weight magnitude, RF grid) for each associative morphon
+    let assoc_ids: Vec<MorphonId> = system.morphons.values()
+        .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+        .map(|m| m.id)
+        .collect();
+
+    let mut entries: Vec<(MorphonId, f64, Vec<f64>)> = Vec::new();
+    for &aid in &assoc_ids {
+        let mut rf = vec![0.0; IMG_PIXELS];
+        let mut nz = 0usize;
+        let mut total_mag = 0.0;
+        for (pre_id, syn) in system.topology.incoming(aid) {
+            if let Some(&px) = sens_to_idx.get(&pre_id) {
+                if px < IMG_PIXELS {
+                    rf[px] = syn.weight;
+                    nz += 1;
+                    total_mag += syn.weight.abs();
+                }
+            }
+        }
+        if nz > 0 {
+            entries.push((aid, total_mag / nz as f64, rf));
+        }
+    }
+
+    // Sort by magnitude descending, take top k
+    entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    entries.truncate(k);
+
+    let json_entries: Vec<serde_json::Value> = entries.iter().map(|(id, mag, rf)| {
+        json!({
+            "morphon_id": id,
+            "mean_abs_weight": mag,
+            "rf_28x28": rf,
+        })
+    }).collect();
+
+    let version = env!("CARGO_PKG_VERSION");
+    let dir = format!("docs/benchmark_results/v{}", version);
+    fs::create_dir_all(&dir).ok();
+    let path = format!("{}/mnist_v2_rfs.json", dir);
+    let payload = json!({
+        "version": version,
+        "n_morphons": json_entries.len(),
+        "img_size": 28,
+        "morphons": json_entries,
+    });
+    fs::write(&path, serde_json::to_string_pretty(&payload).unwrap()).unwrap();
+    eprintln!("  Dumped {} receptive fields to {}", entries.len(), path);
+}
+
 fn evaluate(system: &mut System, images: &[Vec<f64>], labels: &[usize], n: usize) -> f64 {
     let mut correct = 0;
     let tested = images.len().min(n);
@@ -436,6 +499,13 @@ fn main() {
     let v2_m = v2.inspect().total_morphons;
     let v2_s = v2.inspect().total_synapses;
     eprintln!("  V2: {:.1}% | m={} s={} ({:.0}s)\n", v2_acc, v2_m, v2_s, t1.elapsed().as_secs_f64());
+
+    // === RECEPTIVE FIELD DUMP ===
+    // Export top-K associative morphon RFs (S→A weights mapped to 28×28 pixel grid)
+    // for paper figure generation. Only after main training, before damage.
+    if !fast {
+        dump_receptive_fields(&v2, 12);
+    }
 
     // === DAMAGE (skipped in fast mode unless --damage-sweep) ===
     let (damaged_acc, recovery_acc, before, after, n_kill) = if !fast || damage_sweep {

@@ -1,7 +1,14 @@
 \section{Architecture}
 \label{sec:architecture}
 
-This section presents the six biological principles underlying MI and the data structures that implement them. Each subsection maps a biological concept to a precise computational mechanism.
+This section presents the six biological principles underlying MI and the data structures that implement them. Each subsection maps a biological concept to a precise computational mechanism. Figure~\ref{fig:architecture} shows the overall dual-clock loop and how Endoquilibrium modulates each subsystem.
+
+\begin{figure}[h]
+  \centering
+  \figifexists[\linewidth]{architecture.pdf}{architecture diagram}
+  \caption{Morphon-Core dual-clock developmental loop. Solid arrows are data flow; dashed red arrows are Endoquilibrium modulation; dotted arrow is the structural-feedback path where slow-clock synaptogenesis introduces new connections that the fast clock then uses. The four temporal scales (fast/medium/slow/glacial) operate on the same morphon population at different periods.}
+  \label{fig:architecture}
+\end{figure}
 
 \subsection{The Six Biological Principles}
 

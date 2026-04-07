@@ -59,6 +59,13 @@ The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons a
 \paragraph{Implication.}
 The 31\% intact ceiling is regulatory, not representational. The substrate is capable of $\geq$52\% --- it just needs the right plasticity regime to get there. The damage cycle is a manual proxy for what a properly-tuned metabolic pruning system (Section~\ref{sec:failure_modes}) should provide automatically.
 
+\begin{figure}[h]
+  \centering
+  \figifexists[0.7\linewidth]{receptive_fields.pdf}{MNIST receptive fields}
+  \caption{Receptive fields of the top-12 associative morphons (by mean incoming weight magnitude) after MNIST training, dumped from the v3.0.0 quick-profile run. Each tile shows the morphon's S$\to$A synapse weights mapped to the 28$\times$28 pixel grid (red = positive, blue = negative). Many morphons develop spatially-localized, digit-stroke-like receptive fields without any backprop-driven gradient signal --- features emerge from STDP + k-WTA + reward-modulated three-factor learning.}
+  \label{fig:receptive_fields}
+\end{figure}
+
 \subsection{NLP Readiness Benchmark}
 \label{sec:exp_nlp}
 

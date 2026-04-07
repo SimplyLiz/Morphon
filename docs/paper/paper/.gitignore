@@ -8,3 +8,5 @@ main.fls
 main.fdb_latexmk
 sections/*.aux
 *~
+figures/architecture.aux
+figures/architecture.log

@@ -241,6 +241,52 @@ def fig_cartpole_curve():
             print(f"  wrote {out.name} (summary fallback)")
 
 
+# ─── Figure 5: Receptive fields ──────────────────────────────────────────────
+def fig_receptive_fields():
+    """Top-K associative morphon RFs as 28x28 heatmaps in a grid."""
+    # Look for the RF dump
+    rf_paths = sorted(glob(str(RESULTS_DIR / "v*" / "mnist_v2_rfs.json")))
+    if not rf_paths:
+        print("  fig_receptive_fields: no RF dump found, skipping")
+        return
+    with open(rf_paths[-1]) as f:
+        data = json.load(f)
+    morphons = data.get("morphons", [])
+    if not morphons:
+        print("  fig_receptive_fields: empty RF dump, skipping")
+        return
+
+    n = min(12, len(morphons))
+    cols = 4
+    rows = (n + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 1.4, rows * 1.4))
+    axes = np.array(axes).reshape(-1)
+
+    # Find global vmin/vmax for consistent color scale
+    all_vals = np.concatenate([np.array(m["rf_28x28"]) for m in morphons[:n]])
+    vmax = max(abs(all_vals.min()), abs(all_vals.max()))
+    if vmax == 0:
+        vmax = 1.0
+
+    for i in range(n):
+        ax = axes[i]
+        rf = np.array(morphons[i]["rf_28x28"]).reshape(28, 28)
+        ax.imshow(rf, cmap="RdBu_r", vmin=-vmax, vmax=vmax, interpolation="nearest")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(f"#{morphons[i]['morphon_id']}", fontsize=7)
+
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+
+    fig.suptitle("Top-12 associative morphon receptive fields (S$\\to$A weights, 28$\\times$28)",
+                 fontsize=9, y=1.02)
+    out = FIG_DIR / "receptive_fields.pdf"
+    fig.savefig(out, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out.name}")
+
+
 # ─── main ────────────────────────────────────────────────────────────────────
 def main():
     print("Generating paper figures...")
@@ -250,6 +296,7 @@ def main():
     fig_nlp_readiness()
     fig_plasticity_accuracy()
     fig_cartpole_curve()
+    fig_receptive_fields()
     print("Done.")
 
 
