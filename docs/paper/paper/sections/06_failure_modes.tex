@@ -1,0 +1,92 @@
+\section{Biology-Informed Failure Modes}
+\label{sec:failure_modes}
+
+This is the analytical core of the paper. We document four failure modes encountered during development of MI. For each, we describe (i) the symptom, (ii) the biological parallel, (iii) the fix derived from biology, and (iv) the empirical impact of the fix.
+
+\subsection{Modulatory Explosion}
+
+\paragraph{Symptom.}
+A positive feedback loop in which high reward triggers strong dopamine release, which potentiates active synapses, which raises future activity, which increases reward, which triggers more dopamine. All motor morphons saturate at maximum firing rate within $\sim$50 ticks; the reward signal becomes meaningless.
+
+\paragraph{Biological parallel.}
+Dopaminergic excitotoxicity \cite{wakade1985dopamine}. Biology prevents this through receptor desensitization on sustained exposure, presynaptic autoreceptor inhibition, and synaptic reuptake.
+
+\paragraph{Fix.}
+Receptor saturation via Hill function ($n=2$), receptor downregulation on sustained exposure, exponential decay (``reuptake'') of modulator concentrations from release sites.
+
+\paragraph{Result.}
+Stable modulatory dynamics. Dopamine signal retains information content; learning continues without saturation.
+
+\subsection{Motor Silencing from Burst Dead Zone}
+
+\paragraph{Symptom.}
+After an initial burst phase, motor morphons stop firing entirely. Network becomes unresponsive even when sensory input is strong. Forward pass produces zero output regardless of state.
+
+\paragraph{Biological parallel.}
+Depolarization block. In biology, intrinsic excitability homeostasis (slow conductance modulation that keeps neurons in their dynamic range) and tonic baseline activity prevent complete silencing \cite{turrigiano1998activity}.
+
+\paragraph{Fix.}
+Tonic baseline current injection into motor morphons (an analogue of intrinsic excitability), and Endoquilibrium's threshold-bias rule which lowers firing thresholds when associative firing rate drops below its setpoint.
+
+\paragraph{Result.}
+Motor morphons maintain baseline activity. STDP remains effective across firing rate regimes. The CartPole solve depends on this fix; without it, the system stalls at $\sim$10 steps (random baseline) within 50 episodes.
+
+\subsection{LTD Vicious Cycle}
+
+\paragraph{Symptom.}
+When the LTD component of STDP is too strong relative to LTP, weakened synapses carry less current, which reduces post-synaptic firing, which increases the LTD/LTP ratio (because post-before-pre events dominate at low firing rates), which weakens synapses further. Global weight decay to near-zero. Network falls silent. All morphons die from energy starvation.
+
+\paragraph{Biological parallel.}
+Runaway LTD / synaptic scaling failure. In biology, homeostatic synaptic scaling \cite{turrigiano2008homeostatic} and BCM-like metaplasticity thresholds \cite{bienenstock1982bcm} prevent this.
+
+\paragraph{Fix.}
+Synaptic scaling: every $\sim$50 ticks, normalize the total incoming weight to each morphon to a target. This is the Turrigiano operation, implemented in the homeostasis subsystem. BCM-style metaplasticity thresholds adjust the LTP/LTD crossover point based on recent post-synaptic activity, preventing the runaway LTD.
+
+\paragraph{Result.}
+Weight distribution stays bounded. No more global silencing. Networks survive multi-hour training runs without entering the death spiral.
+
+\subsection{Premature Mature: A Novel Failure Mode}
+\label{sec:premature_mature}
+
+The fourth failure mode is one we have not seen documented in prior work, and it is broadly applicable to any biologically-inspired homeostatic regulator that uses raw reward as a maturity signal.
+
+\paragraph{Symptom.}
+On MNIST, accuracy plateaus at $\sim$26\% regardless of training duration. The associative layer has formed digit-selective firing patterns (verified by post-hoc neuron labeling), but the supervised readout cannot exploit them. Plasticity has been throttled to $\text{plasticity\_mult}=0.60$ within the first 100 training samples. Endoquilibrium reports stage = \emph{Mature}.
+
+\paragraph{Diagnosis.}
+The Endoquilibrium stage detector triggers \emph{Mature} when the slow EMA of reward exceeds 0.05 with low variance. This logic was calibrated for reinforcement learning tasks (CartPole, where reward correlates with episode length and only reaches high values when the system is genuinely competent). It fails on supervised classification because the training loop calls \texttt{reward\_contrastive(0.2)} on \emph{every} sample regardless of whether the prediction was correct, plus a windowed-accuracy signal that inflates during the first 50 samples (any single correct guess at the start makes accuracy = 1.0). The slow EMA reaches 0.65 within 500 samples even at 11\% accuracy. Endo declares Mature, drops plasticity to 0.60, and the system stalls.
+
+\paragraph{Empirical evidence.}
+\begin{table}[h]
+\centering
+\caption{MNIST accuracy as a function of plasticity\_mult (pm). Each row is a separate run with the same network and seed.}
+\label{tab:plasticity}
+\begin{tabular}{lcc}
+\toprule
+Plasticity level & Endo stage & Accuracy \\
+\midrule
+pm = 0.60 (Mature, premature)        & Mature                          & 27\% \\
+pm = 0.96--1.77 (oscillating)        & Differentiating/Consolidating  & \textbf{31\%} \\
+pm = 1.80 (Differentiating, constant) & Differentiating                & 25\% \\
+pm = 2.16 (post-damage recovery)      & Differentiating                & \textbf{52.5\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pattern is monotonic in plasticity \emph{within the oscillating regime}: more plasticity, more accuracy. But pure constant high plasticity (1.80) also fails (25\%) because the weights churn without ever consolidating. The system needs both phases.
+
+\paragraph{Biological parallel.}
+This is reward prediction error vs.\ raw reward as a maturity signal. In biology, the brain does not declare ``learning complete'' because rewards are arriving --- it tracks reward \emph{prediction error} (RPE), which goes to zero only when actual outcomes match expected outcomes. A constant 0.2 reward is only ``mature'' if the system was \emph{predicting} 0.2; if the system is at 11\% accuracy but receiving 0.2 each sample, RPE is high and learning should continue. The biological literature on dopamine and RPE \cite{schultz1997neural} is unambiguous on this point.
+
+\paragraph{Fix.}
+Two changes:
+\begin{enumerate}
+  \item Raise the history-length gate on Mature stage from 100 to 2000 ticks. This prevents Mature from triggering during the critical learning phase regardless of the inflated reward signal. Empirically, this prevents the throttle and lets the system learn.
+  \item (Architectural, future work.) Replace the raw reward signal feeding Endo with reward prediction error from the planned Limbic Circuit's Motivational Drive component. This is the principled fix; the history gate is a patch.
+\end{enumerate}
+
+\paragraph{The oscillation discovery.}
+A surprising secondary finding: pure high plasticity is worse than oscillating plasticity. When we tested raising both the Mature \emph{and} Consolidating gates (preventing all throttling), accuracy dropped to 25\%. The system needs the natural Differentiating$\leftrightarrow$Consolidating oscillation that biology calls the theta/sharp-wave-ripple alternation \cite{buzsaki2015hippocampal}: high-plasticity exploration phases interleaved with consolidation phases that lock in gains. The oscillation \emph{is} the feature; the bug was Mature triggering prematurely and locking the system out of the oscillation entirely.
+
+\paragraph{Implications beyond MI.}
+Any biologically-inspired homeostatic system that uses raw reward (not RPE) as a maturity signal will exhibit this failure on dense-reward tasks. We expect this to be a common bug in spiking neural network training pipelines that combine RL-style modulation with supervised classification. The fix is to either (i) use sparse reward correlated with correctness, (ii) add a long history gate, or (iii) use RPE.

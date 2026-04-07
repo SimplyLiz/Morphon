@@ -1,0 +1,72 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate MI on three tasks chosen to probe different capabilities: reactive control (CartPole), static classification (MNIST), and a 4-tier NLP readiness benchmark designed to measure how close MI is to handling language. The goal is not to claim state-of-the-art accuracy on any single task but to demonstrate that a self-organizing developmental architecture can solve non-trivial problems and to characterize its distinctive behaviors.
+
+\subsection{CartPole-v1}
+\label{sec:exp_cartpole}
+
+\paragraph{Setup.}
+OpenAI Gym CartPole-v1, 4 observations (cart position, velocity, pole angle, angular velocity) encoded into 32 sensory morphons via Gaussian population coding (8 receptive-field tiles per observation). 2 motor morphons (left/right force). Cerebellar developmental preset: seed\_size=60, dimensions=4, initial\_connectivity=0.25.
+
+A small linear TD-error critic external to the MI network provides the reward modulation signal, biologically modelling dopamine neurons in VTA/SNc that compute $\delta = R + \gamma V(s') - V(s)$ from striatal input \cite{fremaux2013reinforcement}. The critic is the only component using exact gradients; everything inside the MI network is trained by three-factor learning.
+
+\paragraph{Result.}
+\textbf{Solved.} Average over the last 100 episodes reaches 195.2 at episode 895 of a 1000-episode run. Best single episode: 468 steps.
+
+\paragraph{What this proves.}
+The full MI pipeline --- developmental bootstrap, three-factor learning, tag-and-capture consolidation, contrastive reward, Endoquilibrium regulation --- works end-to-end on a non-trivial control task. CartPole is the prerequisite gate for all other benchmarks: if the basic learning loop is broken, nothing else can work. The CartPole solve provides the foundation to investigate harder tasks.
+
+\subsection{MNIST}
+\label{sec:exp_mnist}
+
+\paragraph{Setup.}
+Standard MNIST, 784 input pixels (28$\times$28), 10 output classes. Cortical developmental preset: seed\_size=200, dimensions=6, initial\_connectivity=0.02 (Phase 4 hardcodes 30\% S$\to$A density). Three training epochs of 3000 samples each. Analog readout (Section~\ref{sec:implementation}). Endoquilibrium enabled with the corrected stage-detection thresholds described in Section~\ref{sec:failure_modes}.
+
+\paragraph{Results.}
+\begin{table}[h]
+\centering
+\caption{MNIST results across training conditions, all on the same seed and network size ($\sim$1250 morphons, $\sim$78K synapses post-training).}
+\label{tab:mnist}
+\begin{tabular}{lcc}
+\toprule
+Condition & Accuracy & Notes \\
+\midrule
+Baseline (intact, trained) & 31.0\% & Best Endo config (Mature gate raised) \\
+Post-damage (30\% killed) & 30.0\% & Random ablation of associative morphons \\
+Post-recovery (regrow + retrain) & \textbf{52.5\%} & 500 recovery samples, lifecycle re-enabled \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{The self-healing finding.}
+The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons are randomly destroyed and then allowed to regrow --- a \textbf{+21.5 percentage point improvement} over the intact baseline. This is the most striking result in the paper. The damage-and-regrow cycle removed entrenched ``hub'' morphons (high-degree neurons that fire indiscriminately and dominate the readout) and replaced them with fresh morphons that specialize under high plasticity. The fresh morphons learn better features because Endoquilibrium, sensing the post-damage performance drop, returns to the high-plasticity Differentiating stage ($\text{plasticity\_mult}=2.16$), exceeding the average plasticity the original morphons ever experienced.
+
+\paragraph{Implication.}
+The 31\% intact ceiling is regulatory, not representational. The substrate is capable of $\geq$52\% --- it just needs the right plasticity regime to get there. The damage cycle is a manual proxy for what a properly-tuned metabolic pruning system (Section~\ref{sec:failure_modes}) should provide automatically.
+
+\subsection{NLP Readiness Benchmark}
+\label{sec:exp_nlp}
+
+We designed a synthetic 4-tier benchmark to measure how close MI is to handling language without committing to a specific tokenizer or vocabulary.
+
+\begin{table}[h]
+\centering
+\caption{NLP readiness benchmark results. Each tier tests a specific capability needed for language processing.}
+\label{tab:nlp}
+\begin{tabular}{llcc}
+\toprule
+Tier & Task & Spike-based & Analog readout \\
+\midrule
+0: Bag-of-Chars  & 27-dim freq encoding, 2-class & 46\% & \textbf{99\%} \\
+1: One-Hot Scale & 135-dim flat, same task        & 51\% & \textbf{69\%} \\
+2: Memory        & 27-dim/step $\times$ 3 sequential & 48\% & \textbf{88\%} \\
+3: Composition   & 54-dim, XOR over token pairs   & 50\% & 40\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Key finding.}
+The MI substrate creates discriminative representations during spike-based processing --- the analog readout proves it by reading the same morphon potentials that spikes are generated from. The bottleneck is spike-to-output \emph{fidelity}: signals are distorted by delays, leaky integration, and multi-hop propagation. Tier 2 at 88\% is particularly significant: temporal memory exists in residual potentials across sequential \texttt{process()} calls, suggesting the substrate for the temporal sequence processing already works at the potential level even though the spike pipeline cannot exploit it.
+
+Tier 3 (XOR) fails because the analog readout is linear and XOR requires nonlinear hidden features, which would require a working spike-based credit-assignment path through the hidden layer.

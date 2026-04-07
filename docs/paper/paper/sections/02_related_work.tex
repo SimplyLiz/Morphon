@@ -1,0 +1,25 @@
+\section{Related Work}
+\label{sec:related}
+
+We position MI within the landscape of biologically-inspired and self-modifying neural architectures along three axes: (i) whether topology changes at runtime, (ii) whether the developmental rules are local, and (iii) whether the system integrates neuromodulation with structural plasticity.
+
+\paragraph{Self-Modifying Growing Recurrent Networks (SMGrNN).}
+SMGrNN \cite{schmidhuber2007self} introduces topology growth via node and edge insertion during training. The key difference from MI is the absence of morphogen-guided differentiation, apoptosis, and neuromodulatory gating. SMGrNN grows monotonically; MI grows, prunes, fuses, and kills under local energy constraints.
+
+\paragraph{Neural Developmental Programs (NDP) and Local Neural Developmental Programs (LNDP).}
+NDP \cite{najarro2023towards} and LNDP \cite{nisioti2024growing} both learn local rules that produce network topology. NDP uses a differentiable relaxation of adjacency matrices, while MI uses discrete morphogenetic events (birth, fusion, apoptosis) with explicit metabolic costs. LNDP operates in a grid world; MI operates in hyperbolic embedding space, which provides exponential volume growth for unbounded topology expansion.
+
+\paragraph{Self-Assembling Particle-Interaction Networks (SAPIN).}
+SAPIN \cite{tang2023sapin} treats compute units as agents that self-organize into functional topologies via particle-style interactions. SAPIN units are stateless particles; Morphons are stateful neurons with membrane potentials, eligibility traces, energy budgets, and developmental lineages.
+
+\paragraph{Three-factor learning rules.}
+The three-factor framework \cite{fremaux2016neuromodulated,gerstner2018eligibility} extends Hebbian plasticity with a neuromodulatory third factor (typically a dopamine analogue gating eligibility-traced LTP). MI implements three-factor learning with receptor-gated modulation: each Morphon's response to each modulator is determined by its evolving receptor density profile, allowing morphon-specific sensitivity to develop without a global hyperparameter.
+
+\paragraph{Self-Adaptive Dynamic Pruning (SADP).}
+SADP \cite{sadp2026} achieves 99.1\% on MNIST with dynamic sparsity within a fixed-topology spiking network. SADP prunes; MI grows from a near-empty seed. We treat SADP's accuracy as the target ceiling for spiking-network classification while noting that MI's distinctive capability is structural adaptation, not accuracy on static benchmarks.
+
+\paragraph{Cortical Labs (DishBrain).}
+DishBrain \cite{kagan2022dishbrain} demonstrated that biological neurons cultured on multi-electrode arrays can learn to play Pong via reward-modulated plasticity. This is empirical evidence that self-organizing wetware solves real-time control without backpropagation. MI is the in-silico analogue: a developmental simulation that exhibits the same intrinsic-activity-plus-reward-modulation principles.
+
+\paragraph{Synaptic scaling and homeostatic regulation.}
+Turrigiano's synaptic scaling \cite{turrigiano2008homeostatic} and BCM metaplasticity \cite{bienenstock1982bcm} provide the biological grounding for MI's homeostatic mechanisms. Our \emph{Endoquilibrium} module (Section~\ref{sec:architecture}) implements multi-scale homeostatic regulation and is the locus of the regulatory failure mode we document in Section~\ref{sec:failure_modes}.

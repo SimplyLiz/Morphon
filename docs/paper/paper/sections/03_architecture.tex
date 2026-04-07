@@ -1,0 +1,83 @@
+\section{Architecture}
+\label{sec:architecture}
+
+This section presents the six biological principles underlying MI and the data structures that implement them. Each subsection maps a biological concept to a precise computational mechanism.
+
+\subsection{The Six Biological Principles}
+
+\begin{description}
+  \item[\textbf{P1: Local computation only.}] No global loss, no backpropagation. All updates use locally available information --- pre-synaptic and post-synaptic activity, locally diffused neuromodulators, and a Morphon's own state.
+  \item[\textbf{P2: Developmental lifecycle.}] Morphons are born, differentiate, mature, fuse with correlated neighbors, and can die from energy starvation or chronic inactivity (apoptosis).
+  \item[\textbf{P3: Chemical signaling.}] Morphogen-like signals diffuse through the embedding space and guide differentiation and connectivity decisions.
+  \item[\textbf{P4: Neuromodulatory gating.}] Plasticity rules are gated by four modulatory channels (dopamine, serotonin, acetylcholine, norepinephrine analogues), each with a per-Morphon receptor density.
+  \item[\textbf{P5: Multi-scale memory.}] Synaptic (fast, milliseconds), structural (medium, minutes), and morphogenetic (slow, hours) memory operate on separate timescales.
+  \item[\textbf{P6: Metabolic cost.}] Every Morphon consumes energy each tick. Resource scarcity drives pruning, fusion, and apoptosis.
+\end{description}
+
+\subsection{The Morphon}
+
+The Morphon is the fundamental compute unit. It carries:
+\begin{itemize}
+  \item \textbf{Membrane state:} potential, prediction-error baseline, refractory timer, fired flag.
+  \item \textbf{Receptor profile:} per-modulator sensitivity vector $(\rho_R, \rho_N, \rho_A, \rho_H)$ for reward, novelty, arousal, and homeostasis channels.
+  \item \textbf{Developmental metadata:} cell type (Stem, Sensory, Associative, Motor, Modulatory, Inhibitory Interneuron), differentiation level, lineage ID, birth tick.
+  \item \textbf{Energy budget:} current energy, basal regeneration rate, firing cost (with optional superlinear penalty), apoptosis threshold.
+  \item \textbf{Position:} hyperbolic coordinate in a Poincaré ball of configurable dimensionality.
+\end{itemize}
+
+A Morphon's state update is local: it integrates spike inputs from incoming synapses, applies an activation function determined by its cell type, fires if the result exceeds its (adaptive) threshold, and pays the metabolic cost.
+
+\subsection{Resonance and Spike Propagation}
+
+Morphons communicate via discrete spikes propagated along synapses with configurable delays. Unlike Transformer attention (a global $O(N^2)$ operation), spike propagation is local: $O(k \cdot N)$ where $k$ is the average out-degree. The system's cost scales with the number of \emph{active} morphons and their connectivity, not with the square of the population.
+
+Each synapse carries a weight, a delay, an eligibility trace, a tag (for synaptic tagging and capture \cite{frey1997synaptic}), and a consolidation level. The dual-clock scheduler updates synaptic weights on the medium path via a three-factor rule:
+\begin{equation}
+\Delta w = \eta \cdot e \cdot M(t)
+\end{equation}
+where $e$ is the eligibility trace built from STDP coincidences, $M(t)$ is the (receptor-gated) modulatory signal, and $\eta$ is a per-synapse plasticity rate.
+
+\subsection{Morphogenesis Lifecycle}
+
+The morphogenesis subsystem implements Principles P2 and P3. On the slow clock:
+\begin{itemize}
+  \item \textbf{Synaptogenesis} forms new synapses between morphons whose activity is correlated and whose hyperbolic distance is below threshold.
+  \item \textbf{Pruning} removes synapses with low weight, low recent activity, or whose pre/post morphons are no longer correlated.
+  \item \textbf{Migration} moves morphons through hyperbolic space along gradients of correlated input (similar morphons drift together).
+\end{itemize}
+On the glacial clock:
+\begin{itemize}
+  \item \textbf{Division} produces a daughter morphon from a parent that is consistently energetic and active.
+  \item \textbf{Differentiation} commits a stem morphon to a specific cell type based on local morphogen concentrations.
+  \item \textbf{Fusion} merges two morphons whose activity patterns have become indistinguishable, redistributing their synapses to the survivor.
+  \item \textbf{Apoptosis} removes morphons that have been below their energy threshold for a configurable duration.
+\end{itemize}
+
+\subsection{Endoquilibrium: Predictive Neuroendocrine Regulation}
+
+Endoquilibrium is the homeostatic regulator. It monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error mean, reward EMA), maintains dual-timescale exponential moving averages (fast $\tau=50$, slow $\tau=500$), and adjusts six modulation channels through proportional control: $\rho_R, \rho_N, \rho_A, \rho_H$ gains, threshold bias, plasticity multiplier, and consolidation gain.
+
+Endoquilibrium also detects developmental stage: \emph{Proliferating}, \emph{Differentiating}, \emph{Consolidating}, \emph{Mature}, \emph{Stressed}. The stage detection logic uses reward-based relative thresholds and is the locus of the regulatory failure mode we document in Section~\ref{sec:failure_modes}.
+
+\subsection{Hyperbolic Embedding Space}
+
+Morphons live in a Poincaré ball model of hyperbolic space with configurable dimensionality (typically 4--6). Hyperbolic geometry has two properties that make it suitable for developmental architectures: (i) tree-like hierarchies are represented with low distortion \cite{nickel2017poincare}, and (ii) volume grows exponentially with radius, providing room for unbounded topology expansion without coordinate crowding.
+
+In MI, the origin of the ball corresponds to the most general (stem-like) morphons, and the boundary to the most specialized. A morphon's hyperbolic distance to its peers governs synaptogenesis probability and morphogen diffusion.
+
+\subsection{Dual-Clock Scheduler}
+
+Four temporal scales separate fast inference from slow structural change:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Scale & Period & Operations \\
+\midrule
+Fast    & 1 step    & Spike propagation, firing, input integration \\
+Medium  & 5--10     & STDP, eligibility, three-factor weight updates \\
+Slow    & 100--1000 & Synaptogenesis, pruning, migration \\
+Glacial & 1000--5000 & Division, differentiation, fusion, apoptosis \\
+\bottomrule
+\end{tabular}
+\end{center}
+This separation is essential. Structural changes during inference would destabilize the network; the slow clock guarantees that morphogenetic events happen between bursts of computation.

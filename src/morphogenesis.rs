@@ -2427,4 +2427,205 @@ mod tests {
         assert!(syn.effective_delay() >= 0.5,
             "effective delay floor respected: {}", syn.effective_delay());
     }
+
+    // === Local inhibitory interneuron creation ===
+
+    #[test]
+    fn local_interneurons_created_with_correct_count() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        // 10 excitatory members
+        for id in 1..=10u64 {
+            let mut m = make_morphon(id, CellType::Associative);
+            m.position = pos.clone();
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+        let members: Vec<MorphonId> = (1..=10).collect();
+        let mut next_id = 100u64;
+
+        create_local_inhibitory_interneurons(
+            &members, &mut morphons, &mut topo, &mut next_id,
+            500, -0.3, 0.1, // ratio=0.1 → 1 interneuron per 10 members
+        );
+
+        let inh_count = morphons.values()
+            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .count();
+        assert_eq!(inh_count, 1, "10 members × 0.1 ratio = 1 interneuron");
+    }
+
+    #[test]
+    fn local_interneurons_minimum_one_per_cluster() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        // Only 2 members — below ratio threshold, should still get min 1
+        for id in 1..=2u64 {
+            let mut m = make_morphon(id, CellType::Associative);
+            m.position = pos.clone();
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+        let members: Vec<MorphonId> = vec![1, 2];
+        let mut next_id = 100u64;
+
+        create_local_inhibitory_interneurons(
+            &members, &mut morphons, &mut topo, &mut next_id,
+            500, -0.3, 0.1,
+        );
+
+        let inh_count = morphons.values()
+            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .count();
+        assert_eq!(inh_count, 1, "always at least 1 interneuron per cluster");
+    }
+
+    #[test]
+    fn local_interneurons_bidirectional_wiring() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        for id in 1..=5u64 {
+            let mut m = make_morphon(id, CellType::Associative);
+            m.position = pos.clone();
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+        let members: Vec<MorphonId> = (1..=5).collect();
+        let mut next_id = 100u64;
+
+        create_local_inhibitory_interneurons(
+            &members, &mut morphons, &mut topo, &mut next_id,
+            500, -0.3, 0.2,
+        );
+
+        let inh_ids: Vec<MorphonId> = morphons.values()
+            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .map(|m| m.id)
+            .collect();
+
+        assert!(!inh_ids.is_empty());
+        let inh_id = inh_ids[0];
+
+        // Every excitatory member should drive the interneuron (excitatory → inh)
+        for &mid in &members {
+            assert!(topo.synapse_between(mid, inh_id).is_some(),
+                "member {} should have excitatory synapse to interneuron", mid);
+        }
+        // Interneuron should inhibit every excitatory member (inh → member)
+        for &mid in &members {
+            assert!(topo.synapse_between(inh_id, mid).is_some(),
+                "interneuron should have inhibitory synapse to member {}", mid);
+        }
+    }
+
+    #[test]
+    fn local_interneurons_inhibitory_weights_are_negative() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+        let pos = HyperbolicPoint::origin(3);
+
+        for id in 1..=4u64 {
+            let mut m = make_morphon(id, CellType::Associative);
+            m.position = pos.clone();
+            morphons.insert(id, m);
+            topo.add_morphon(id);
+        }
+        let members: Vec<MorphonId> = (1..=4).collect();
+        let mut next_id = 100u64;
+
+        create_local_inhibitory_interneurons(
+            &members, &mut morphons, &mut topo, &mut next_id,
+            500, -0.3, 0.25,
+        );
+
+        let inh_id = morphons.values()
+            .find(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .map(|m| m.id)
+            .unwrap();
+
+        // inh → member synapses must be negative
+        for &mid in &members {
+            if let Some((_, syn)) = topo.synapse_between(inh_id, mid) {
+                assert!(syn.weight < 0.0,
+                    "inhibitory synapse to member {} should be negative, got {}",
+                    mid, syn.weight);
+            }
+        }
+        // member → inh synapses must be positive
+        for &mid in &members {
+            if let Some((_, syn)) = topo.synapse_between(mid, inh_id) {
+                assert!(syn.weight > 0.0,
+                    "excitatory synapse from member {} should be positive, got {}",
+                    mid, syn.weight);
+            }
+        }
+    }
+
+    #[test]
+    fn fusion_creates_local_interneurons_in_local_inhibition_mode() {
+        let (mut morphons, mut topo, params, mut cluster_id, mut next_id) = setup_fusion_test();
+
+        // Force all morphons to look like a fuse-ready cluster
+        for m in morphons.values_mut() {
+            for _ in 0..50 { m.activity_history.push(1.0); }
+            m.fired = true;
+            m.prediction_error = 0.01;
+            m.desire = 0.1;
+            m.energy = 0.9;
+        }
+
+        let mut clusters = HashMap::new();
+        let mode = crate::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.2,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.0,
+            target_rate: None,
+        };
+
+        fusion(
+            &mut morphons, &mut clusters, &mut cluster_id, &mut next_id,
+            &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, &mode,
+        );
+
+        if clusters.is_empty() { return; } // fusion didn't trigger — skip
+
+        let inh_count = morphons.values()
+            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .count();
+        assert!(inh_count >= 1,
+            "LocalInhibition fusion should create at least 1 interneuron, got {}", inh_count);
+    }
+
+    #[test]
+    fn fusion_no_interneurons_in_global_kwta_mode() {
+        let (mut morphons, mut topo, params, mut cluster_id, mut next_id) = setup_fusion_test();
+
+        for m in morphons.values_mut() {
+            for _ in 0..50 { m.activity_history.push(1.0); }
+            m.fired = true;
+            m.prediction_error = 0.01;
+            m.desire = 0.1;
+            m.energy = 0.9;
+        }
+
+        let mut clusters = HashMap::new();
+        fusion(
+            &mut morphons, &mut clusters, &mut cluster_id, &mut next_id,
+            &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(),
+        );
+
+        let inh_count = morphons.values()
+            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
+            .count();
+        assert_eq!(inh_count, 0,
+            "GlobalKWTA mode should not create InhibitoryInterneurons");
+    }
 }

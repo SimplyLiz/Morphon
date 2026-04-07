@@ -1,0 +1,41 @@
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{The Spike-vs-Analog Gap}
+
+The most striking pattern in our results is the gap between spike-based and analog readout. On NLP Tier 0, the same trained network produces 46\% via spikes (chance) and 99\% via analog readout. The information is present in morphon potentials --- the analog readout proves it --- but the spike pipeline destroys it through propagation delays, leaky integration, and multi-hop conversion.
+
+This is not a bug in MI; it is a property of any spiking architecture in which the readout pathway sums potentials through several intermediate firing decisions. Biology solves this by having dedicated analog readout pathways for tasks that require it (e.g.\ Purkinje cells in the cerebellum perform analog integration of climbing fiber and parallel fiber inputs to produce a continuous motor signal; \cite{ito2006cerebellar}). MI's analog readout is the in-silico analogue.
+
+The spike pipeline still has a job: it produces the diverse, sparse, energy-efficient hidden representations that the analog readout exploits. The two pathways are complementary, not competing. The MI thesis is not ``replace spikes with analog'' but ``spike-based developmental dynamics produce features that analog readouts can use.''
+
+\subsection{Self-Healing as a Computational Capability}
+
+The +21.5pp improvement after damage is, to our knowledge, the first demonstration of \emph{beneficial} self-healing in a neural architecture. Other work on damage recovery in neural networks measures how close a damaged network can return to its pre-damage performance \cite{lavanchy2025damage}; MI is the first system we know of where damage produces a network that is genuinely better than the original.
+
+The mechanism is clear in retrospect. The original training run accumulated entrenched ``hub'' morphons --- high-degree neurons that fire indiscriminately and dominate the readout. Once entrenched, the homeostatic regulator declares the system ``done learning'' (the premature Mature bug, Section~\ref{sec:premature_mature}) and stops protecting morphon diversity. Damage removes some hubs at random, the regulator notices the performance drop and re-enables high plasticity, and the regrowth fills the gaps with fresh, well-specialized morphons that the now-uninhibited learning rules sculpt under the right conditions.
+
+This points to a more general principle: \emph{the optimal training trajectory for MI is not a smooth ascent but a series of structural shocks followed by recovery}. We hypothesize that periodic targeted ablation of high-degree morphons during training would achieve the post-recovery accuracy without requiring the manual damage step. This is the proposed mechanism of the planned Limbic Circuit's Motivational Drive, which uses RPE-scaled metabolic pressure to continuously prune hubs.
+
+\subsection{Limitations}
+
+We are honest about the gaps:
+
+\begin{itemize}
+  \item \textbf{MNIST accuracy is well below state of the art.} 31\% intact / 52.5\% post-recovery is a long way from SADP's 99.1\% \cite{sadp2026}. The substrate works; the supervised pathway still loses information at every spike conversion.
+  \item \textbf{No language tasks yet.} The NLP readiness benchmark measures \emph{prerequisites} for language, not language itself. Tier 3 (compositional XOR) fails: the system can encode and remember but cannot compose. Composition requires nonlinear hidden features formed under DFA-driven supervised feedback, which the current spike pipeline does not deliver.
+  \item \textbf{The premature Mature fix is a patch, not a principled solution.} The history gate at 2000 ticks prevents the failure but is essentially ``disable Mature stage detection.'' The principled fix is RPE-based regulation via a Limbic Circuit module that does not yet exist.
+  \item \textbf{Performance.} The current implementation processes $\sim$1 image/second with 90K synapses. The slow path (anti-Hebbian LTD on k-WTA losers) is the hottest path; sparse eligibility updates and rayon-parallel medium-path learning would yield $\sim$10$\times$ speedup. Both are on the roadmap but not implemented.
+\end{itemize}
+
+\subsection{The Path to Language}
+
+The planned trajectory beyond this paper:
+\begin{enumerate}
+  \item \textbf{Local inhibitory competition with iSTDP \cite{vogels2011inhibitory}.} Replace global k-WTA with biologically correct lateral inhibition through trained inhibitory interneurons. Expected to break hub dominance at the source rather than via post-hoc damage.
+  \item \textbf{Limbic Circuit + RPE-based regulation.} Replace the history-gate patch with reward prediction error feeding a Motivational Drive module. This naturally handles both RL and classification.
+  \item \textbf{Temporal sequence processing.} Recurrent connectivity within associative populations + working-memory feedback into sensory ports. Spec exists; implementation gated on MNIST $\geq$ 85\%.
+  \item \textbf{Tokenization and embedding.} Once the temporal pipeline works, add a learned tokenizer and vocabulary embedding. This is the bridge to actual NLP tasks.
+\end{enumerate}
+
+The structural decisions for each step are documented in the project's specification corpus. The question this paper does \emph{not} attempt to answer is whether MI will ever match Transformer performance on language tasks. We argue only that developmental dynamics are a principled and underexplored axis of neural architecture design, and that the failure modes we encountered have biological analogues whose biology-derived fixes work.

@@ -1,0 +1,10 @@
+main.aux
+main.bbl
+main.blg
+main.log
+main.out
+main.toc
+main.fls
+main.fdb_latexmk
+sections/*.aux
+*~

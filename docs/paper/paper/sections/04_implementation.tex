@@ -1,0 +1,74 @@
+\section{Implementation}
+\label{sec:implementation}
+
+The MI engine is implemented in Rust ($\sim$10,000 lines, 180+ unit tests). The choice of Rust is motivated by three requirements: (i) memory safety without GC pauses, (ii) zero-cost abstractions for the inner simulation loop, and (iii) safe concurrency for parallel morphon updates. The crate compiles to native, WebAssembly (for an interactive in-browser visualizer), and Python bindings via PyO3 (for benchmark harnessing).
+
+\subsection{Core Data Structures}
+
+Morphons are stored in a \texttt{HashMap} keyed by stable IDs. The topology is a directed graph using the \texttt{petgraph} crate, with synapses as edge weights. We use generational indices so that references survive birth/death events.
+
+\subsection{The Main Loop}
+
+\begin{algorithm}
+\caption{System::step (one fast tick)}
+\label{alg:step}
+\begin{algorithmic}[1]
+\State \textbf{1.} Spike propagation: deliver pending spikes from previous step
+\State \textbf{2.} Inhibitory competition (k-WTA or local interneurons)
+\State \textbf{3.} Morphon update: integrate inputs, decide firing, pay metabolic cost
+\State \textbf{4.} Generate new spikes from fired morphons
+\If{tick.medium}
+  \State \textbf{5.} Update eligibility traces, apply three-factor learning
+  \State \textbf{6.} Run Endoquilibrium tick (sense vitals, adjust channels)
+\EndIf
+\If{tick.slow}
+  \State \textbf{7.} Synaptogenesis, pruning, migration
+\EndIf
+\If{tick.glacial}
+  \State \textbf{8.} Division, differentiation, fusion, apoptosis
+\EndIf
+\If{tick.homeostasis}
+  \State \textbf{9.} Synaptic scaling, inter-cluster inhibition
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Output Pathways}
+
+MI provides two output pathways with very different characteristics. Both are biologically motivated.
+
+\paragraph{Spike-based readout.}
+The default pathway reads motor morphon potentials after spike propagation. This is the path that drives action selection in CartPole. It is the biological default --- everything happens via spikes.
+
+\paragraph{Analog readout (Purkinje-style bypass).}
+For classification tasks, MI offers an analog readout that reads associative morphon potentials \emph{directly}, bypassing spike conversion: $V_j = \sum_i w_{ji} \cdot \sigma(p_i - 0.5)$ where $p_i$ is the potential of associative morphon $i$ and $w_{ji}$ is a learnable readout weight. This is biologically motivated by the Purkinje cell, which performs analog dendritic integration of climbing fiber and parallel fiber inputs to produce motor output, bypassing the spike-based intermediate computation in the cerebellar cortex.
+
+The two pathways serve different purposes. Spike-based readout is closed-loop and online (suitable for control). Analog readout is open-loop and trained by a delta rule with DFA backprojection, providing exact gradients on the readout weights without requiring backpropagation through the spike network.
+
+\subsection{Three-Factor Learning Rule}
+
+The three-factor STDP rule on the medium path:
+\begin{equation}
+\Delta w_{ij} = \eta_{ij} \cdot e_{ij}(t) \cdot M_j(t) \cdot g_a
+\end{equation}
+where $e_{ij}$ is the eligibility trace, $M_j$ is the receptor-gated modulator signal at the post-synaptic morphon, $\eta_{ij}$ is a per-synapse plasticity rate, and $g_a$ is an astrocytic gate.
+
+The eligibility trace integrates STDP coincidences:
+\begin{equation}
+\frac{de_{ij}}{dt} = -\frac{e_{ij}}{\tau_e} + A_+ \cdot \text{tr}_i^{\text{pre}} \cdot \delta_j^{\text{post}} - A_- \cdot \text{tr}_j^{\text{post}} \cdot \delta_i^{\text{pre}}
+\end{equation}
+with weight-dependent bounds \cite{gilson2011stability} that make weak synapses easy to strengthen and strong synapses easy to weaken.
+
+\subsection{Tag and Capture}
+
+We implement the synaptic tagging-and-capture model of Frey and Morris \cite{frey1997synaptic}. Synapses with high recent eligibility set a tag; tags decay slowly ($\tau_{\text{tag}}=200$ steps); when sufficient reward arrives during a tagged period, the synapse is captured (consolidated) and protected from pruning.
+
+\subsection{Reproducibility}
+
+The full benchmark suite is reproducible from a clean checkout:
+\begin{verbatim}
+cargo run --example cartpole --release
+cargo run --example mnist_v2 --release
+cargo run --example nlp_readiness --release
+\end{verbatim}
+Each example saves a JSON record of its configuration and results to \texttt{docs/benchmark\_results/v\{version\}/}. All numbers reported in this paper are from these JSON records.

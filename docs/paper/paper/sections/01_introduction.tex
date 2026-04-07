@@ -1,0 +1,19 @@
+\section{Introduction}
+\label{sec:introduction}
+
+All dominant neural architectures --- Transformers \cite{vaswani2017attention}, CNNs \cite{lecun1998gradient}, RNNs, and state-space models \cite{gu2022s4} --- share a common assumption: \emph{topology is fixed before training begins}, and learning is reduced to weight optimization within that frozen graph. Neural architecture search and dynamic pruning are offline approximations to this constraint, not runtime alternatives to it. This design choice has yielded remarkable results, but it also incurs costs that are increasingly visible as systems scale: catastrophic forgetting, the need for massive overparameterization to compensate for lack of structural adaptation, and the inability to allocate capacity where it is needed at runtime.
+
+Biological neural systems do not work this way. Cortical circuits develop, prune, and reorganize continuously throughout life \cite{huttenlocher1979synaptic,sigaard2016development}. Adult neurogenesis persists in the hippocampus and olfactory bulb \cite{eriksson1998neurogenesis,ming2011adult}. Synaptic boutons form and disappear on timescales of hours \cite{trachtenberg2002long}. This structural plasticity is not incidental to biological intelligence --- it is computationally essential. The cortex does not merely learn weights; it grows the substrate of computation in response to its inputs.
+
+We argue that architectures capable of growing their own topology under local developmental rules will exhibit qualitatively different generalization and adaptation properties than static networks. We call this paradigm \emph{Morphogenic Intelligence} (MI), and we present here the first complete implementation: a Rust-based simulator in which each compute unit (a \emph{Morphon}) carries a developmental program, communicates with neighbors through a biophysically-inspired resonance mechanism, and is born, differentiates, fuses, or dies according to local rules and metabolic budgets.
+
+\paragraph{Contributions.}
+\begin{enumerate}
+  \item A complete developmental neural architecture grounded in six biological principles (Section~\ref{sec:architecture}).
+  \item A Rust implementation of the full MI engine, including all six principles, that runs in real time on commodity hardware (Section~\ref{sec:implementation}).
+  \item Experimental validation on CartPole (solved), MNIST (31\% intact, 52.5\% post-damage), and a 4-tier NLP readiness benchmark (Section~\ref{sec:experiments}).
+  \item A taxonomy of biology-informed failure modes encountered during development, each with a biological analogue and a biology-derived fix that transfers to the computational setting (Section~\ref{sec:failure_modes}).
+  \item A novel regulatory bug --- premature ``Mature'' stage detection in dense-reward classification settings --- that affects any biologically-inspired homeostatic system using raw reward as a maturity signal, and a clean fix.
+\end{enumerate}
+
+The rest of the paper is organized as follows. Section~\ref{sec:related} positions MI relative to prior self-modifying architectures. Section~\ref{sec:architecture} formalizes the six biological principles and the data structures that implement them. Section~\ref{sec:implementation} describes the Rust engine. Section~\ref{sec:experiments} presents the benchmark results. Section~\ref{sec:failure_modes} is the analytical core of the paper: four failure modes, their biological parallels, and the fixes that resolve them. Section~\ref{sec:discussion} discusses limitations and the path to language tasks. Section~\ref{sec:conclusion} concludes.
