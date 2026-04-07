@@ -71,15 +71,16 @@ That's a real gap, not noise. Two causes:
   LocalInhibition may produce wrong sparsity for hundreds of episodes before iSTDP settles.
   Fix: lower `istdp_rate` or pre-set `initial_inh_weight` closer to the eventual equilibrium.
 
-- **CartPole uses `fusion: false`.** Clusters never form, so `create_local_inhibitory_interneurons()`
-  never runs via the fusion path. The 6 `InhibitoryInterneuron` morphons visible in the output
-  come from somewhere in the developmental bootstrap — probably `DevelopmentalConfig::cerebellar()`
-  — but they are NOT wired as a full intra-cluster circuit. In LocalInhibition mode without
-  clusters, competition depends entirely on whatever interneurons the bootstrap happens to create,
-  which may not be enough or correctly positioned.
-  Fix: verify where bootstrap interneurons come from and whether they're covering the associative
-  layer properly. May need `fusion: true` (or at minimum a lightweight cluster-seeding step at
-  init) to get proper intra-cluster coverage.
+- **Bootstrap grouping is geometric, not functional.** The 6 interneurons in the CartPole output
+  come from `developmental.rs:242` — a bootstrap phase that groups Associative morphons by spatial
+  proximity in the Poincaré ball and creates one interneuron per group. Coverage exists, but the
+  groups are based on initial position, not on which morphons actually co-fire. Before iSTDP
+  has tuned the weights, competition may be suppressing the wrong morphons — interneuron A might
+  inhibit morphons that never compete with each other, while morphons that do compete land in
+  different groups.
+  This is a transient problem that iSTDP should fix over episodes, but it means the first 100–200
+  episodes in LocalInhibition mode are worse than GlobalKWTA by construction. The standard profile
+  (1000 eps) should show convergence if it's going to converge.
 
 ### 2. Emergent sparsity too high or too low (Medium risk)
 GlobalKWTA fires exactly `ceil(n × 0.15)` associatives per tick. LocalInhibition sparsity is
@@ -100,12 +101,18 @@ eligibility trace may starve — that morphon stops learning even if it should b
 Observable: check `eligibility_density` — if it drops significantly vs GlobalKWTA baseline,
 iSTDP is suppressing learning.
 
-### 4. Bootstrap interneurons not covering the associative layer (High risk for CartPole)
-As noted above, with `fusion: false` the main interneuron creation path never runs. This is
-the most likely cause of the quick-profile regression and needs to be investigated before
-drawing conclusions from 1000-episode runs. The quick fix is to check at system init whether
-`LocalInhibition` mode is active and, if so, create a minimal set of interneurons seeded to
-cover the associative layer — essentially a bootstrap analog of `create_local_inhibitory_interneurons`.
+### 4. Bootstrap grouping vs cluster topology (Low risk, previously misjudged)
+With `fusion: false`, `create_local_inhibitory_interneurons()` in `morphogenesis.rs` never
+runs — but `developmental.rs:242` has its own bootstrap version that runs at init regardless
+of fusion. It groups Associative morphons by spatial proximity and creates one interneuron
+per group, wired bidirectionally. This is where the 6 interneurons visible in CartPole output
+come from. Coverage is real.
+
+The difference vs cluster-formation interneurons: bootstrap groups by evenly chunking sorted
+positions; cluster-formation groups by actual co-firing patterns. Bootstrap coverage may be
+geometrically correct but not functionally aligned with which morphons compete. Whether this
+matters in practice needs to be observed — check `winners_per_cluster` across runs to see if
+competition is resolving per-group or collapsing globally.
 
 ### 5. Winner rotation changes learning dynamics (Low risk)
 In GlobalKWTA, `winner_boost` is applied only to k-WTA winners. In LocalInhibition, it applies
@@ -132,14 +139,18 @@ Do not touch `kwta_fraction` for comparison — that's the GlobalKWTA path.
 ## What to delete after successful validation
 
 ```
-src/system.rs:503–626    — GlobalKWTA branch in step() fast path
-src/system.rs:777–799    — GlobalKWTA branch in winner_boost application
-src/system.rs:226        — kwta_winners field on System
-src/system.rs:361        — kwta_winners: Vec::new() in System::new()
-src/homeostasis.rs       — GlobalKWTA variant of CompetitionMode enum
-                           (keep LocalInhibition, make it the only variant or the default)
-HomeostasisParams        — remove kwta_fraction references
+src/system.rs:525–650    — GlobalKWTA branch in fast-path competition (the entire match arm,
+                           including local_radius sub-path and anti-Hebbian LTD injection)
+src/system.rs:822–848    — GlobalKWTA branch in winner_boost application (the match arm that
+                           iterates kwta_winners; keep the LocalInhibition arm)
+src/system.rs:225        — pub(crate) kwta_winners: Vec<MorphonId> field on System
+src/system.rs:362        — kwta_winners: Vec::new() in System::new()
+src/homeostasis.rs       — GlobalKWTA { fraction, local_radius, local_k } variant of
+                           CompetitionMode enum and the default_local_k() helper
+                           (kwta_fraction lives inside this variant, not in HomeostasisParams)
 ```
 
-Keep `CompetitionMode` as an enum but remove the `GlobalKWTA` variant, or flatten to a struct
-if there's no other mode planned.
+`CompetitionMode` can either be removed entirely (flattening `LocalInhibition` fields into
+`HomeostasisParams`) or kept as a single-variant enum. The simplest path: delete the enum,
+move `interneuron_ratio`, `istdp_rate`, `initial_inh_weight`, `inhibition_radius`,
+`target_rate` directly onto `HomeostasisParams` with sensible defaults.
