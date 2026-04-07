@@ -46,7 +46,7 @@ Draft. 14 pages. All headline numbers reproduce on v3.0.0.
 - v2.4.0 MNIST self-healing reproduced from JSON (31.0 → 52.5%)
 
 ### Still TODO
-- **Author block + affiliation.** Currently says "Lisa Anonymous, TasteHub GmbH". Replace with real info or anonymize for double-blind.
+- **Author block + affiliation.** Done — Lisa Welsch & Martyna Kwiecień, no institutional affiliation.
 - **CartPole figure.** Current `figures/cartpole_curve.pdf` is a fallback (no per-episode data in the JSONs). Either dump per-episode steps from a fresh CartPole run or remove the figure.
 - **Architecture diagram.** No Morphon struct diagram or topology snapshot yet (would require either TikZ work or visualizer screenshots).
 - **MNIST receptive field heatmaps.** Would need to expose hidden-morphon weight extraction in the example.

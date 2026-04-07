@@ -271,7 +271,7 @@ If you use Morphon-Core in research, please cite the paper:
 ```bibtex
 @misc{morphon2026,
   title={Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures},
-  author={Anonymous},
+  author={Welsch, Lisa and Kwiecie\'n, Martyna},
   year={2026},
   note={Available at https://github.com/SimplyLiz/Morphon}
 }

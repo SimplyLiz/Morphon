@@ -158,4 +158,4 @@ cargo run --example nlp_readiness --release
 ---
 
 *Experimental record from NLP readiness + MNIST Endo calibration experiments.*
-*TasteHub GmbH, Wien, April 2026*
+*Lisa Welsch & Martyna Kwiecień, April 2026*

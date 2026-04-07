@@ -486,6 +486,7 @@ fn main() {
     let version = env!("CARGO_PKG_VERSION");
     let results = json!({
         "benchmark": "cartpole", "profile": profile, "version": version,
+        "competition_mode": competition_label,
         "timestamp": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
         "episodes": num_episodes, "max_steps_per_episode": max_steps,
         "results": {
