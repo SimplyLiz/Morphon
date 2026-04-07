@@ -415,11 +415,13 @@ fn main() {
 
     let mut best = 0usize;
     let mut recent: Vec<usize> = Vec::new();
+    let mut all_steps: Vec<usize> = Vec::with_capacity(num_episodes);
 
     for ep in 0..num_episodes {
         let epsilon = (0.5 * (1.0 - ep as f64 / num_episodes as f64)).max(0.05);
         let steps = run_episode(&mut system, &mut env, &mut critic, max_steps, epsilon, &mut rng);
         recent.push(steps);
+        all_steps.push(steps);
         if recent.len() > 100 { recent.remove(0); }
         best = best.max(steps);
         system.report_performance(steps as f64);
@@ -486,7 +488,12 @@ fn main() {
         "benchmark": "cartpole", "profile": profile, "version": version,
         "timestamp": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
         "episodes": num_episodes, "max_steps_per_episode": max_steps,
-        "results": { "best_steps": best, "avg_last_100": avg_100, "solved": solved },
+        "results": {
+            "best_steps": best,
+            "avg_last_100": avg_100,
+            "solved": solved,
+            "episode_steps": all_steps,
+        },
         "system": {
             "morphons": s.total_morphons, "synapses": s.total_synapses,
             "clusters": s.fused_clusters, "generation": s.max_generation,

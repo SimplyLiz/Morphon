@@ -197,17 +197,20 @@ def fig_cartpole_curve():
     if best:
         steps = best["results"]["episode_steps"]
         episodes = np.arange(1, len(steps) + 1)
+        avg100 = best["results"].get("avg_last_100", 0)
+        version = best.get("version", "?")
+        profile = best.get("profile", "?")
         # Rolling average
-        window = 100
+        window = min(100, max(10, len(steps) // 4))
         rolling = np.convolve(steps, np.ones(window)/window, mode="valid")
 
         fig, ax = plt.subplots(figsize=(5.5, 3.0))
         ax.plot(episodes, steps, color="#bdbdbd", linewidth=0.5, alpha=0.6, label="Per-episode steps")
         ax.plot(episodes[window-1:], rolling, color="#1f77b4", linewidth=1.5, label=f"{window}-ep rolling avg")
-        ax.axhline(195, color="darkgreen", linestyle="--", linewidth=1, label="SOLVED threshold")
+        ax.axhline(195, color="darkgreen", linestyle="--", linewidth=1, label="SOLVED threshold (195)")
         ax.set_xlabel("Episode")
         ax.set_ylabel("Steps")
-        ax.set_title("CartPole learning curve (avg=195.2 SOLVED)")
+        ax.set_title(f"CartPole learning curve (v{version} {profile}, final avg={avg100:.1f})")
         ax.legend(loc="upper left", framealpha=0.9)
         ax.set_ylim(0, 510)
         out = FIG_DIR / "cartpole_curve.pdf"

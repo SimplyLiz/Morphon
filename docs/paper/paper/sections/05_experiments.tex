@@ -12,7 +12,14 @@ OpenAI Gym CartPole-v1, 4 observations (cart position, velocity, pole angle, ang
 A small linear TD-error critic external to the MI network provides the reward modulation signal, biologically modelling dopamine neurons in VTA/SNc that compute $\delta = R + \gamma V(s') - V(s)$ from striatal input \cite{fremaux2013reinforcement}. The critic is the only component using exact gradients; everything inside the MI network is trained by three-factor learning.
 
 \paragraph{Result.}
-\textbf{Solved.} Average over the last 100 episodes reaches 195.2 at episode 895 of a 1000-episode run. Best single episode: 468 steps.
+\textbf{Solved} on the v0.5.0 standard profile: average over the last 100 episodes reaches 195.2 at episode 895, best single episode 468 steps. Subsequent versions of the codebase introduced regressions and fixes (the V2 primitives, V3 governance, Endoquilibrium gate adjustments documented in Section~\ref{sec:failure_modes}); the v3.0.0 quick profile (200 episodes) reaches avg(100)=166 with best=300, demonstrating learning but not the full SOLVED criterion within the shorter run (Figure~\ref{fig:cartpole}). Reproducing the SOLVED result on v3.0.0 requires the standard profile (1000 episodes) and is on the post-paper TODO list.
+
+\begin{figure}[h]
+  \centering
+  \figifexists[0.85\linewidth]{cartpole_curve.pdf}{CartPole learning curve}
+  \caption{CartPole-v1 learning curve (v3.0.0 quick profile, 200 episodes). Per-episode steps in gray, rolling average in blue. The system learns continuously and reaches the 300-step ceiling repeatedly, but the rolling average plateaus at 166 within the 200-episode budget. The v0.5.0 codebase reached the 195 SOLVED threshold at episode 895 of a 1000-episode standard run.}
+  \label{fig:cartpole}
+\end{figure}
 
 \paragraph{What this proves.}
 The full MI pipeline --- developmental bootstrap, three-factor learning, tag-and-capture consolidation, contrastive reward, Endoquilibrium regulation --- works end-to-end on a non-trivial control task. CartPole is the prerequisite gate for all other benchmarks: if the basic learning loop is broken, nothing else can work. The CartPole solve provides the foundation to investigate harder tasks.
