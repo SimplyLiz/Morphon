@@ -33,21 +33,21 @@ Standard MNIST, 784 input pixels (28$\times$28), 10 output classes. Cortical dev
 \paragraph{Results.}
 \begin{table}[h]
 \centering
-\caption{MNIST results across training conditions, all on the same seed and network size ($\sim$1250 morphons, $\sim$78K synapses post-training).}
+\caption{MNIST results across training conditions, all on the same seed and network size ($\sim$1220 morphons, $\sim$73K synapses post-training). v3.0.0 quick profile, seed=42.}
 \label{tab:mnist}
 \begin{tabular}{lcc}
 \toprule
 Condition & Accuracy & Notes \\
 \midrule
-Baseline (intact, trained) & 31.0\% & Best Endo config (Mature gate raised) \\
-Post-damage (30\% killed) & 30.0\% & Random ablation of associative morphons \\
-Post-recovery (regrow + retrain) & \textbf{52.5\%} & 500 recovery samples, lifecycle re-enabled \\
+Baseline (intact, trained) & 30.0\% & Endo with Mature gate raised to 2000 ticks \\
+Post-damage (30\% killed) & 27.5\% & Random ablation of associative morphons \\
+Post-recovery (regrow + retrain) & \textbf{48.0\%} & 500 recovery samples, lifecycle re-enabled \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \paragraph{The self-healing finding.}
-The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons are randomly destroyed and then allowed to regrow --- a \textbf{+21.5 percentage point improvement} over the intact baseline (Figure~\ref{fig:self_healing}). This is the most striking result in the paper. The damage-and-regrow cycle removed entrenched ``hub'' morphons (high-degree neurons that fire indiscriminately and dominate the readout) and replaced them with fresh morphons that specialize under high plasticity. The fresh morphons learn better features because Endoquilibrium, sensing the post-damage performance drop, returns to the high-plasticity Differentiating stage ($\text{plasticity\_mult}=2.16$), exceeding the average plasticity the original morphons ever experienced.
+The system reaches \textbf{48.0\%} accuracy after 30\% of associative morphons are randomly destroyed and then allowed to regrow --- a \textbf{+18.0 percentage point improvement} over the intact baseline, or \textbf{+20.5pp} relative to the post-damage low (Figure~\ref{fig:self_healing}). This is the most striking result in the paper. The damage-and-regrow cycle removed entrenched ``hub'' morphons (high-degree neurons that fire indiscriminately and dominate the readout) and replaced them with fresh morphons that specialize under high plasticity. The fresh morphons learn better features because Endoquilibrium, sensing the post-damage performance drop, returns to the high-plasticity Differentiating stage ($\text{plasticity\_mult}=2.16$), exceeding the average plasticity the original morphons ever experienced.
 
 \begin{figure}[h]
   \centering
@@ -57,7 +57,7 @@ The system reaches \textbf{52.5\%} accuracy after 30\% of associative morphons a
 \end{figure}
 
 \paragraph{Implication.}
-The 31\% intact ceiling is regulatory, not representational. The substrate is capable of $\geq$52\% --- it just needs the right plasticity regime to get there. The damage cycle is a manual proxy for what a properly-tuned metabolic pruning system (Section~\ref{sec:failure_modes}) should provide automatically.
+The 30\% intact ceiling is regulatory, not representational. The substrate is capable of $\geq$48\% --- it just needs the right plasticity regime to get there. The damage cycle is a manual proxy for what a properly-tuned metabolic pruning system (Section~\ref{sec:failure_modes}) should provide automatically.
 
 \begin{figure}[h]
   \centering

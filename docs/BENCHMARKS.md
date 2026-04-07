@@ -142,11 +142,11 @@ cargo run --example mnist_v2 --release -- --seed=123
 
 | Phase | Accuracy | Notes |
 |-------|----------|-------|
-| Baseline (intact) | **31%** | Endo with Mature gate=2000 |
-| Post-damage (30% killed) | ~30% | Random ablation of associative morphons |
-| **Post-recovery** | **52.5%** | After 500 recovery samples + lifecycle re-enabled |
+| Baseline (intact) | **30%** | Endo with Mature gate=2000 |
+| Post-damage (30% killed) | ~28% | Random ablation of associative morphons |
+| **Post-recovery** | **48%** | After 500 recovery samples + lifecycle re-enabled |
 
-**The post-recovery number is the headline result.** A trained MI network that loses 30% of its hidden layer and is allowed to regrow ends up **better** than the original (+21.5pp). This is the self-healing finding documented in the paper.
+**The post-recovery number is the headline result.** A trained MI network that loses 30% of its hidden layer and is allowed to regrow ends up **better** than the original (+18pp). This is the self-healing finding documented in the paper. Earlier runs on v2.4.0 reached 52.5%; the current v3.0.0 result is 48% — both well above the intact baseline.
 
 ### What to look for
 

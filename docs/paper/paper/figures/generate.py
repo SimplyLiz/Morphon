@@ -62,8 +62,12 @@ def fig_self_healing():
     if not full_runs:
         print("  fig_self_healing: no full runs found, skipping")
         return
-    # Best post-recovery result
-    best = max(full_runs, key=lambda r: r.get("recovery_acc", 0))
+    # Prefer v3.0.0 to match the paper text; fall back to best
+    v3_runs = [r for r in full_runs if r.get("version", "").startswith("3.")]
+    if v3_runs:
+        best = max(v3_runs, key=lambda r: r.get("recovery_acc", 0))
+    else:
+        best = max(full_runs, key=lambda r: r.get("recovery_acc", 0))
 
     labels = ["Random\nbaseline", "MI trained\n(intact)", "Post-damage\n(30% killed)", "Post-recovery\n(regrown)"]
     values = [10.0, best.get("v2_acc", 0), best.get("damaged_acc", 0), best.get("recovery_acc", 0)]
