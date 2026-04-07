@@ -2628,4 +2628,135 @@ mod tests {
         assert_eq!(inh_count, 0,
             "GlobalKWTA mode should not create InhibitoryInterneurons");
     }
+
+    // === wire_to_nearby_interneurons ===
+
+    #[test]
+    fn wire_to_nearby_noop_in_global_kwta_mode() {
+        let pos = HyperbolicPoint::origin(3);
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        let mut assoc = make_morphon(1, CellType::Associative);
+        assoc.position = pos.clone();
+        morphons.insert(1, assoc);
+        topo.add_morphon(1);
+
+        let mut inh = make_morphon(2, CellType::InhibitoryInterneuron);
+        inh.position = pos.clone();
+        morphons.insert(2, inh);
+        topo.add_morphon(2);
+
+        wire_to_nearby_interneurons(
+            &morphons, &mut topo,
+            &crate::homeostasis::CompetitionMode::default(), // GlobalKWTA
+            &[1],
+        );
+
+        assert!(topo.synapse_between(1, 2).is_none(), "GlobalKWTA: no wiring");
+        assert!(topo.synapse_between(2, 1).is_none(), "GlobalKWTA: no wiring");
+    }
+
+    #[test]
+    fn wire_to_nearby_connects_to_closest_interneuron() {
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        // New associative at origin
+        let mut assoc = make_morphon(1, CellType::Associative);
+        assoc.position = HyperbolicPoint::origin(3);
+        morphons.insert(1, assoc);
+        topo.add_morphon(1);
+
+        // Close interneuron at small offset
+        let mut near_inh = make_morphon(10, CellType::InhibitoryInterneuron);
+        near_inh.position = HyperbolicPoint { coords: vec![0.01, 0.0, 0.0], curvature: 1.0 };
+        morphons.insert(10, near_inh);
+        topo.add_morphon(10);
+
+        // Far interneuron
+        let mut far_inh = make_morphon(11, CellType::InhibitoryInterneuron);
+        far_inh.position = HyperbolicPoint { coords: vec![0.5, 0.0, 0.0], curvature: 1.0 };
+        morphons.insert(11, far_inh);
+        topo.add_morphon(11);
+
+        let mode = crate::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.0,
+            target_rate: None,
+        };
+
+        wire_to_nearby_interneurons(&morphons, &mut topo, &mode, &[1]);
+
+        // Should wire to the close one (10), not the far one (11)
+        assert!(topo.synapse_between(1, 10).is_some(), "should connect to close interneuron");
+        assert!(topo.synapse_between(10, 1).is_some(), "close interneuron should inhibit back");
+        assert!(topo.synapse_between(1, 11).is_none(), "should not connect to far interneuron");
+    }
+
+    #[test]
+    fn wire_to_nearby_skips_non_associative_morphons() {
+        let pos = HyperbolicPoint::origin(3);
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        // Motor morphon — should be ignored
+        let mut motor = make_morphon(1, CellType::Motor);
+        motor.position = pos.clone();
+        morphons.insert(1, motor);
+        topo.add_morphon(1);
+
+        let mut inh = make_morphon(2, CellType::InhibitoryInterneuron);
+        inh.position = pos.clone();
+        morphons.insert(2, inh);
+        topo.add_morphon(2);
+
+        let mode = crate::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.0,
+            target_rate: None,
+        };
+
+        wire_to_nearby_interneurons(&morphons, &mut topo, &mode, &[1]);
+
+        assert!(topo.synapse_between(1, 2).is_none(), "Motor morphon should not be wired");
+    }
+
+    #[test]
+    fn wire_to_nearby_no_duplicate_synapses() {
+        let pos = HyperbolicPoint::origin(3);
+        let mut morphons = HashMap::new();
+        let mut topo = Topology::new();
+
+        let mut assoc = make_morphon(1, CellType::Associative);
+        assoc.position = pos.clone();
+        morphons.insert(1, assoc);
+        topo.add_morphon(1);
+
+        let mut inh = make_morphon(2, CellType::InhibitoryInterneuron);
+        inh.position = pos.clone();
+        morphons.insert(2, inh);
+        topo.add_morphon(2);
+
+        let mode = crate::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.0,
+            target_rate: None,
+        };
+
+        // Call twice — should not duplicate synapses
+        wire_to_nearby_interneurons(&morphons, &mut topo, &mode, &[1]);
+        wire_to_nearby_interneurons(&morphons, &mut topo, &mode, &[1]);
+
+        let fwd = topo.outgoing(1).iter().filter(|(id, _)| *id == 2).count();
+        let bwd = topo.outgoing(2).iter().filter(|(id, _)| *id == 1).count();
+        assert_eq!(fwd, 1, "only one synapse assoc→inh");
+        assert_eq!(bwd, 1, "only one synapse inh→assoc");
+    }
 }

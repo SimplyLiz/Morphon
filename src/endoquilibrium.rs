@@ -1899,4 +1899,123 @@ mod tests {
             );
         }
     }
+
+    // === sense_vitals new fields ===
+
+    fn make_sense_vitals_inputs() -> (
+        HashMap<MorphonId, Morphon>,
+        Topology,
+        Diagnostics,
+        HashMap<crate::types::ClusterId, crate::morphogenesis::Cluster>,
+    ) {
+        (HashMap::new(), Topology::new(), Diagnostics::default(), HashMap::new())
+    }
+
+    #[test]
+    fn sense_vitals_winners_per_cluster_zero_when_no_clusters() {
+        let (morphons, topo, diag, clusters) = make_sense_vitals_inputs();
+        let v = sense_vitals(&morphons, &topo, &diag, 0, 0.0, &clusters);
+        assert_eq!(v.winners_per_cluster, 0.0);
+    }
+
+    #[test]
+    fn sense_vitals_winners_per_cluster_counts_fired_members() {
+        use crate::morphogenesis::Cluster;
+        use crate::types::HyperbolicPoint;
+        use crate::epistemic::EpistemicState;
+
+        let pos = HyperbolicPoint::origin(3);
+        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+
+        for id in 1..=4u64 {
+            let mut m = Morphon::new(id, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = id <= 2; // members 1 and 2 fired, 3 and 4 didn't
+            morphons.insert(id, m);
+        }
+
+        let mut clusters = HashMap::new();
+        clusters.insert(0u64, Cluster {
+            id: 0,
+            members: vec![1, 2, 3, 4],
+            shared_threshold: 0.5,
+            inhibitory_morphons: vec![],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.5,
+            epistemic_state: EpistemicState::Hypothesis { formation_step: 0 },
+            epistemic_history: Default::default(),
+        });
+
+        let v = sense_vitals(&morphons, &Topology::new(), &Diagnostics::default(), 0, 0.0, &clusters);
+        assert_eq!(v.winners_per_cluster, 2.0, "2 of 4 members fired");
+    }
+
+    #[test]
+    fn sense_vitals_winners_per_cluster_averages_across_clusters() {
+        use crate::morphogenesis::Cluster;
+        use crate::types::HyperbolicPoint;
+        use crate::epistemic::EpistemicState;
+
+        let pos = HyperbolicPoint::origin(3);
+        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+
+        // Cluster A: members 1-4, all fired → 4 winners
+        for id in 1..=4u64 {
+            let mut m = Morphon::new(id, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = true;
+            morphons.insert(id, m);
+        }
+        // Cluster B: members 5-8, none fired → 0 winners
+        for id in 5..=8u64 {
+            let mut m = Morphon::new(id, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = false;
+            morphons.insert(id, m);
+        }
+
+        let mut clusters = HashMap::new();
+        clusters.insert(0u64, Cluster {
+            id: 0,
+            members: vec![1, 2, 3, 4],
+            shared_threshold: 0.5,
+            inhibitory_morphons: vec![],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.5,
+            epistemic_state: EpistemicState::Hypothesis { formation_step: 0 },
+            epistemic_history: Default::default(),
+        });
+        clusters.insert(1u64, Cluster {
+            id: 1,
+            members: vec![5, 6, 7, 8],
+            shared_threshold: 0.5,
+            inhibitory_morphons: vec![],
+            shared_energy_pool: 0.0,
+            shared_homeostatic_setpoint: 0.5,
+            epistemic_state: EpistemicState::Hypothesis { formation_step: 0 },
+            epistemic_history: Default::default(),
+        });
+
+        let v = sense_vitals(&morphons, &Topology::new(), &Diagnostics::default(), 0, 0.0, &clusters);
+        // (4 + 0) / 2 clusters = 2.0 mean winners
+        assert_eq!(v.winners_per_cluster, 2.0, "mean winners across 2 clusters");
+    }
+
+    #[test]
+    fn sense_vitals_division_and_pruning_rate_from_diagnostics() {
+        let (morphons, topo, mut diag, clusters) = make_sense_vitals_inputs();
+        diag.division_events_recent = 5;
+        diag.pruning_events_recent = 12;
+        let v = sense_vitals(&morphons, &topo, &diag, 0, 0.0, &clusters);
+        assert_eq!(v.division_rate, 5.0);
+        assert_eq!(v.pruning_rate, 12.0);
+    }
+
+    #[test]
+    fn sense_vitals_frustration_mean_from_diagnostics() {
+        let (morphons, topo, mut diag, clusters) = make_sense_vitals_inputs();
+        diag.avg_frustration = 0.42;
+        let v = sense_vitals(&morphons, &topo, &diag, 0, 0.0, &clusters);
+        assert!((v.frustration_mean - 0.42).abs() < 1e-4);
+    }
 }
