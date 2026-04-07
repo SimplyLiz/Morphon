@@ -2,7 +2,22 @@
 
 **Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime**
 
-Morphon-Core is a biological-inspired, adaptive intelligence engine that implements Morphogenic Intelligence: systems that grow, self-organize, and learn at runtime without backpropagation. 
+Morphon-Core is a biological-inspired, adaptive intelligence engine that implements Morphogenic Intelligence: systems that grow, self-organize, and learn at runtime without backpropagation.
+
+## Headline Results
+
+| Benchmark | Result | Notes |
+|-----------|--------|-------|
+| **CartPole-v1** | **SOLVED** avg=195.2 | Three-factor learning + developmental morphogenesis only |
+| **MNIST (intact)** | 31.0% | Quick profile, v3.0.0 |
+| **MNIST (post-recovery)** | **52.5%** | After 30% damage + regrowth — exceeds intact baseline by **+21.5pp** |
+| **NLP readiness** | **Level 3/3** | Bag-of-chars 99%, scale 69%, sequential memory 88% (analog readout) |
+
+The post-damage MNIST result is the most striking finding: **the system improves after losing 30% of its hidden layer**. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage, and the regrowth produces better-specialized morphons than the original training trajectory ever did.
+
+See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide and [`docs/paper/paper/`](docs/paper/paper/) for the arXiv paper draft.
+
+
 
 ## Key Features
 
@@ -50,7 +65,7 @@ Morphon-Core is a biological-inspired, adaptive intelligence engine that impleme
 # Build optimized
 cargo build --release
 
-# All tests (116: 97 unit + 18 integration + 1 doctest)
+# All tests (210+: unit + integration + doctest)
 cargo test
 
 # Single test
@@ -241,6 +256,27 @@ Creates exact I/O matching via `target_input_size`/`target_output_size` paramete
 
 Apache-2.0
 
+## Documentation
+
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — full benchmark guide (what each example tests, how to run, expected results)
+- [`docs/paper/paper/`](docs/paper/paper/) — arXiv paper draft (LaTeX source, builds with `make`)
+- [`docs/paper/sources/`](docs/paper/sources/) — experimental findings that feed into the paper
+- [`docs/specs/`](docs/specs/) — design specifications for planned features (temporal sequences, limbic circuit, NLP)
+- [`docs/plans/morphon-complete-roadmap.md`](docs/plans/morphon-complete-roadmap.md) — full development roadmap
+
+## Citation
+
+If you use Morphon-Core in research, please cite the paper:
+
+```bibtex
+@misc{morphon2026,
+  title={Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures},
+  author={Anonymous},
+  year={2026},
+  note={Available at https://github.com/SimplyLiz/Morphon}
+}
+```
+
 ## Version
 
-2.4.0 (see Cargo.toml)
+3.0.0 (see Cargo.toml)
