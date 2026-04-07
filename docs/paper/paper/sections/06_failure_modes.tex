@@ -54,7 +54,14 @@ The fourth failure mode is one we have not seen documented in prior work, and it
 On MNIST, accuracy plateaus at $\sim$26\% regardless of training duration. The associative layer has formed digit-selective firing patterns (verified by post-hoc neuron labeling), but the supervised readout cannot exploit them. Plasticity has been throttled to $\text{plasticity\_mult}=0.60$ within the first 100 training samples. Endoquilibrium reports stage = \emph{Mature}.
 
 \paragraph{Diagnosis.}
-The Endoquilibrium stage detector triggers \emph{Mature} when the slow EMA of reward exceeds 0.05 with low variance. This logic was calibrated for reinforcement learning tasks (CartPole, where reward correlates with episode length and only reaches high values when the system is genuinely competent). It fails on supervised classification because the training loop calls \texttt{reward\_contrastive(0.2)} on \emph{every} sample regardless of whether the prediction was correct, plus a windowed-accuracy signal that inflates during the first 50 samples (any single correct guess at the start makes accuracy = 1.0). The slow EMA reaches 0.65 within 500 samples even at 11\% accuracy. Endo declares Mature, drops plasticity to 0.60, and the system stalls.
+The Endoquilibrium stage detector triggers \emph{Mature} when the slow EMA of reward exceeds 0.05 with low variance. This logic was calibrated for reinforcement learning tasks (CartPole, where reward is sparse and correlated with actual performance: reward only reaches high values when the system is genuinely competent). It fails on supervised classification for two reasons:
+
+\begin{enumerate}
+  \item \textbf{Dense reward injection.} The supervised training loop calls \texttt{reward\_contrastive(0.2)} on \emph{every} sample regardless of whether the prediction was correct. Reward is no longer a signal of mastery --- it is a constant. The slow EMA converges to $\sim$0.65 within 500 samples \emph{regardless of accuracy}, far above the 0.05 threshold.
+  \item \textbf{Inflated startup window.} The performance signal Endo tracks (\texttt{recent\_performance}) is fed by a windowed accuracy. During the first $\sim$50 samples the window has not filled, so a single correct guess gives accuracy 1.0, then 0.5, then 0.33$\ldots$. These early high values get integrated by the $\alpha = 0.05$ EMA before the window settles to the true accuracy ($\sim$0.10), pumping the EMA above the Mature threshold within the warmup period.
+\end{enumerate}
+
+Both pathways converge to the same outcome: the slow EMA reaches 0.65 by sample 500, low variance, low trend $\to$ Endo declares Mature $\to$ \texttt{plasticity\_mult} drops to 0.60 $\to$ the supervised gradient is multiplied by 0.6 at every weight update $\to$ learning effectively stops at $\sim$26\%. The hidden layer has formed digit-selective firing patterns (verified by post-hoc neuron labeling), but the readout cannot exploit them because the gradient that would tune it is being throttled by a regulator that thinks the system is done learning.
 
 \paragraph{Empirical evidence.}
 \begin{table}[h]
@@ -97,3 +104,18 @@ A surprising secondary finding: pure high plasticity is worse than oscillating p
 
 \paragraph{Implications beyond MI.}
 Any biologically-inspired homeostatic system that uses raw reward (not RPE) as a maturity signal will exhibit this failure on dense-reward tasks. We expect this to be a common bug in spiking neural network training pipelines that combine RL-style modulation with supervised classification. The fix is to either (i) use sparse reward correlated with correctness, (ii) add a long history gate, or (iii) use RPE.
+
+\subsection{Diagnostic Instruments}
+\label{sec:diagnostics}
+
+Each of the four failure modes above was discovered through a specific measurement, not by reading code or guessing. We document the diagnostic instruments here because they are reusable across spiking architectures.
+
+\begin{description}
+  \item[\textbf{Jaccard similarity of firing patterns.}] Present the same input twice with voltage reset; the Jaccard similarity of the two fired-morphon sets measures determinism. Values $\geq 0.9$ are stable, $< 0.7$ predict that no readout will converge. Activity stabilization fixes (reducing per-step noise from $\pm 0.05$ to $\pm 0.02$) brought CartPole from Jaccard = 0.43 to 1.0 and were a prerequisite for the SOLVED result.
+  \item[\textbf{Output discrimination $d_\pm$.}] $d_+ = V_1 - V_0$ measured for a right-leaning pole probe; $d_-$ for left-leaning. When $d_+$ and $d_-$ have \emph{opposite} signs and $|d| > 5$, the readout is discriminative; when same-signed, the policy is collapsed. This metric surfaced the readout architecture failure (Section~\ref{sec:implementation}) faster than any other diagnostic.
+  \item[\textbf{Endoquilibrium summary line.}] The seven channel values (\texttt{rg, ng, ag, hg, tb, pm, hp}) plus the detected stage are logged each medium tick. \texttt{pm} (plasticity multiplier) at 0.6 with stage = Mature on a fresh task is the signature of premature throttling.
+  \item[\textbf{Weight standard deviation.}] Synapse weight std $\sigma_w$ over the entire network. $\sigma_w < 0.15$ is feature collapse (all morphons look the same); $\sigma_w > 1.0$ is healthy diversity. Surfaces the LTD vicious cycle and the per-tick capture saturation problem.
+\end{description}
+
+\paragraph{Negative results worth noting.}
+Several promising-sounding interventions did not work and we document them so others do not retry them: (i) CMA-ES over 15 hyperparameters across 560 evaluations could not exceed avg=21 on CartPole, indicating the bottleneck is architectural rather than parametric; (ii) extending CartPole training from 1000 to 3000 episodes did not improve the asymptote, ruling out ``needs more time''; (iii) TD-scaled learning rate (LR proportional to $|\delta|$) reaches avg=33 versus constant LR avg=195, because TD error is near zero at steady state where the policy is actually learned; (iv) freezing the MI network and training only the readout fails because uniform potentials provide no discriminative signal --- the MI network's diversity is necessary; (v) weight normalization clamping to $[0.5, 2.0]$ collapses weights to uniformity; the gentler $[0.9, 1.1]$ preserves diversity. The pattern across all five negative results is that the readout and the hidden layer are genuinely co-dependent: neither alone is sufficient, neither can be trivially replaced.

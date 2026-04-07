@@ -52,7 +52,7 @@ The system reaches \textbf{48.0\%} accuracy after 30\% of associative morphons a
 \begin{figure}[h]
   \centering
   \figifexists[0.7\linewidth]{self_healing.pdf}{self-healing bar chart}
-  \caption{MNIST self-healing. Random baseline (chance), MI trained intact (31.0\%), post-damage (30.0\% after killing 30\% of associative morphons), and post-recovery (52.5\% after 500 retraining samples with lifecycle re-enabled). The +21.5pp gain over the intact baseline is the central self-healing finding.}
+  \caption{MNIST self-healing on the v3.0.0 quick profile. Random baseline (10\%, chance), MI trained intact (30.0\%), post-damage (27.5\% after killing 30\% of associative morphons), and post-recovery (48.0\% after 500 retraining samples with lifecycle re-enabled). The +18.0pp gain over the intact baseline is the central self-healing finding. The figure displays an earlier v2.4.0 run that reached 52.5\% post-recovery; both versions reproduce the same effect.}
   \label{fig:self_healing}
 \end{figure}
 
@@ -88,7 +88,11 @@ Tier & Task & Spike-based & Analog readout \\
 \end{table}
 
 \paragraph{Key finding.}
-The MI substrate creates discriminative representations during spike-based processing --- the analog readout proves it by reading the same morphon potentials that spikes are generated from. The bottleneck is spike-to-output \emph{fidelity}: signals are distorted by delays, leaky integration, and multi-hop propagation (Figure~\ref{fig:nlp_readiness}). Tier 2 at 85\% is particularly significant: temporal memory exists in residual potentials across sequential \texttt{process()} calls, suggesting the substrate for the temporal sequence processing already works at the potential level even though the spike pipeline cannot exploit it.
+\emph{The MI substrate creates discriminative representations; the spike pipeline destroys them.} On every tier the spike-based readout collapses to chance level ($\sim$50\%) while the analog readout extracts 99\% / 62\% / 85\% from the \emph{same morphon potentials} (Figure~\ref{fig:nlp_readiness}). The information that distinguishes vowel-heavy from consonant-heavy words is present in the network state --- it has to be, otherwise the analog readout could not exploit it --- but it is destroyed in the conversion to spikes, the propagation through synaptic delays, the leaky integration at downstream morphons, and the multi-hop accumulation at the motor layer. Each step is lossy; the cumulative loss reduces a discriminable signal to noise.
+
+This is the central diagnostic for any spiking architecture that aims at classification tasks. The failure is not at the feature-formation stage (the unsupervised STDP + k-WTA + reward modulation does form discriminative features). The failure is in the \emph{output pathway} --- specifically, in the assumption that motor potentials integrated over a few hundred steps faithfully represent the hidden layer's state. They don't, and they can't without either (i) a much longer integration window (impractical), (ii) a dedicated analog bypass like ours, or (iii) a fundamentally different output mechanism (e.g.\ rank-order coding, or population vector decoding from many parallel motor units).
+
+Tier 2 at 85\% is particularly significant: temporal memory exists in residual potentials across sequential \texttt{process()} calls, suggesting the substrate for the temporal sequence processing already works at the potential level even though the spike pipeline cannot exploit it.
 
 \begin{figure}[h]
   \centering

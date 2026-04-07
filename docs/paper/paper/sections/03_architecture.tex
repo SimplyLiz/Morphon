@@ -68,10 +68,43 @@ On the glacial clock:
 \end{itemize}
 
 \subsection{Endoquilibrium: Predictive Neuroendocrine Regulation}
+\label{sec:endo}
 
-Endoquilibrium is the homeostatic regulator. It monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error mean, reward EMA), maintains dual-timescale exponential moving averages (fast $\tau=50$, slow $\tau=500$), and adjusts six modulation channels through proportional control: $\rho_R, \rho_N, \rho_A, \rho_H$ gains, threshold bias, plasticity multiplier, and consolidation gain.
+Endoquilibrium is the homeostatic regulator. It monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error mean, reward EMA), maintains dual-timescale exponential moving averages (fast $\tau=50$, slow $\tau=500$), and adjusts seven modulation channels through proportional control: receptor gains $\rho_R, \rho_N, \rho_A, \rho_H$ for reward/novelty/arousal/homeostasis, threshold bias, plasticity multiplier, and consolidation gain.
 
-Endoquilibrium also detects developmental stage: \emph{Proliferating}, \emph{Differentiating}, \emph{Consolidating}, \emph{Mature}, \emph{Stressed}. The stage detection logic uses reward-based relative thresholds and is the locus of the regulatory failure mode we document in Section~\ref{sec:failure_modes}.
+The most critical role of Endoquilibrium is breaking the firing-rate-zero deadlock. Without it, associative morphons stop firing within $\sim$50 ticks of training start: low firing rate $\to$ no eligibility traces $\to$ no weight updates $\to$ low firing rate persists. This is a positive-feedback failure that no amount of parameter tuning fixes. Endoquilibrium's Rule 1 (firing rate regulation) detects $\text{FR}_{\text{assoc}} < $ setpoint and lowers thresholds, boosts arousal, and boosts novelty until firing recovers. The fast EMA ($\tau = 50$) responds within $\sim$50 ticks, just fast enough.
+
+Endoquilibrium also detects developmental stage from the \emph{relative} reward trajectory (not absolute reward levels, which differ wildly between tasks):
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+\toprule
+Stage & Trigger \\
+\midrule
+\textbf{Proliferating}    & history $<$ 20 ticks (warmup) \\
+\textbf{Stressed}         & reward trend $< -0.05 \cdot |\text{slow EMA}|$ \\
+\textbf{Mature}           & reward stable, low cv, history $\geq$ 2000 ticks \\
+\textbf{Consolidating}    & reward near own ceiling, stable, history $\geq$ 500 \\
+\textbf{Differentiating}  & reward actively climbing (default healthy state) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The history gates (2000 / 500 ticks) are the result of fixing the \emph{premature Mature} bug discussed in Section~\ref{sec:failure_modes}: dense reward signals on classification tasks inflated the slow EMA before the system had learned anything, triggering Mature at 11\% accuracy and locking learning out of the high-plasticity Differentiating regime.
+
+\subsection{V2 Developmental Primitives}
+
+Three primitives extend the basic morphogenesis loop with additional biological mechanisms. They are individually optional and largely orthogonal to the headline benchmarks, but they shape long-horizon network health.
+
+\paragraph{Frustration-driven exploration.}
+Each morphon maintains a stagnation counter that increments when its prediction error fails to decrease. Above a threshold ($\sim$0.3), the morphon enters a frustration state: noise amplitude increases, weight perturbations are injected, and migration constraints relax. This is a local escape mechanism for morphons stuck in poor configurations and is biologically motivated by stress-driven plasticity.
+
+\paragraph{Bioelectric field.}
+A 2D scalar field over the Poincar\'e disk holds five named layers (prediction error, energy, stress, novelty, identity). The field diffuses on the slow clock via a discrete heat equation and provides a non-synaptic communication channel: morphons read the local field value and bias migration toward low-PE / high-energy regions. This is the in-silico analogue of neurotrophic gradients in developing cortex.
+
+\paragraph{Target morphology and self-healing.}
+Optional \emph{target regions} specify ideal cell type, density, and position in hyperbolic space. The glacial clock monitors regional underpopulation and either boosts division pressure for nearby morphons or seeds pre-committed morphons in empty regions. This is the mechanism that enables the post-damage recovery in Section~\ref{sec:exp_mnist}: when 30\% of associative morphons are killed, target morphology drives the regrowth that produces the $+18$ pp self-healing result.
 
 \subsection{Hyperbolic Embedding Space}
 
