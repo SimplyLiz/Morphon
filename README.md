@@ -205,10 +205,10 @@ cd web && python3 -m http.server 8080
 ## Documentation
 
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — full benchmark guide (what each example tests, how to run, expected results)
-- [`docs/paper/paper/`](docs/paper/paper/) — arXiv paper draft (LaTeX source, builds with `make`)
-- [`docs/paper/sources/`](docs/paper/sources/) — experimental findings that feed into the paper
-- [`docs/specs/`](docs/specs/) — design specifications for planned features (temporal sequences, limbic circuit, NLP)
-- [`docs/plans/morphon-complete-roadmap.md`](docs/plans/morphon-complete-roadmap.md) — full development roadmap
+- [`docs/paper/paper/`](docs/paper/paper/) — the preprint LaTeX source, builds with `make`
+- [`docs/WHAT-IT-CAN-DO.md`](docs/WHAT-IT-CAN-DO.md) — feature overview
+- [`docs/user/settings.mdx.md`](docs/user/settings.mdx.md) — full `SystemConfig` reference
+- [`docs/morphogenic-intelligence-concept.md`](docs/morphogenic-intelligence-concept.md) — the conceptual introduction
 
 ## Citation
 

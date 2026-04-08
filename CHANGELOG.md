@@ -23,8 +23,8 @@ The first version released alongside the arXiv/Zenodo preprint
   `reward_energy_coefficient`, `superlinear_firing_factor`
 - Reward-correlated energy in `reward_contrastive()` so fired morphons
   earn energy proportional to reward arrival
-- Diagnostic documentation (`docs/paper/sources/metabolic-pruning-findings.md`)
-  and benchmark guide (`docs/BENCHMARKS.md`)
+- Benchmark guide (`docs/BENCHMARKS.md`) and reproducibility JSONs
+  (`docs/benchmark_results/v3.0.0/`)
 - Per-episode step logging in CartPole results JSON for learning-curve figures
 - MNIST V2 receptive-field dumper (top-K associative morphon S→A weights
   as 28×28 grids) for paper figure generation
@@ -129,7 +129,7 @@ The first version released alongside the arXiv/Zenodo preprint
 ### Regressions (fixed in 2.1.0)
 - CartPole dropped from 195.2 to ~162 on the standard profile due to
   the gradual tag-accumulation change. Root cause identified and
-  documented in `docs/paper/sources/v2.1.0-benchmark-findings.md`.
+  fixed — see the Section 6 "Failure Modes" discussion in the paper.
 
 ---
 
