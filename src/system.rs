@@ -850,11 +850,14 @@ impl System {
         //    By incrementing pre_trace here, the trace-based STDP in the medium
         //    path will detect the causal relationship even if the pre-synaptic
         //    morphon is now in refractory (fired=false).
+        //
+        //    Hot path: uses the cached edge_idx captured at propagate-time
+        //    instead of `synapse_between`, eliminating ~7K samples/run of
+        //    HashMap+SipHash lookups (profiled with samply on standard mnist).
         for spike in &delivered {
-            if let Some((ei, _)) = self.topology.synapse_between(spike.source, spike.target) {
-                if let Some(synapse) = self.topology.synapse_mut(ei) {
-                    synapse.pre_trace += 1.0;
-                }
+            let ei = petgraph::graph::EdgeIndex::new(spike.edge_idx as usize);
+            if let Some(synapse) = self.topology.synapse_mut(ei) {
+                synapse.pre_trace += 1.0;
             }
         }
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();

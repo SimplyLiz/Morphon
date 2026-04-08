@@ -87,6 +87,23 @@ impl Topology {
             .collect()
     }
 
+    /// Like `outgoing`, but also returns the EdgeIndex for each connection.
+    /// Used by `resonance::propagate` to cache the edge index in SpikeEvents,
+    /// which lets the spike-delivery loop bump pre_trace via direct edge lookup
+    /// instead of paying a `synapse_between` HashMap walk per spike.
+    pub fn outgoing_with_edge(&self, id: MorphonId) -> Vec<(MorphonId, EdgeIndex, &Synapse)> {
+        let Some(&idx) = self.id_to_node.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, petgraph::Direction::Outgoing)
+            .map(|edge| {
+                let target_id = self.graph[edge.target()];
+                (target_id, edge.id(), edge.weight())
+            })
+            .collect()
+    }
+
     /// Get all incoming synapses for a Morphon (immutable).
     pub fn incoming_synapses(&self, id: MorphonId) -> Vec<(MorphonId, &Synapse)> {
         let Some(&idx) = self.id_to_node.get(&id) else {

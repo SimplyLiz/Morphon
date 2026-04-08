@@ -28,6 +28,14 @@ pub struct SpikeEvent {
     pub delay: f64,
     /// Original delay at creation — used by the visualizer to compute progress.
     pub initial_delay: f64,
+    /// Cached petgraph edge index of the synapse that produced this spike.
+    /// Captured at propagate-time so the delivery loop can bump `pre_trace`
+    /// via direct edge lookup instead of paying a `synapse_between` HashMap
+    /// walk per spike. Stored as raw u32 to keep SpikeEvent free of petgraph
+    /// types in its serde representation; reconstruct with
+    /// `petgraph::graph::EdgeIndex::new(edge_idx as usize)`.
+    #[serde(default)]
+    pub edge_idx: u32,
 }
 
 /// The resonance engine manages signal propagation through the network.
@@ -66,9 +74,9 @@ impl ResonanceEngine {
             let energy_factor = morphons.get(&source_id)
                 .map(|m| (m.energy / 0.6).min(1.0))
                 .unwrap_or(1.0);
-            topology.outgoing(source_id)
+            topology.outgoing_with_edge(source_id)
                 .into_iter()
-                .map(|(target_id, synapse)| {
+                .map(|(target_id, edge_idx, synapse)| {
                     let eff_delay = synapse.effective_delay();
                     SpikeEvent {
                         source: source_id,
@@ -76,6 +84,7 @@ impl ResonanceEngine {
                         strength: synapse.weight * energy_factor,
                         delay: eff_delay,
                         initial_delay: eff_delay,
+                        edge_idx: edge_idx.index() as u32,
                     }
                 })
                 .collect()
@@ -201,6 +210,7 @@ mod tests {
             strength: 0.5,
             delay: 3.0,
             initial_delay: 3.0,
+            edge_idx: 0,
         });
 
         // Step 1: delay 3 -> 2, not delivered
@@ -230,6 +240,7 @@ mod tests {
             strength: 0.7,
             delay: 0.5, // will be delivered in one step with dt=1.0
             initial_delay: 0.5,
+            edge_idx: 0,
         });
 
         let _delivered = engine.deliver(&mut morphons, 1.0);
@@ -251,6 +262,7 @@ mod tests {
             strength: 0.3,
             delay: 0.0,
             initial_delay: 0.0,
+            edge_idx: 0,
         });
         engine.pending_spikes.push_back(SpikeEvent {
             source: 3,
@@ -258,6 +270,7 @@ mod tests {
             strength: 0.4,
             delay: 0.0,
             initial_delay: 0.0,
+            edge_idx: 0,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);
@@ -277,6 +290,7 @@ mod tests {
             strength: 0.5,
             delay: 5.0,
             initial_delay: 5.0,
+            edge_idx: 0,
         });
         assert_eq!(engine.pending_count(), 1);
         engine.clear();
@@ -295,6 +309,7 @@ mod tests {
             strength: 0.5,
             delay: 0.0,
             initial_delay: 0.0,
+            edge_idx: 0,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);
