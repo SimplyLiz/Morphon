@@ -5,11 +5,22 @@ LaTeX source for the arXiv preprint.
 ## Build
 
 ```bash
-cd docs/paper/paper
+cd dev/paper/src
 make
 make view   # opens Morphogenic_Intelligence.pdf
 make clean  # removes build artifacts
 ```
+
+**To update the PDF shipped with the public repo**, rebuild and copy:
+
+```bash
+cd dev/paper/src && make
+cp Morphogenic_Intelligence.pdf ../../../docs/paper/Morphogenic_Intelligence.pdf
+```
+
+The committed PDF at `docs/paper/Morphogenic_Intelligence.pdf` is the canonical
+artifact that ships with Morphon-OSS. The LaTeX source lives in `dev/` and
+stays in private Morphon only.
 
 Requires `pdflatex` and `bibtex` (any standard TeX distribution: MacTeX, TeX Live, MiKTeX).
 

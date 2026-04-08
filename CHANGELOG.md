@@ -10,10 +10,10 @@ the version tag is the same.
 ## [3.0.0] — 2026-04-08 — **Paper release**
 
 The first version released alongside the arXiv/Zenodo preprint
-[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf).
+[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/Morphogenic_Intelligence.pdf).
 
 ### Added
-- Full LaTeX source for the paper in `docs/paper/paper/`, with 6 figures
+- Full LaTeX source for the paper (private `dev/paper/src/`), with 6 figures
   generated from the benchmark JSONs via `figures/generate.py` (matplotlib)
   and the WASM visualizer (Playwright)
 - TikZ architecture diagram (`figures/architecture.tex`)

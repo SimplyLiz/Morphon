@@ -6,7 +6,7 @@ production software — please read this first so expectations are aligned.
 ## What this repository is
 
 Morphon-Core is the reference implementation for the paper
-[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf).
+[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/Morphogenic_Intelligence.pdf).
 The goal is to make every experiment in the paper reproducible from a clean
 checkout and to document the architectural decisions that produced the
 published numbers.
@@ -14,7 +14,7 @@ published numbers.
 It is actively developed by a small team and moves fast. APIs are not stable,
 benchmarks are not cross-version comparable unless the version tag is the same,
 and there may be known regressions between releases (see the
-[paper Section 6 failure modes](docs/paper/paper/Morphogenic_Intelligence.pdf)
+[paper Section 6 failure modes](docs/paper/Morphogenic_Intelligence.pdf)
 for the documented regression/recovery history).
 
 ## What kinds of contributions are welcome
