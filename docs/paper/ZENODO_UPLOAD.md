@@ -27,7 +27,7 @@ Zwei Wege. Variante A ist schneller (5 Min, sofort fertig). Variante B ist saube
 5. **Recommended** (optional aber empfohlen):
    - **Keywords**: morphogenic intelligence, spiking neural networks, structural plasticity, three-factor learning, no backpropagation, developmental neuroscience, self-healing networks, STDP, Rust, CartPole, MNIST
    - **Related identifiers**:
-     - `URL: https://github.com/SimplyLiz/Morphon` — relation: `is supplemented by` — resource type: `Software`
+     - `URL: https://github.com/SimplyLiz/Morphon-OSS` — relation: `is supplemented by` — resource type: `Software`
 
 6. **Publish** klicken
    - Du bekommst sofort einen DOI im Format `10.5281/zenodo.XXXXXXX`
@@ -43,7 +43,7 @@ Zwei Wege. Variante A ist schneller (5 Min, sofort fertig). Variante B ist saube
 Empfohlen wenn ihr plant, mehrere Versionen zu releasen.
 
 1. Auf https://zenodo.org/account/settings/github/ einloggen
-2. Repository `SimplyLiz/Morphon` aktivieren (Schalter umlegen)
+2. Repository `SimplyLiz/Morphon-OSS` aktivieren (Schalter umlegen)
 3. Im GitHub-Repo einen Release erstellen:
    ```bash
    cd /Users/lisa/Work/Projects/Morphon
@@ -93,7 +93,7 @@ Wenn ihr Variante A nehmt, kopiert das hier ins Description-Feld auf zenodo.org.
 
 <p>The most striking finding is that beneficial self-healing exists: a network that has lost 30% of its hidden layer can regrow into a configuration that outperforms its undamaged predecessor, because the regrowth happens under the high-plasticity regime that the homeostatic regulator restored in response to the damage.</p>
 
-<p>The MI engine, all experiments, the failure-mode catalogue, and the LaTeX paper source are available at <a href="https://github.com/SimplyLiz/Morphon">github.com/SimplyLiz/Morphon</a>.</p>
+<p>The MI engine, all experiments, the failure-mode catalogue, and the LaTeX paper source are available at <a href="https://github.com/SimplyLiz/Morphon-OSS">github.com/SimplyLiz/Morphon-OSS</a>.</p>
 ```
 
 ---

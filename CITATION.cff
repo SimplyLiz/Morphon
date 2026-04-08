@@ -16,8 +16,8 @@ authors:
   - family-names: Kwiecień
     given-names: Martyna
     email: martyna@tastehub.io
-repository-code: "https://github.com/SimplyLiz/Morphon"
-url: "https://github.com/SimplyLiz/Morphon"
+repository-code: "https://github.com/SimplyLiz/Morphon-OSS"
+url: "https://github.com/SimplyLiz/Morphon-OSS"
 license: Apache-2.0
 version: 3.0.0
 date-released: "2026-04-08"
@@ -48,7 +48,7 @@ preferred-citation:
   month: 4
   url: "https://doi.org/10.5281/zenodo.19467243"
   doi: 10.5281/zenodo.19467243
-  notes: "Preprint. Code and experiments at https://github.com/SimplyLiz/Morphon"
+  notes: "Preprint. Code and experiments at https://github.com/SimplyLiz/Morphon-OSS"
 identifiers:
   - type: doi
     value: 10.5281/zenodo.19467243
