@@ -7,7 +7,7 @@ LaTeX source for the arXiv preprint.
 ```bash
 cd docs/paper/paper
 make
-make view   # opens main.pdf
+make view   # opens Morphogenic_Intelligence.pdf
 make clean  # removes build artifacts
 ```
 
@@ -16,7 +16,7 @@ Requires `pdflatex` and `bibtex` (any standard TeX distribution: MacTeX, TeX Liv
 ## Structure
 
 ```
-main.tex          — top-level document
+Morphogenic_Intelligence.tex   — top-level document
 sections/
   00_abstract.tex
   01_introduction.tex

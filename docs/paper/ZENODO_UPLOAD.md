@@ -11,8 +11,7 @@ Zwei Wege. Variante A ist schneller (5 Min, sofort fertig). Variante B ist saube
 
 2. https://zenodo.org/uploads/new öffnen
 
-3. **Upload files**: `docs/paper/paper/main.pdf` hochladen
-   - Datei umbenennen zu `morphogenic-intelligence-preprint.pdf` für klareren Download-Namen (optional)
+3. **Upload files**: `docs/paper/paper/Morphogenic_Intelligence.pdf` hochladen
 
 4. **Basic information** ausfüllen:
    - **Resource type**: `Publication > Preprint`

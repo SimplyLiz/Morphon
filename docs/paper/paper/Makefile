@@ -1,4 +1,4 @@
-PAPER = main
+PAPER = Morphogenic_Intelligence
 LATEX = pdflatex
 BIBTEX = bibtex
 
