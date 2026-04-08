@@ -316,7 +316,7 @@ Use only when you want to retune after a major architectural change.
 
 ## Reproducing the paper results
 
-The numbers in `docs/paper/Morphogenic_Intelligence.pdf` come from:
+The numbers in `docs/paper/paper/Morphogenic_Intelligence.tex` come from:
 
 ```bash
 # CartPole SOLVED (avg=195.2): historical, v0.5.0 standard profile

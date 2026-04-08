@@ -10,10 +10,10 @@ the version tag is the same.
 ## [3.0.0] — 2026-04-08 — **Paper release**
 
 The first version released alongside the arXiv/Zenodo preprint
-[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/Morphogenic_Intelligence.pdf).
+[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf).
 
 ### Added
-- Full LaTeX source for the paper (private `dev/paper/src/`), with 6 figures
+- Full LaTeX source for the paper in `docs/paper/paper/`, with 6 figures
   generated from the benchmark JSONs via `figures/generate.py` (matplotlib)
   and the WASM visualizer (Playwright)
 - TikZ architecture diagram (`figures/architecture.tex`)
@@ -129,7 +129,7 @@ The first version released alongside the arXiv/Zenodo preprint
 ### Regressions (fixed in 2.1.0)
 - CartPole dropped from 195.2 to ~162 on the standard profile due to
   the gradual tag-accumulation change. Root cause identified and
-  fixed — see the Section 6 "Failure Modes" discussion in the paper.
+  documented in `docs/paper/sources/v2.1.0-benchmark-findings.md`.
 
 ---
 

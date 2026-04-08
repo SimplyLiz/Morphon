@@ -5,7 +5,7 @@
 Morphon-Core is a biologically-inspired, adaptive intelligence engine that implements Morphogenic Intelligence: systems that grow, self-organize, and learn at runtime without backpropagation.
 
 > **⚠️ Research preprint codebase.** This is the reference implementation for the paper
-> [*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/Morphogenic_Intelligence.pdf)
+> [*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf)
 > (v3.0.0, April 2026). It is actively developed, APIs are not stable, and benchmark numbers are
 > not cross-version comparable. This is not production software. See [`CHANGELOG.md`](CHANGELOG.md)
 > for the version history and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues.
@@ -205,7 +205,11 @@ cd web && python3 -m http.server 8080
 ## Documentation
 
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — full benchmark guide (what each example tests, how to run, expected results)
-- [`docs/paper/Morphogenic_Intelligence.pdf`](docs/paper/Morphogenic_Intelligence.pdf) — the preprint (19 pages, April 2026)
+- [`docs/paper/paper/`](docs/paper/paper/) — the preprint LaTeX source, builds with `make`
+- [`docs/paper/paper/Morphogenic_Intelligence.pdf`](docs/paper/paper/Morphogenic_Intelligence.pdf) — the preprint PDF (19 pages, April 2026)
+- [`docs/paper/sources/`](docs/paper/sources/) — experimental findings that feed into the paper
+- [`docs/specs/`](docs/specs/) — design specifications for planned features (temporal sequences, limbic circuit, NLP)
+- [`docs/plans/morphon-complete-roadmap.md`](docs/plans/morphon-complete-roadmap.md) — full development roadmap
 - [`docs/WHAT-IT-CAN-DO.md`](docs/WHAT-IT-CAN-DO.md) — feature overview
 - [`docs/user/settings.mdx.md`](docs/user/settings.mdx.md) — full `SystemConfig` reference
 - [`docs/morphogenic-intelligence-concept.md`](docs/morphogenic-intelligence-concept.md) — the conceptual introduction

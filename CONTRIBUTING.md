@@ -6,16 +6,16 @@ production software — please read this first so expectations are aligned.
 ## What this repository is
 
 Morphon-Core is the reference implementation for the paper
-[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/Morphogenic_Intelligence.pdf).
+[*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf).
 The goal is to make every experiment in the paper reproducible from a clean
 checkout and to document the architectural decisions that produced the
 published numbers.
 
 It is actively developed by a small team and moves fast. APIs are not stable,
 benchmarks are not cross-version comparable unless the version tag is the same,
-and there may be known regressions between releases (see the
-[paper Section 6 failure modes](docs/paper/Morphogenic_Intelligence.pdf)
-for the documented regression/recovery history).
+and there may be known regressions between releases (see
+[`docs/paper/sources/v2.1.0-benchmark-findings.md`](docs/paper/sources/v2.1.0-benchmark-findings.md)
+for one documented case).
 
 ## What kinds of contributions are welcome
 
@@ -45,10 +45,11 @@ All of these are welcome, in rough order of enthusiasm:
 
 ## What kinds of contributions are less likely to land quickly
 
-- **New benchmarks or tasks.** The planned next benchmarks (temporal sequence
-  processing, NLP once prerequisites are met, etc.) are described in the paper
-  Section 7 "Discussion" and Section "Path to Language". Adding unrelated
-  benchmarks is unlikely to be merged unless they fit that trajectory.
+- **New benchmarks or tasks.** The roadmap in
+  [`docs/plans/morphon-complete-roadmap.md`](docs/plans/morphon-complete-roadmap.md)
+  describes the planned next benchmarks (temporal sequence processing, NLP
+  once prerequisites are met, etc.). Adding unrelated benchmarks is unlikely
+  to be merged unless they fit the roadmap.
 
 - **Refactors that don't change numbers.** The code is not pretty. Cleaning
   it up is fine, but the authors have limited time for review of pure-cosmetic
