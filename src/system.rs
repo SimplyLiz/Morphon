@@ -1007,6 +1007,40 @@ impl System {
             let td_err = self.last_td_error;
             let wmax = self.config.learning.weight_max;
 
+            // === Sparse actor visit set ===
+            // The actor branch below only does work when at least one of:
+            //   (a) post is active (motors are always borderline-active; non-motors must fire)
+            //   (b) feedback_sig != 0 (DFA path)
+            //   (c) at least one incoming pre fired this tick (LTD via pre-spike)
+            // Lazy decay in update_eligibility means skipped synapses catch up correctly
+            // when next visited. Only L2 weight decay is approximated (skipped morphons
+            // don't get the per-tick 0.05% nudge — bounded effect, weights are clamped).
+            let actor_visit_set: std::collections::HashSet<MorphonId> = {
+                let mut set = std::collections::HashSet::new();
+                for (id, m) in &self.morphons {
+                    if critic_set.contains(id) { continue; }
+                    if m.cell_type == CellType::Motor
+                        || m.fired
+                        || m.feedback_signal.abs() > 0.001
+                    {
+                        set.insert(*id);
+                    }
+                }
+                // Add post-targets of every firing morphon (covers LTD-via-pre-spike).
+                let firing_ids: Vec<MorphonId> = self.morphons.iter()
+                    .filter(|(_, m)| m.fired)
+                    .map(|(id, _)| *id)
+                    .collect();
+                for pre_id in &firing_ids {
+                    for (target_id, _) in self.topology.outgoing(*pre_id) {
+                        if !critic_set.contains(&target_id) {
+                            set.insert(target_id);
+                        }
+                    }
+                }
+                set
+            };
+
             for &id in &morphon_ids {
                 if critic_set.contains(&id) {
                     // === CRITIC: TD-LTP ===
@@ -1029,8 +1063,8 @@ impl System {
                             synapse.age += 1;
                         }
                     }
-                } else {
-                    // === ACTOR: Three-factor learning ===
+                } else if actor_visit_set.contains(&id) {
+                    // === ACTOR: Three-factor learning (sparse — visit set only) ===
                     // Motor morphons: standard receptor-gated modulation (TD via Reward channel)
                     // Associative morphons: DFA feedback signal (neuron-specific credit)
                     let (
@@ -1100,6 +1134,7 @@ impl System {
                                 post_activity,
                                 &learning_params,
                                 dt,
+                                self.step_count,
                             );
 
                             if is_assoc && feedback_sig.abs() > 0.001 {

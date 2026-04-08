@@ -10,6 +10,7 @@
 use mnist::MnistBuilder;
 use morphon_core::developmental::DevelopmentalConfig;
 use morphon_core::field::FieldConfig;
+use morphon_core::governance::ConstitutionalConstraints;
 use morphon_core::homeostasis::HomeostasisParams;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
@@ -124,6 +125,11 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
+        governance: ConstitutionalConstraints {
+            // 30% connectivity target — see mnist.rs comment for derivation.
+            max_connectivity_per_morphon: 300,
+            ..ConstitutionalConstraints::default()
+        },
         ..Default::default()
     };
     let mut sys = System::new(config);
@@ -191,6 +197,11 @@ fn create_v2(kwta_fraction: f64, local: bool) -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
+        governance: ConstitutionalConstraints {
+            // 30% connectivity target — see mnist.rs comment for derivation.
+            max_connectivity_per_morphon: 300,
+            ..ConstitutionalConstraints::default()
+        },
         ..Default::default()
     };
     let mut sys = System::new(config);

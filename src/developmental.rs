@@ -203,13 +203,18 @@ pub fn develop(
             }
         }
 
-        // Fan-in from associative → motor: EVERY motor connects to ALL associative.
+        // Fan-in from associative → motor: each motor receives from ~30% of associative.
         // Small random Xavier-scaled weights — breaks symmetry so each motor class
         // starts with a unique receptive field. Zero init causes mode collapse
         // (all motors respond identically → first class to win locks in).
-        let assoc_to_motor_scale = 1.0 / (associative.len() as f64).max(1.0).sqrt();
-        for &a in &associative {
-            for &m in &motor {
+        // 30% cap (was 100%) reduces synapse count substantially for hot-path performance;
+        // Xavier scale recomputed against the new fan-in to preserve init variance.
+        let assoc_per_motor = ((associative.len() as f64) * 0.3).ceil() as usize;
+        let assoc_to_motor_scale = 1.0 / (assoc_per_motor as f64).max(1.0).sqrt();
+        for &m in &motor {
+            let mut assoc_shuffled = associative.clone();
+            assoc_shuffled.shuffle(rng);
+            for &a in assoc_shuffled.iter().take(assoc_per_motor) {
                 if !topology.has_connection(a, m) {
                     let w = rng.random_range(-assoc_to_motor_scale..assoc_to_motor_scale);
                     let j = crate::justification::SynapticJustification::new(

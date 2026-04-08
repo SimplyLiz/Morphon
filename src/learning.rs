@@ -103,11 +103,22 @@ pub fn update_eligibility(
     post_activity: f64,
     params: &LearningParams,
     dt: f64,
+    current_step: u64,
 ) {
-    // Decay traces
-    let trace_decay = (-dt / params.tau_trace).exp();
+    // Lazy decay: fast-forward all exponential decays over the elapsed step gap
+    // since this synapse was last touched. Mathematically equivalent to per-step
+    // decay because exponentials compose: exp(-N·dt/τ) = exp(-dt/τ)^N. Only
+    // valid when no STDP forcing happened in the skipped ticks — and since this
+    // function is now only called when pre OR post is active, that holds.
+    let elapsed = current_step.saturating_sub(synapse.last_update_step).max(1) as f64;
+    let trace_decay = (-elapsed * dt / params.tau_trace).exp();
+    let elig_decay = (-elapsed * dt / params.tau_eligibility).exp();
+    let tag_decay = (-elapsed * dt / params.tau_tag).exp();
     synapse.pre_trace *= trace_decay;
     synapse.post_trace *= trace_decay;
+    synapse.eligibility *= elig_decay;
+    synapse.tag *= tag_decay;
+    synapse.last_update_step = current_step;
 
     // Weight-dependent (multiplicative) STDP with soft bounds.
     // LTP scales as (w_max - w): easy to strengthen weak synapses, hard to over-strengthen.
@@ -130,8 +141,9 @@ pub fn update_eligibility(
         synapse.post_trace += post_activity;
     }
 
-    // Eligibility trace: exponential decay + STDP contributions
-    let e_delta = (-synapse.eligibility / params.tau_eligibility + stdp) * dt;
+    // Eligibility trace: STDP forcing (decay was already handled above by lazy
+    // fast-forward — adding `-eligibility/tau` here would double-decay).
+    let e_delta = stdp * dt;
     if e_delta.is_finite() {
         synapse.eligibility += e_delta;
     }
@@ -146,8 +158,6 @@ pub fn update_eligibility(
         synapse.tag = 1.0;
         synapse.tag_strength = synapse.eligibility;
     }
-    // Tag decays exponentially (much slower than eligibility)
-    synapse.tag *= (-dt / params.tau_tag).exp();
 }
 
 /// Apply the receptor-gated three-factor learning rule.
@@ -335,14 +345,14 @@ mod tests {
         let mut syn = Synapse::new(0.5);
         // Build up eligibility
         for _ in 0..5 {
-            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0, 0);
         }
         let peak = syn.eligibility;
         assert!(peak > 0.0);
 
         // Let it decay with no activity
         for _ in 0..200 {
-            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0, 0);
         }
         assert!(
             syn.eligibility.abs() < peak.abs() * 0.1,
@@ -357,7 +367,7 @@ mod tests {
         let mut syn = Synapse::new(0.5);
         assert_eq!(syn.pre_trace, 0.0);
 
-        update_eligibility(&mut syn, true, 0.0, &params, 1.0);
+        update_eligibility(&mut syn, true, 0.0, &params, 1.0, 0);
         assert!(syn.pre_trace > 0.0, "pre_trace should increment on pre spike");
     }
 
@@ -367,7 +377,7 @@ mod tests {
         let mut syn = Synapse::new(0.5);
         assert_eq!(syn.post_trace, 0.0);
 
-        update_eligibility(&mut syn, false, 0.8, &params, 1.0);
+        update_eligibility(&mut syn, false, 0.8, &params, 1.0, 0);
         assert!(syn.post_trace > 0.0, "post_trace should increment on post activity");
     }
 
@@ -377,13 +387,13 @@ mod tests {
         let mut syn = Synapse::new(0.5);
 
         // Set traces
-        update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+        update_eligibility(&mut syn, true, 1.0, &params, 1.0, 0);
         let pre_after_spike = syn.pre_trace;
         let post_after_spike = syn.post_trace;
 
         // Decay for several steps
         for _ in 0..50 {
-            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0, 0);
         }
         assert!(syn.pre_trace < pre_after_spike * 0.1, "pre_trace should decay");
         assert!(syn.post_trace < post_after_spike * 0.1, "post_trace should decay");
@@ -396,7 +406,7 @@ mod tests {
 
         // Massive coincidence
         for _ in 0..1000 {
-            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0, 0);
         }
         assert!(syn.eligibility <= 1.0, "eligibility must be <= 1.0");
         assert!(syn.eligibility >= -1.0, "eligibility must be >= -1.0");
@@ -407,7 +417,7 @@ mod tests {
         let params = LearningParams::default();
         let mut syn = Synapse::new(0.1); // low weight → high LTP scale
         for _ in 0..10 {
-            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0, 0);
         }
         assert!(
             syn.tag > 0.0,
@@ -423,14 +433,14 @@ mod tests {
         let mut syn = Synapse::new(0.1);
         // Build tag
         for _ in 0..10 {
-            update_eligibility(&mut syn, true, 1.0, &params, 1.0);
+            update_eligibility(&mut syn, true, 1.0, &params, 1.0, 0);
         }
         let tag_after_set = syn.tag;
         let elig_after_set = syn.eligibility;
 
         // Decay for 100 steps
         for _ in 0..100 {
-            update_eligibility(&mut syn, false, 0.0, &params, 1.0);
+            update_eligibility(&mut syn, false, 0.0, &params, 1.0, 0);
         }
         let tag_ratio = syn.tag / tag_after_set;
         let elig_ratio = if elig_after_set.abs() > 1e-10 {

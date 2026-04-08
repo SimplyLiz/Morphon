@@ -12,6 +12,7 @@
 
 use mnist::MnistBuilder;
 use morphon_core::developmental::DevelopmentalConfig;
+use morphon_core::governance::ConstitutionalConstraints;
 use morphon_core::homeostasis::HomeostasisParams;
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
@@ -201,6 +202,13 @@ fn create_system(local_inh: bool) -> System {
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
+        governance: ConstitutionalConstraints {
+            // 30% connectivity target: sens→assoc dev wiring is 235 in-edges per assoc
+            // (30% × 784). Cap at 300 gives synaptogenesis ~25% headroom for growth
+            // while preventing rich-get-richer hub pathology.
+            max_connectivity_per_morphon: 300,
+            ..ConstitutionalConstraints::default()
+        },
         ..Default::default()
     };
     System::new(config)

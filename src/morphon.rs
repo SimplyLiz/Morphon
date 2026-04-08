@@ -55,6 +55,13 @@ pub struct Synapse {
     /// V3: Provenance record — why this synapse was formed and what reinforced it.
     #[serde(default)]
     pub justification: Option<SynapticJustification>,
+
+    /// Step number at which traces/eligibility/tag were last updated. Used by
+    /// sparse eligibility updates to fast-forward exponential decay over skipped
+    /// medium ticks. Mathematically equivalent to per-step decay (exponentials
+    /// compose) — the synapse only needs visiting when pre or post is active.
+    #[serde(default)]
+    pub last_update_step: u64,
 }
 
 impl Synapse {
@@ -74,6 +81,7 @@ impl Synapse {
             activity_trace: 0.0,
             myelination: 0.0,
             justification: None,
+            last_update_step: 0,
         }
     }
 
