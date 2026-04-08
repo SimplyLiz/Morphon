@@ -44,6 +44,11 @@
       "identifier": "https://github.com/SimplyLiz/Morphon",
       "relation": "isSupplementTo",
       "resource_type": "software"
+    },
+    {
+      "identifier": "10.5281/zenodo.19467243",
+      "relation": "isVersionOf",
+      "resource_type": "publication-preprint"
     }
   ],
   "notes": "This preprint accompanies the open-source Morphon-Core engine. The paper PDF is at docs/paper/paper/main.pdf in the linked repository; LaTeX source is in docs/paper/paper/."

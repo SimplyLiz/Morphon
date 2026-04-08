@@ -46,6 +46,10 @@ preferred-citation:
       email: martyna@tastehub.io
   year: 2026
   month: 4
-  url: "https://github.com/SimplyLiz/Morphon/blob/main/docs/paper/paper/Morphogenic_Intelligence.pdf"
-  # doi: 10.5281/zenodo.XXXXXXX    # TODO: fill in after Zenodo upload
+  url: "https://doi.org/10.5281/zenodo.19467243"
+  doi: 10.5281/zenodo.19467243
   notes: "Preprint. Code and experiments at https://github.com/SimplyLiz/Morphon"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.19467243
+    description: "Preprint on Zenodo"

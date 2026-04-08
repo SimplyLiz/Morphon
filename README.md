@@ -274,12 +274,17 @@ Apache-2.0
 
 If you use Morphon-Core in research, please cite the paper:
 
+**Paper (preprint):** [Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures](https://doi.org/10.5281/zenodo.19467243) — Zenodo DOI `10.5281/zenodo.19467243`
+
 ```bibtex
-@misc{morphon2026,
-  title={Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures},
-  author={Welsch, Lisa and Kwiecie\'n, Martyna},
-  year={2026},
-  note={Available at https://github.com/SimplyLiz/Morphon}
+@misc{welsch2026morphogenic,
+  author       = {Welsch, Lisa and Kwiecie\'n, Martyna},
+  title        = {Morphogenic Intelligence: Runtime Neural Development
+                  Beyond Static Architectures},
+  year         = {2026},
+  publisher    = {Zenodo},
+  doi          = {10.5281/zenodo.19467243},
+  url          = {https://doi.org/10.5281/zenodo.19467243}
 }
 ```
 
