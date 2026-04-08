@@ -2,7 +2,13 @@
 
 **Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime**
 
-Morphon-Core is a biological-inspired, adaptive intelligence engine that implements Morphogenic Intelligence: systems that grow, self-organize, and learn at runtime without backpropagation.
+Morphon-Core is a biologically-inspired, adaptive intelligence engine that implements Morphogenic Intelligence: systems that grow, self-organize, and learn at runtime without backpropagation.
+
+> **⚠️ Research preprint codebase.** This is the reference implementation for the paper
+> [*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf)
+> (v3.0.0, April 2026). It is actively developed, APIs are not stable, and benchmark numbers are
+> not cross-version comparable. This is not production software. See [`CHANGELOG.md`](CHANGELOG.md)
+> for the version history and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues.
 
 ## Headline Results
 

@@ -1,0 +1,51 @@
+cff-version: 1.2.0
+message: "If you use Morphon-Core in research, please cite both the software and the accompanying preprint."
+title: "Morphon-Core: Morphogenic Intelligence Engine"
+abstract: >
+  A Rust implementation of Morphogenic Intelligence — a neural architecture
+  in which compute units (Morphons) grow, differentiate, fuse, and undergo
+  apoptosis at runtime under local developmental rules. Includes a full
+  dual-clock scheduler, three-factor learning, tag-and-capture consolidation,
+  Endoquilibrium homeostatic regulation, hyperbolic embedding, WASM visualizer,
+  and benchmark examples (CartPole, MNIST, NLP readiness).
+type: software
+authors:
+  - family-names: Welsch
+    given-names: Lisa
+    email: lisa@tastehub.io
+  - family-names: Kwiecień
+    given-names: Martyna
+    email: martyna@tastehub.io
+repository-code: "https://github.com/SimplyLiz/Morphon"
+url: "https://github.com/SimplyLiz/Morphon"
+license: Apache-2.0
+version: 3.0.0
+date-released: "2026-04-08"
+keywords:
+  - morphogenic intelligence
+  - spiking neural networks
+  - structural plasticity
+  - three-factor learning
+  - neuromodulation
+  - synaptic tagging and capture
+  - homeostatic regulation
+  - self-healing networks
+  - developmental neuroscience
+  - STDP
+  - no backpropagation
+  - Rust
+preferred-citation:
+  type: article
+  title: "Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures"
+  authors:
+    - family-names: Welsch
+      given-names: Lisa
+      email: lisa@tastehub.io
+    - family-names: Kwiecień
+      given-names: Martyna
+      email: martyna@tastehub.io
+  year: 2026
+  month: 4
+  url: "https://github.com/SimplyLiz/Morphon/blob/main/docs/paper/paper/Morphogenic_Intelligence.pdf"
+  # doi: 10.5281/zenodo.XXXXXXX    # TODO: fill in after Zenodo upload
+  notes: "Preprint. Code and experiments at https://github.com/SimplyLiz/Morphon"
