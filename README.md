@@ -228,6 +228,17 @@ If you use Morphon-Core in research, please cite:
 }
 ```
 
+## Contact
+
+Questions, feedback, collaboration ideas, bug reports, or just curious — we'd love to hear from you.
+
+- **Lisa Welsch** — [lisa@tastehub.io](mailto:lisa@tastehub.io)
+- **Martyna Kwiecień** — [martyna@tastehub.io](mailto:martyna@tastehub.io)
+- **Issues**: [github.com/SimplyLiz/Morphon-OSS/issues](https://github.com/SimplyLiz/Morphon-OSS/issues) — for bug reports and feature requests
+- **Discussions**: [github.com/SimplyLiz/Morphon-OSS/discussions](https://github.com/SimplyLiz/Morphon-OSS/discussions) — for questions, ideas, and conversations
+
+We may be slow to respond but we read everything.
+
 ## License
 
 Apache-2.0
