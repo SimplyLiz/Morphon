@@ -5,22 +5,11 @@ LaTeX source for the arXiv preprint.
 ## Build
 
 ```bash
-cd dev/paper/src
+cd docs/paper/paper
 make
 make view   # opens Morphogenic_Intelligence.pdf
 make clean  # removes build artifacts
 ```
-
-**To update the PDF shipped with the public repo**, rebuild and copy:
-
-```bash
-cd dev/paper/src && make
-cp Morphogenic_Intelligence.pdf ../../../docs/paper/Morphogenic_Intelligence.pdf
-```
-
-The committed PDF at `docs/paper/Morphogenic_Intelligence.pdf` is the canonical
-artifact that ships with Morphon-OSS. The LaTeX source lives in `dev/` and
-stays in private Morphon only.
 
 Requires `pdflatex` and `bibtex` (any standard TeX distribution: MacTeX, TeX Live, MiKTeX).
 
@@ -75,17 +64,12 @@ Requires `python3` and `matplotlib`.
 
 ## Source materials
 
-The paper draws from an internal corpus of experimental findings documents
-(CartPole fix chain, Endoquilibrium regression and recovery, metabolic
-pruning discovery, readout architecture fixes, negative results, etc.).
-These are not shipped with Morphon-OSS; they exist in the authors' private
-development repository. All empirical claims in the paper, however, are
-reproducible from the code and benchmark JSONs in this repository:
+The paper draws from the following internal documents:
 
-```bash
-cargo run --example cartpole --release
-cargo run --example mnist_v2 --release
-cargo run --example nlp_readiness --release
-```
-
-Results are saved to `docs/benchmark_results/v{version}/`.
+- `docs/paper/sources/cartpole-findings.md`
+- `docs/paper/sources/metabolic-pruning-findings.md` (the new findings doc)
+- `docs/paper/sources/v2.1.0-benchmark-findings.md`
+- `docs/paper/sources/endoquilibrium-findings.md`
+- `docs/paper/sources/readout-architecture.md`
+- `docs/paper/sources/negative-results.md`
+- `docs/official/arxiv-paper-outline.md` (the original outline)
