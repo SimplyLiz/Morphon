@@ -95,8 +95,8 @@ This is reward prediction error vs.\ raw reward as a maturity signal. In biology
 \paragraph{Fix.}
 Two changes:
 \begin{enumerate}
-  \item Raise the history-length gate on Mature stage from 100 to 2000 ticks. This prevents Mature from triggering during the critical learning phase regardless of the inflated reward signal. Empirically, this prevents the throttle and lets the system learn.
-  \item (Architectural, future work.) Replace the raw reward signal feeding Endo with reward prediction error from the planned Limbic Circuit's Motivational Drive component. This is the principled fix; the history gate is a patch.
+  \item Gate the Mature transition on a monotonically-increasing tick counter (\texttt{total\_updates}) rather than the deduplicating reward history buffer (which is capped at 500 entries and so could never satisfy a 2000-tick gate). The new gate requires \texttt{total\_updates} $\geq$ 2000 before Mature can trigger. This prevents Mature from firing during the critical learning phase regardless of how inflated the reward signal becomes. Empirically, this prevents the throttle and lets the system learn through the natural Differentiating$\leftrightarrow$Consolidating oscillation.
+  \item (Architectural, future work.) Replace the raw reward signal feeding Endo with reward prediction error from the planned Limbic Circuit's Motivational Drive component. This is the principled fix; the tick gate is a patch that buys time until RPE-based regulation is implemented.
 \end{enumerate}
 
 \paragraph{The oscillation discovery.}

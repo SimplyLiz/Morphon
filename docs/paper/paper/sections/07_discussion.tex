@@ -11,7 +11,7 @@ The spike pipeline still has a job: it produces the diverse, sparse, energy-effi
 
 \subsection{Self-Healing as a Computational Capability}
 
-The +21.5pp improvement after damage is, to our knowledge, the first demonstration of \emph{beneficial} self-healing in a neural architecture. Other work on damage recovery in neural networks measures how close a damaged network can return to its pre-damage performance; MI is the first system we know of where damage produces a network that is genuinely better than the original.
+The +18pp improvement after damage (replicated at +21.5pp on an earlier v2.4.0 run with identical methodology) is, to our knowledge, the first demonstration of \emph{beneficial} self-healing in a neural architecture. Other work on damage recovery in neural networks measures how close a damaged network can return to its pre-damage performance; MI is the first system we know of where damage produces a network that is genuinely better than the original.
 
 The mechanism is clear in retrospect. The original training run accumulated entrenched ``hub'' morphons --- high-degree neurons that fire indiscriminately and dominate the readout. Once entrenched, the homeostatic regulator declares the system ``done learning'' (the premature Mature bug, Section~\ref{sec:premature_mature}) and stops protecting morphon diversity. Damage removes some hubs at random, the regulator notices the performance drop and re-enables high plasticity, and the regrowth fills the gaps with fresh, well-specialized morphons that the now-uninhibited learning rules sculpt under the right conditions.
 
@@ -22,7 +22,7 @@ This points to a more general principle: \emph{the optimal training trajectory f
 We are honest about the gaps:
 
 \begin{itemize}
-  \item \textbf{MNIST accuracy is well below state of the art.} 31\% intact / 52.5\% post-recovery is a long way from SADP's 99.1\% \cite{sadp2026}. The substrate works; the supervised pathway still loses information at every spike conversion.
+  \item \textbf{MNIST accuracy is well below state of the art.} 30\% intact / 48\% post-recovery is a long way from Diehl \& Cook's $\sim$95\% STDP baseline \cite{diehl2015unsupervised} and even further from supervised SNNs trained with surrogate gradients. The substrate works; the supervised pathway still loses information at every spike conversion. Closing this gap is the central engineering challenge for the next iteration.
   \item \textbf{No language tasks yet.} The NLP readiness benchmark measures \emph{prerequisites} for language, not language itself. Tier 3 (compositional XOR) fails: the system can encode and remember but cannot compose. Composition requires nonlinear hidden features formed under DFA-driven supervised feedback, which the current spike pipeline does not deliver.
   \item \textbf{The premature Mature fix is a patch, not a principled solution.} The history gate at 2000 ticks prevents the failure but is essentially ``disable Mature stage detection.'' The principled fix is RPE-based regulation via a Limbic Circuit module that does not yet exist.
   \item \textbf{Performance.} The current implementation processes $\sim$1 image/second with 90K synapses. The slow path (anti-Hebbian LTD on k-WTA losers) is the hottest path; sparse eligibility updates and rayon-parallel medium-path learning would yield $\sim$10$\times$ speedup. Both are on the roadmap but not implemented.

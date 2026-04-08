@@ -3,23 +3,26 @@
 
 We position MI within the landscape of biologically-inspired and self-modifying neural architectures along three axes: (i) whether topology changes at runtime, (ii) whether the developmental rules are local, and (iii) whether the system integrates neuromodulation with structural plasticity.
 
-\paragraph{Self-Modifying Growing Recurrent Networks (SMGrNN).}
-SMGrNN \cite{schmidhuber2007self} introduces topology growth via node and edge insertion during training. The key difference from MI is the absence of morphogen-guided differentiation, apoptosis, and neuromodulatory gating. SMGrNN grows monotonically; MI grows, prunes, fuses, and kills under local energy constraints.
+\paragraph{Topology growth via evolution: NEAT and descendants.}
+NEAT \cite{stanley2002neat} introduced the now-canonical pattern of evolving neural network topologies through speciation and historical-marking-based crossover. NEAT and its descendants grow topology through an offline evolutionary outer loop --- generations of mutation and selection --- rather than through runtime developmental rules. The key difference from MI: NEAT topology change happens between training runs (each genome is fixed once instantiated), while MI topology changes during a single run under local energy and activity constraints. NEAT also has no apoptosis, no neuromodulatory gating, and no structural memory hierarchy.
 
-\paragraph{Neural Developmental Programs (NDP) and Local Neural Developmental Programs (LNDP).}
-NDP \cite{najarro2023towards} and LNDP \cite{nisioti2024growing} both learn local rules that produce network topology. NDP uses a differentiable relaxation of adjacency matrices, while MI uses discrete morphogenetic events (birth, fusion, apoptosis) with explicit metabolic costs. LNDP operates in a grid world; MI operates in hyperbolic embedding space, which provides exponential volume growth for unbounded topology expansion.
-
-\paragraph{Self-Assembling Particle-Interaction Networks (SAPIN).}
-SAPIN \cite{tang2023sapin} treats compute units as agents that self-organize into functional topologies via particle-style interactions. SAPIN units are stateless particles; Morphons are stateful neurons with membrane potentials, eligibility traces, energy budgets, and developmental lineages.
+\paragraph{Neural Developmental Programs (NDP).}
+NDP \cite{najarro2023towards} learns local developmental rules that produce a network topology, treating the developmental program itself as the optimization target. NDP uses differentiable relaxations and gradient-based meta-learning of the developmental rules. MI is the dual approach: the developmental rules are hand-specified (grounded in the six biological principles of Section~\ref{sec:architecture}) and run during inference, with discrete morphogenetic events (birth, fusion, apoptosis) gated by metabolic costs. NDP learns to grow networks; MI grows networks while learning.
 
 \paragraph{Three-factor learning rules.}
 The three-factor framework \cite{fremaux2016neuromodulated,gerstner2018eligibility} extends Hebbian plasticity with a neuromodulatory third factor (typically a dopamine analogue gating eligibility-traced LTP). MI implements three-factor learning with receptor-gated modulation: each Morphon's response to each modulator is determined by its evolving receptor density profile, allowing morphon-specific sensitivity to develop without a global hyperparameter.
 
-\paragraph{Self-Adaptive Dynamic Pruning (SADP).}
-SADP \cite{sadp2026} achieves 99.1\% on MNIST with dynamic sparsity within a fixed-topology spiking network. SADP prunes; MI grows from a near-empty seed. We treat SADP's accuracy as the target ceiling for spiking-network classification while noting that MI's distinctive capability is structural adaptation, not accuracy on static benchmarks.
+\paragraph{Spiking neural networks for MNIST: Diehl \& Cook.}
+The closest comparison point for our MNIST experiments is Diehl \& Cook \cite{diehl2015unsupervised}, which achieves $\sim$95\% test accuracy on MNIST using unsupervised STDP with adaptive thresholds and lateral inhibition. Our MNIST setup explicitly draws on their two-phase pattern (unsupervised feature formation followed by post-hoc neuron labeling), and we use their accuracy as the realistic ceiling for STDP-based spiking classification --- not the 99\%+ regime of fully-supervised SNNs trained with surrogate gradients. Our intact 30\% / post-recovery 48\% is well below this ceiling and there is room to improve; the paper's contribution is the developmental dynamics and the failure-mode catalogue, not the accuracy itself.
 
 \paragraph{Cortical Labs (DishBrain).}
 DishBrain \cite{kagan2022dishbrain} demonstrated that biological neurons cultured on multi-electrode arrays can learn to play Pong via reward-modulated plasticity. This is empirical evidence that self-organizing wetware solves real-time control without backpropagation. MI is the in-silico analogue: a developmental simulation that exhibits the same intrinsic-activity-plus-reward-modulation principles.
 
 \paragraph{Synaptic scaling and homeostatic regulation.}
-Turrigiano's synaptic scaling \cite{turrigiano2008homeostatic} and BCM metaplasticity \cite{bienenstock1982bcm} provide the biological grounding for MI's homeostatic mechanisms. Our \emph{Endoquilibrium} module (Section~\ref{sec:architecture}) implements multi-scale homeostatic regulation and is the locus of the regulatory failure mode we document in Section~\ref{sec:failure_modes}.
+Turrigiano's synaptic scaling \cite{turrigiano2008homeostatic,turrigiano1998activity} and BCM metaplasticity \cite{bienenstock1982bcm} provide the biological grounding for MI's homeostatic mechanisms. Our \emph{Endoquilibrium} module (Section~\ref{sec:endo}) implements multi-scale homeostatic regulation and is the locus of the regulatory failure mode we document in Section~\ref{sec:failure_modes}.
+
+\paragraph{Synaptic tagging and capture.}
+Frey \& Morris \cite{frey1997synaptic} established the tag-and-capture model of late-LTP consolidation: weak inputs leave a transient ``tag'' that can be converted to long-lasting plasticity if a strong, protein-synthesis-triggering signal arrives within hours. MI implements this directly (Section~\ref{sec:implementation}), and our finding that capture must be \emph{episode-gated} rather than per-tick (Section~\ref{sec:implementation}, tag-and-capture subsection) is, we believe, a useful refinement for any spiking architecture using this mechanism.
+
+\paragraph{Inhibitory plasticity (iSTDP).}
+Vogels et al.\ \cite{vogels2011inhibitory} showed that iSTDP on inhibitory synapses balances excitation and inhibition in cortical-like networks. MI's planned local inhibitory competition (Section~\ref{sec:discussion}) is a direct application: replace the global k-WTA approximation with trained inhibitory interneurons that learn the right competition pattern through Vogels-style iSTDP.

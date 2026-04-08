@@ -28,7 +28,7 @@ The full MI pipeline --- developmental bootstrap, three-factor learning, tag-and
 \label{sec:exp_mnist}
 
 \paragraph{Setup.}
-Standard MNIST, 784 input pixels (28$\times$28), 10 output classes. Cortical developmental preset: seed\_size=200, dimensions=6, initial\_connectivity=0.02 (Phase 4 hardcodes 30\% S$\to$A density). Three training epochs of 3000 samples each. Analog readout (Section~\ref{sec:implementation}). Endoquilibrium enabled with the corrected stage-detection thresholds described in Section~\ref{sec:failure_modes}.
+Standard MNIST, 784 input pixels (28$\times$28), 10 output classes. Cortical developmental preset: seed\_size=200, dimensions=6, initial\_connectivity=0.02 (Phase 4 hardcodes 30\% S$\to$A density). Three training epochs of 3000 samples each. Analog readout (Section~\ref{sec:implementation}). Endoquilibrium enabled with the corrected stage-detection thresholds described in Section~\ref{sec:failure_modes}. The training pattern follows Diehl \& Cook \cite{diehl2015unsupervised}: rate-coded Poisson input, unsupervised STDP-driven feature formation, and post-hoc neuron labeling for evaluation.
 
 \paragraph{Results.}
 \begin{table}[h]
@@ -97,7 +97,7 @@ Tier 2 at 85\% is particularly significant: temporal memory exists in residual p
 \begin{figure}[h]
   \centering
   \figifexists[0.85\linewidth]{nlp_readiness.pdf}{NLP readiness 4-tier bar chart}
-  \caption{NLP readiness benchmark. Spike-based readout (gray) collapses to chance on every tier; analog readout (blue) extracts 99\%, 69\%, and 88\% on the first three tiers from the same morphon potentials. Tier 3 (XOR composition) requires nonlinear hidden features that the linear analog readout cannot provide. Red dashes are the per-tier pass thresholds.}
+  \caption{NLP readiness benchmark (v3.0.0). Spike-based readout (gray) collapses to chance on every tier; analog readout (blue) extracts 99\%, 62\%, and 85\% on the first three tiers from the same morphon potentials. Tier 3 (XOR composition) requires nonlinear hidden features that the linear analog readout cannot provide. Red dashes are the per-tier pass thresholds.}
   \label{fig:nlp_readiness}
 \end{figure}
 

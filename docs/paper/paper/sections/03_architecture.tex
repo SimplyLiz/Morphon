@@ -34,7 +34,7 @@ The Morphon is the fundamental compute unit. It carries:
 \begin{itemize}
   \item \textbf{Membrane state:} potential, prediction-error baseline, refractory timer, fired flag.
   \item \textbf{Receptor profile:} per-modulator sensitivity vector $(\rho_R, \rho_N, \rho_A, \rho_H)$ for reward, novelty, arousal, and homeostasis channels.
-  \item \textbf{Developmental metadata:} cell type (Stem, Sensory, Associative, Motor, Modulatory, Inhibitory Interneuron), differentiation level, lineage ID, birth tick.
+  \item \textbf{Developmental metadata:} cell type (Stem, Sensory, Associative, Motor, Modulatory, Fused, Inhibitory Interneuron), differentiation level, lineage ID, birth tick.
   \item \textbf{Energy budget:} current energy, basal regeneration rate, firing cost (with optional superlinear penalty), apoptosis threshold.
   \item \textbf{Position:} hyperbolic coordinate in a Poincaré ball of configurable dimensionality.
 \end{itemize}
@@ -70,7 +70,7 @@ On the glacial clock:
 \subsection{Endoquilibrium: Predictive Neuroendocrine Regulation}
 \label{sec:endo}
 
-Endoquilibrium is the homeostatic regulator. It monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error mean, reward EMA), maintains dual-timescale exponential moving averages (fast $\tau=50$, slow $\tau=500$), and adjusts seven modulation channels through proportional control: receptor gains $\rho_R, \rho_N, \rho_A, \rho_H$ for reward/novelty/arousal/homeostasis, threshold bias, plasticity multiplier, and consolidation gain.
+Endoquilibrium is the homeostatic regulator. It monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error mean, reward EMA), maintains dual-timescale exponential moving averages (fast $\tau=50$, slow $\tau=500$), and adjusts seventeen modulation channels through proportional control. The seven core channels are receptor gains $\rho_R, \rho_N, \rho_A, \rho_H$ for reward/novelty/arousal/homeostasis, threshold bias, plasticity multiplier, and consolidation gain. Ten additional channels (added incrementally as the V2 primitives shipped) tune structural plasticity parameters: winner adaptation, capture threshold, rollback PE threshold, $\tau_{\text{eligibility}}$, slow trace leak, division threshold, pruning threshold, frustration sensitivity, migration rate, and synaptogenesis threshold.
 
 The most critical role of Endoquilibrium is breaking the firing-rate-zero deadlock. Without it, associative morphons stop firing within $\sim$50 ticks of training start: low firing rate $\to$ no eligibility traces $\to$ no weight updates $\to$ low firing rate persists. This is a positive-feedback failure that no amount of parameter tuning fixes. Endoquilibrium's Rule 1 (firing rate regulation) detects $\text{FR}_{\text{assoc}} < $ setpoint and lowers thresholds, boosts arousal, and boosts novelty until firing recovers. The fast EMA ($\tau = 50$) responds within $\sim$50 ticks, just fast enough.
 
