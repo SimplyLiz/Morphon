@@ -10,20 +10,41 @@ Morphon-Core is a biologically-inspired, adaptive intelligence engine that imple
 > not cross-version comparable. This is not production software. See [`CHANGELOG.md`](CHANGELOG.md)
 > for the version history and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues.
 
+![Morphon WASM Visualizer](docs/paper/paper/figures/visualizer_full.jpg)
+*The in-browser WASM visualizer. Spheres are morphons colored by cell type; dotted yellow trails are action potentials propagating along axons with learned delays. The 3D layout is the Poincaré ball embedding.*
+
 ## Headline Results
 
 | Benchmark | Result | Notes |
 |-----------|--------|-------|
-| **CartPole-v1** | **SOLVED** avg=195.2 | Three-factor learning + developmental morphogenesis only |
-| **MNIST (intact)** | 30.0% | Quick profile, v3.0.0 seed=42 |
+| **CartPole-v1** | **SOLVED** avg=195.2 | v0.5.0 standard profile (1000 ep). v3.0.0 quick profile reaches avg=166 in 200 episodes — learning confirmed but SOLVED criterion not yet reproduced within shorter budget. |
+| **MNIST (intact)** | 30.0% | Quick profile, v3.0.0, seed=42 |
 | **MNIST (post-recovery)** | **48.0%** | After 30% damage + regrowth — exceeds intact baseline by **+18.0pp** |
-| **NLP readiness** | **Level 3/3** | Bag-of-chars 99%, scale 62%, sequential memory 85% (analog readout) |
+| **NLP Tier 0 (bag-of-chars)** | 46% spike / **99% analog** | Same network, same potentials, two readout types |
+| **NLP Tier 2 (sequential memory)** | 48% spike / **85% analog** | Temporal memory exists in residual potentials |
 
-The post-damage MNIST result is the most striking finding: **the system improves after losing 30% of its hidden layer**. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage, and the regrowth produces better-specialized morphons than the original training trajectory ever did. The +18pp gain is reproducible across runs (multiple seeds give recovery in the 48–53% range vs intact 28–31%).
+See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide.
 
-See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide and [`docs/paper/paper/`](docs/paper/paper/) for the arXiv paper draft.
+## Key Findings
 
+### Self-Healing: Damage Improves Performance
 
+The MNIST post-damage result is the most striking finding: **the system improves after losing 30% of its hidden layer**. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage (plasticity_mult=2.16), and regrowth produces better-specialized morphons than the original training trajectory ever did. The +18pp gain is reproducible across runs (multiple seeds give recovery in the 48–53% range vs intact 28–31%).
+
+The mechanism: original training accumulated entrenched "hub" morphons — high-degree neurons that fire indiscriminately and dominate the readout. Damage removes some hubs at random, the regulator re-enables high plasticity, and the regrowth fills the gaps with fresh morphons that specialize under the right conditions. **The optimal training trajectory for MI is not a smooth ascent but a series of structural shocks followed by recovery.**
+
+### The Spike-vs-Analog Gap
+
+On every NLP tier, spike-based readout collapses to chance (~50%) while analog readout extracts 99%/62%/85% from the *same morphon potentials*. The information that distinguishes classes is present in the network state — the analog readout proves it — but the spike pipeline destroys it through propagation delays, leaky integration, and multi-hop accumulation.
+
+| NLP Tier | Task | Spike | Analog |
+|----------|------|-------|--------|
+| 0: Bag-of-Chars | 27-dim freq encoding, 2-class | 46% | **99%** |
+| 1: One-Hot Scale | 135-dim flat, same task | 51% | **62%** |
+| 2: Memory | 27-dim/step × 3 sequential | 48% | **85%** |
+| 3: Composition | 54-dim, XOR over token pairs | 50% | 42% |
+
+This is the central diagnostic for any spiking architecture targeting classification. The failure is in the *output pathway*, not feature formation — STDP + k-WTA + reward modulation does form discriminative features. Biology solves this via dedicated analog readout pathways (e.g., Purkinje cell integration in the cerebellum). Tier 3 (XOR) fails because the linear analog readout cannot provide the nonlinear hidden features XOR requires.
 
 ## Key Features
 
@@ -36,6 +57,90 @@ See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide and 
 - **Triple Memory System**: Working (persistent activity), episodic (one-shot), procedural (topology snapshots)
 - **Bindings**: Python (via PyO3/maturin) and WebAssembly (via wasm-bindgen) support
 - **Parallel Processing**: Rayon-based parallelization on fast path (feature-gated)
+
+## Architecture Overview
+
+### The Six Biological Principles
+
+| | Principle | Implementation |
+|--|-----------|----------------|
+| **P1** | Local computation only | No global loss, no backprop. All updates use pre/post-synaptic activity + local neuromodulators. |
+| **P2** | Developmental lifecycle | Morphons are born, differentiate, mature, fuse with correlated neighbors, and die from energy starvation or inactivity. |
+| **P3** | Chemical signaling | Morphogen-like signals diffuse through hyperbolic space and guide differentiation and connectivity. |
+| **P4** | Neuromodulatory gating | Plasticity gated by four channels (dopamine, serotonin, ACh, norepinephrine analogues) with per-morphon receptor densities. |
+| **P5** | Multi-scale memory | Synaptic (fast), structural (medium), and morphogenetic (slow) memory on separate timescales. |
+| **P6** | Metabolic cost | Every morphon consumes energy each tick. Scarcity drives pruning, fusion, and apoptosis. |
+
+### Core Loop (`System::step()`)
+
+Four temporal scales via dual-clock scheduler:
+
+| Scale | Default Period | Operations |
+|-------|---------------|------------|
+| **Fast** | 1 | Spike propagation (resonance), morphon firing, input integration |
+| **Medium** | 10 | Eligibility traces, three-factor weight updates, tag-and-capture |
+| **Slow** | 100 | Synaptogenesis, pruning, migration in hyperbolic space |
+| **Glacial** | 1000 | Division, differentiation, fusion, apoptosis (with checkpoint/rollback) |
+
+The three-factor weight update rule:
+
+```
+Δw = η · e · M(t)
+```
+
+where `e` is the eligibility trace (STDP coincidences), `M(t)` is the receptor-gated modulatory signal, and `η` is a per-synapse plasticity rate. No global loss, no backprop.
+
+### Network Topology
+
+![Morphon network topology](docs/paper/paper/figures/topology_developed.jpg)
+*Morphon network after training. Purple = associative, cyan = sensory, orange = motor, green = modulatory. The 3D layout is the Poincaré ball embedding: origin = general/stem morphons, boundary = specialized. Orange motor morphons concentrate on one side and project through the synaptic web.*
+
+![Morphon network running](docs/paper/paper/figures/topology_running.jpg)
+*The same network during active inference. Dotted yellow trails are action potentials propagating along axons with learned delays.*
+
+### Endoquilibrium — Predictive Neuroendocrine Regulation
+
+Endoquilibrium monitors seven vital signs (firing rates by cell type, eligibility density, weight entropy, energy utilization, prediction error, reward EMA), maintains dual-timescale EMAs (fast τ=50, slow τ=500), and adjusts seventeen modulation channels via proportional control.
+
+Its most critical role: breaking the **firing-rate-zero deadlock**. Without it, associative morphons stop firing within ~50 ticks of training start — a positive-feedback failure (low FR → no eligibility → no weight updates → low FR) that no parameter tuning fixes.
+
+Developmental stage detection (from relative reward trajectory, not absolute values):
+
+| Stage | Trigger |
+|-------|---------|
+| **Proliferating** | history < 20 ticks (warmup) |
+| **Stressed** | reward trend < −0.05 · \|slow EMA\| |
+| **Mature** | reward stable, low cv, history ≥ 2000 ticks |
+| **Consolidating** | reward near ceiling, stable, history ≥ 500 |
+| **Differentiating** | reward actively climbing (default healthy state) |
+
+### Epistemic Model — Four-State Knowledge Tracking
+
+Every cluster has an epistemic state reflecting confidence in the knowledge encoded by its synaptic topology. Features **Epistemic Scarring**: clusters repeatedly Outdated or Contested develop higher skepticism thresholds.
+
+- **Supported**: Verified — cluster protected and stable
+- **Outdated**: Evidence stale (>5000 steps without reinforcement) — unconsolidates stale synapses
+- **Contested**: Conflicting evidence (>25% minority) — increases arousal for re-evaluation
+- **Hypothesis**: Newly formed — boosts plasticity 1.5×
+
+### Governance Layer — Constitutional Constraints
+
+Hard invariants **outside the learning loop** that the system cannot modify. Only a human oracle can amend them. Biological analogy: DNA-coded checkpoint programs that epigenetic modification cannot alter.
+
+Enforced at every structural decision point (synaptogenesis, division, fusion, apoptosis), overriding any learned behavior. Constraints include: max connectivity per morphon, max cluster size fraction, max unverified fraction, mandatory justification for motor cell types, and max morphon population cap.
+
+### Biology-Informed Failure Modes
+
+Four failure modes encountered during development — each has a biological parallel and a biology-derived fix:
+
+| Failure | Symptom | Fix |
+|---------|---------|-----|
+| **Modulatory explosion** | Positive feedback: high reward → strong dopamine → more activity → more reward → saturation | Hill-function receptor saturation, receptor downregulation, exponential decay ("reuptake") |
+| **Motor silencing** | After initial burst, motor morphons go silent; network produces zero output | Tonic baseline current injection + Endoquilibrium threshold-bias rule |
+| **LTD vicious cycle** | LTD > LTP at low firing rates → global weight decay → silence → apoptosis | Turrigiano synaptic scaling + BCM-style metaplasticity thresholds |
+| **Premature Mature** | Endo declares Mature at 26% accuracy; plasticity throttled to 0.60×; learning stops | History gate (≥2000 ticks) prevents premature Mature declaration on classification tasks |
+
+The Premature Mature failure mode is, to our knowledge, novel: dense reward signals on classification tasks inflate the slow EMA before the system has learned anything, triggering Mature stage detection and locking learning out of the high-plasticity Differentiating regime.
 
 ## Project Structure
 
@@ -71,7 +176,7 @@ See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide and 
 # Build optimized
 cargo build --release
 
-# All tests (210+: unit + integration + doctest)
+# All tests (unit + integration + doctest)
 cargo test
 
 # Single test
@@ -97,171 +202,6 @@ wasm-pack build --target web --features wasm --no-default-features
 cd web && python3 -m http.server 8080
 ```
 
-## Architecture Overview
-
-### Core Loop (`System::step()`)
-Four temporal scales via dual-clock scheduler:
-
-| Scale | Default Period | Operations |
-|-------|---------------|------------|
-| **Fast** | 1 | Spike propagation (resonance), morphon firing, input integration |
-| **Medium** | 10 | Eligibility traces, three-factor weight updates, tag-and-capture |
-| **Slow** | 100 | Synaptogenesis, pruning, migration in hyperbolic space |
-| **Glacial** | 1000 | Division, differentiation, fusion, apoptosis (with checkpoint/rollback) |
-
-Plus homeostasis (synaptic scaling, inter-cluster inhibition) and memory recording at their own periods.
-
-### Key Systems
-
-#### Endoquilibrium — Predictive Neuroendocrine Regulation Engine
-Endoquilibrium maintains network health by sensing vital signs, predicting healthy state via dual-timescale EMAs, and adjusting neuromodulatory channels through proportional control. Biological analogy: the endocrine system (allostasis), not the nervous system (homeostasis).
-
-Runs on the medium path tick. Never modifies weights or topology directly — it modulates the environment in which the Builder operates.
-
-#### Epistemic Model — Four-State Knowledge Tracking with Scarring
-Every cluster has an epistemic state that reflects the system's confidence in the knowledge encoded by that cluster's synaptic topology. State transitions are driven by justification records on member synapses.
-
-Features **Epistemic Scarring**: clusters that have been burned (repeatedly Outdated or Contested) develop higher skepticism thresholds, requiring stronger evidence before accepting new beliefs.
-
-States:
-- **Supported**: Verified against current evidence — cluster is protected and stable
-- **Outdated**: Evidence has gone stale — needs re-verification  
-- **Contested**: Conflicting evidence from multiple pathways
-- **Hypothesis**: Newly formed, not yet verified
-
-#### Governance Layer — Constitutional Constraints
-Hard invariants that lie **outside the learning loop** and cannot be modified by the system itself. Only a human oracle (or explicit API call) can amend them. Biological analogy: DNA-coded checkpoint programs that epigenetic modification cannot alter.
-
-Enforced at every structural decision point (synaptogenesis, division, fusion, apoptosis) and override any learned behavior.
-
-### How the Systems Work Together
-
-Morphon-Core consists of several interconnected biological-inspired systems that operate on different temporal scales:
-
-#### 1. Endoquilibrium — Predictive Neuroendocrine Regulation Engine
-Maintains network health by sensing vital signs, predicting healthy state via dual-timescale EMAs, and adjusting neuromodulatory channels through proportional control. Biological analogy: the endocrine system (allostasis), not the nervous system (homeostasis).
-
-Runs on the medium path tick. Never modifies weights or topology directly — it modulates the environment in which the Builder operates.
-
-**Key Functions**:
-- Senses vital signs (firing rates, eligibility density, weight entropy, etc.)
-- Uses dual-timescale EMAs (fast τ=50, slow τ=500) to track acute changes vs developmental trajectory
-- Applies 17 regulation rules to adjust 10 neuromodulatory channels (reward_gain, novelty_gain, etc.)
-- Detects developmental stage (Proliferating, Differentiating, Consolidating, Mature, Stressed)
-- Provides health score (0-1) indicating how well vitals match setpoints
-
-#### 2. Epistemic Model — Four-State Knowledge Tracking with Scarring
-Every cluster has an epistemic state reflecting confidence in knowledge encoded by synaptic topology. State transitions driven by justification records on member synapses.
-
-Features **Epistemic Scarring**: clusters repeatedly Outdated or Contested develop higher skepticism thresholds, requiring stronger evidence for new beliefs.
-
-**States**:
-- **Supported**: Verified against current evidence — cluster protected and stable
-- **Outdated**: Evidence gone stale — needs re-verification (>5000 steps without reinforcement)
-- **Contested**: Conflicting evidence from multiple pathways (>25% minority evidence)
-- **Hypothesis**: Newly formed, not yet verified
-
-**Effects**:
-- Hypothesis: Boost plasticity (1.5x) for member morphons
-- Outdated: Unconsolidate stale synapses to allow relearning
-- Contested: Increase arousal (1.2x) for members to drive re-evaluation
-- Supported: Reward members with energy incentive for verified knowledge
-
-#### 3. Governance Layer — Constitutional Constraints
-Hard invariants **outside the learning loop** that cannot be modified by the system itself. Only a human oracle can amend them. Biological analogy: DNA-coded checkpoint programs epigenetic modification cannot alter.
-
-Enforced at structural decision points (synaptogenesis, division, fusion, apoptosis) overriding learned behavior.
-
-**Constraints**:
-- Max connectivity per morphon (prevents superhub pathology)
-- Max cluster size fraction (prevents domination by single cluster)
-- Max unverified fraction (Hypothesis state limit)
-- Mandatory justification for certain cell types (Motor by default)
-- Cascade depth limit for invalidation traversal
-- Max fusion rate per epoch
-- Max structural changes per epoch (division+fusion+apoptosis)
-- Energy floor (prevents total starvation)
-- Max morphon population cap (auto-derived or explicit)
-
-#### 4. Core Learning Systems
-Operating on different temporal scales via dual-clock scheduler:
-
-**Fast Path (every step)**:
-- Spike propagation (resonance) - O(k·N) not O(N²)
-- Morphon state updates (integrate input, fire/not-fire)
-- Input integration and firing decisions
-
-**Medium Path (every 10 steps)**:
-- Eligibility traces (pre-synaptic × post-synaptic activity)
-- Three-factor weight updates: Δw = eligibility × modulation
-- Tag-and-capture for delayed reward (no backprop)
-- Homeostatics: synaptic scaling, inter-cluster inhibition
-- Endoquilibrium regulation
-- Astrocytic gate updates
-- Inhibitory spike-timing dependent plasticity (iSTDP)
-
-**Slow Path (every 100 steps)**:
-- Synaptogenesis: form new connections based on activity correlation
-- Pruning: remove weak connections
-- Migration in hyperbolic space (Poincaré ball)
-- Structural plasticity preparation
-
-**Glacial Path (every 1000 steps)**:
-- Division: morphon splitting with inheritance
-- Differentiation: change cell type based on activity
-- Fusion: merge morphons into clusters
-- Apoptosis: programmed death with checkpoint/rollback
-- Epistemic state evaluation and effects
-- Memory consolidation (working → episodic → procedural)
-
-#### 5. Memory Systems
-Triple memory system operating at different timescales:
-
-**Working Memory**: Persistent activity patterns (fast timescale)
-- Limited capacity (default: 7 items)
-- Maintained through recurrent activity
-
-**Episodic Memory**: One-shot learning of specific events (medium timescale)
-- Larger capacity (default: 1000 items)
-- Stores consolidated patterns for later replay
-
-**Procedural Memory**: Topology snapshots representing learned procedures (slow timescale)
-- Encodes structural knowledge
-- Enables skill-like behavior
-
-#### 6. Developmental Programs
-Bootstrap architectures creating guaranteed I/O pathways:
-
-**Cortical**: Six-layer structure for sensory processing
-**Hippocampal**: Memory formation and spatial navigation
-**Cerebellar**: Motor coordination and timing
-
-Creates exact I/O matching via `target_input_size`/`target_output_size` parameters ensuring the system has precisely the required number of sensory and motor morphons for interfacing with external systems.
-
-#### 7. Additional Systems
-- **Neuromodulation**: Four broadcast channels (Reward/dopamine, Novelty/ACh, Arousal/noradrenaline, Homeostasis/serotonin)
-- **Resonance Engine**: Spike propagation with delays using efficient O(k·N) algorithm
-- **Homeostasis**: Stability mechanisms (synaptic scaling, inter-cluster inhibition, migration damping)
-- **Diagnostics**: Learning pipeline observability (weight stats, eligibility, tags, firing rates)
-- **Snapshot**: Full system state serialization to JSON
-- **Field** (V2): Bioelektrisches Feld for indirect morphon communication
-- **Justification**: Tracks reinforcement history on synapses for epistemic evaluation
-- **Lineage**: Tracks morphon genealogy for inheritance during division
-
-### Key Design Decisions
-1. **Hyperbolic Geometry**: Morphons live in Poincaré ball. Origin = general/stem, boundary = specialized. Curvature is learnable per-point.
-2. **No Backpropagation**: Credit assignment via eligibility traces + neuromodulatory broadcast + tag-and-capture consolidation.
-3. **Contrastive Reward**: Targeted reward/inhibition at specific output ports breaks mode collapse in classification tasks.
-4. **Parallelization**: Rayon on fast path (morphon updates, spike generation). Feature-gated behind `parallel`.
-
-### Bindings
-- **Python**: PyO3 bindings via `maturin develop --features python`
-- **WASM**: wasm-bindgen powers the Three.js web visualizer in `web/`
-
-## License
-
-Apache-2.0
-
 ## Documentation
 
 - [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — full benchmark guide (what each example tests, how to run, expected results)
@@ -272,13 +212,13 @@ Apache-2.0
 
 ## Citation
 
-If you use Morphon-Core in research, please cite the paper:
+If you use Morphon-Core in research, please cite:
 
 **Paper (preprint):** [Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures](https://doi.org/10.5281/zenodo.19467243) — Zenodo DOI `10.5281/zenodo.19467243`
 
 ```bibtex
 @misc{welsch2026morphogenic,
-  author       = {Welsch, Lisa and Kwiecie\'n, Martyna},
+  author       = {Welsch, Lisa and Kwiecień, Martyna},
   title        = {Morphogenic Intelligence: Runtime Neural Development
                   Beyond Static Architectures},
   year         = {2026},
@@ -287,6 +227,10 @@ If you use Morphon-Core in research, please cite the paper:
   url          = {https://doi.org/10.5281/zenodo.19467243}
 }
 ```
+
+## License
+
+Apache-2.0
 
 ## Version
 
