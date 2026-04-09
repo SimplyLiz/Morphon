@@ -844,6 +844,65 @@ impl System {
         // metabolic/PE/frustration/threshold regulation run on medium path via medium_update().
         self.fast_step(dt as f32);
 
+        // Extract iSTDP params once — used in both the post-spike loop below
+        // and the pre-spike loop inside the spike-delivery section further down.
+        let istdp_params: Option<(f64, f64)> = {
+            use crate::homeostasis::CompetitionMode;
+            if let CompetitionMode::LocalInhibition { istdp_rate, target_rate, .. } =
+                &self.config.homeostasis.competition_mode
+            {
+                let eta = *istdp_rate;
+                let rho0 = target_rate.unwrap_or_else(|| self.endo.target_assoc_firing_rate());
+                let tau = self.config.learning.tau_trace;
+                Some((eta, 2.0 * rho0 * tau))
+            } else {
+                None
+            }
+        };
+
+        // iSTDP post-spike (Vogels 2011): for each fired excitatory morphon, nudge
+        // its incoming inhibitory synapses. Δw = -η × (pre_trace - α).
+        // Runs per fast tick — O(fired_exc × avg_inh_in) ≈ very small.
+        if let Some((eta, alpha)) = istdp_params {
+            let fired_exc_ids: Vec<MorphonId> = self
+                .morphons
+                .values()
+                .filter(|m| {
+                    m.fired
+                        && matches!(
+                            m.cell_type,
+                            CellType::Associative | CellType::Stem | CellType::Motor
+                        )
+                })
+                .map(|m| m.id)
+                .collect();
+
+            for id in fired_exc_ids {
+                // incoming_synapses_mut returns Vec — mutable borrow of topology ends here.
+                let incoming = self.topology.incoming_synapses_mut(id);
+                let inh_edges: Vec<petgraph::graph::EdgeIndex> = incoming
+                    .into_iter()
+                    .filter_map(|(src_id, ei)| {
+                        if self
+                            .morphons
+                            .get(&src_id)
+                            .map(|m| m.cell_type == CellType::InhibitoryInterneuron)
+                            .unwrap_or(false)
+                        {
+                            Some(ei)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for ei in inh_edges {
+                    if let Some(syn) = self.topology.synapse_mut(ei) {
+                        crate::learning::istdp_post(syn, eta, alpha);
+                    }
+                }
+            }
+        }
+
         // Reward-correlated energy: morphons that fire when reward arrives earn energy.
         // Hubs fire for all inputs → reward ±symmetric → net zero income.
         // Specialists fire for correct class → mostly positive → positive income.
@@ -1003,8 +1062,22 @@ impl System {
                     debug_assert_eq!(tgt, spike.target,
                         "stale edge_idx {raw}: target mismatch (got {tgt:?}, want {:?})", spike.target);
                 }
+                // iSTDP pre-spike: check source cell type before mutating topology.
+                let src_is_inh = istdp_params.is_some()
+                    && self
+                        .morphons
+                        .get(&spike.source)
+                        .map(|m| m.cell_type == CellType::InhibitoryInterneuron)
+                        .unwrap_or(false);
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
                     synapse.pre_trace += 1.0;
+                    // iSTDP pre (Vogels 2011): Δw = -η × post_trace.
+                    // Strengthens inhibition when inhibitory pre fires and post was recently active.
+                    if src_is_inh {
+                        if let Some((eta, _)) = istdp_params {
+                            crate::learning::istdp_pre(synapse, eta);
+                        }
+                    }
                 }
             }
         }
@@ -1092,57 +1165,10 @@ impl System {
             }
         }
 
-        // === iSTDP: Update inhibitory interneuron synapses (medium path) ===
-        if tick.medium {
-            if let crate::homeostasis::CompetitionMode::LocalInhibition {
-                istdp_rate,
-                target_rate: target_rate_override,
-                ..
-            } = &self.config.homeostasis.competition_mode
-            {
-                let istdp_rate = *istdp_rate;
-                let target_rate =
-                    target_rate_override.unwrap_or_else(|| self.endo.target_assoc_firing_rate());
-
-                // Collect interneuron IDs
-                let inh_ids: Vec<MorphonId> = self
-                    .morphons
-                    .values()
-                    .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
-                    .map(|m| m.id)
-                    .collect();
-
-                for inh_id in inh_ids {
-                    // Collect post-morphon firing rates before mutating topology
-                    let targets: Vec<(MorphonId, petgraph::graph::EdgeIndex)> =
-                        self.topology.outgoing_synapses_mut(inh_id);
-                    let target_rates: Vec<(petgraph::graph::EdgeIndex, f64)> = targets
-                        .iter()
-                        .map(|(target_id, edge_idx)| {
-                            let post_rate = self
-                                .morphons
-                                .get(target_id)
-                                .map(|m| m.activity_history.mean())
-                                .unwrap_or(0.0);
-                            (*edge_idx, post_rate)
-                        })
-                        .collect();
-
-                    // Now mutate synapses
-                    for (edge_idx, post_rate) in target_rates {
-                        if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
-                            crate::learning::update_istdp(
-                                synapse,
-                                post_rate,
-                                target_rate,
-                                istdp_rate,
-                                dt,
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // === iSTDP: per-spike spike-timing updates (fast path above) ===
+        // Inhibitory plasticity now runs per-delivered-spike via istdp_pre/istdp_post
+        // (Vogels 2011 spike-timing rule) instead of per-medium-tick rate-based updates.
+        // This gives faster hub-breaking convergence and true spike-timing causality.
 
         // === MEDIUM PATH ===
         // Two learning regimes (Frémaux et al. 2013):

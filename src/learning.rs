@@ -258,7 +258,39 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         && synapse.usage_count < 5
 }
 
-/// Inhibitory STDP (Vogels et al. 2011).
+/// Vogels 2011 iSTDP — pre-spike update (inhibitory neuron fires).
+///
+/// Called per-delivered-spike when source is an InhibitoryInterneuron.
+/// Strengthens inhibition proportional to post's recent activity trace,
+/// so active-but-not-suppressed excitatory neurons recruit more inhibition.
+///
+///   Δw = -η × post_trace   (makes weight more negative)
+pub fn istdp_pre(synapse: &mut Synapse, eta: f64) {
+    let dw = -eta * synapse.post_trace;
+    if dw.is_finite() {
+        synapse.weight = (synapse.weight + dw).clamp(-5.0, -0.001);
+    }
+}
+
+/// Vogels 2011 iSTDP — post-spike update (excitatory neuron fires).
+///
+/// Called per-fast-tick for each fired Associative/Stem morphon, per incoming
+/// inhibitory synapse. Adjusts toward equilibrium set by alpha:
+///   α = 2 × ρ₀ × τ_trace
+///
+///   Δw = -η × (pre_trace - α)
+///
+/// When pre has been active (pre_trace > α) the post fires above target →
+/// inhibition strengthens. When pre has been silent (pre_trace < α) →
+/// inhibition weakens. Net effect: self-tuning balance without explicit k-WTA.
+pub fn istdp_post(synapse: &mut Synapse, eta: f64, alpha: f64) {
+    let dw = -eta * (synapse.pre_trace - alpha);
+    if dw.is_finite() {
+        synapse.weight = (synapse.weight + dw).clamp(-5.0, -0.001);
+    }
+}
+
+/// Inhibitory STDP — rate-based version (legacy, superseded by istdp_pre/istdp_post).
 ///
 /// Updates an inhibitory synapse to maintain a target firing rate in the
 /// postsynaptic neuron. The rule:
