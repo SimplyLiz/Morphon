@@ -7,6 +7,26 @@ The MI engine is implemented in Rust ($\sim$10,000 lines, 180+ unit tests). The 
 
 Morphons are stored in a \texttt{HashMap} keyed by stable IDs. The topology is a directed graph using the \texttt{petgraph} crate, with synapses as edge weights. We use generational indices so that references survive birth/death events.
 
+\subsection{Pulse Kernel Lite: Cache-Resident Fast Path}
+\label{sec:pulse_kernel}
+
+The inner simulation loop (spike integration, threshold, refractory) must execute every tick for all active morphons. The naive array-of-structs (AoS) layout --- one \texttt{Morphon} struct per unit, $\sim$480 bytes each --- places the hot fields (voltage, threshold, fired, refractory) far apart in memory. At 300 morphons this scatters $\sim$60~KB across cache lines, causing frequent L1 misses on every tick.
+
+\emph{Pulse Kernel Lite} separates the fast-path fields into seven dense \texttt{Vec<f32>}/\texttt{Vec<bool>} arrays that sit alongside the \texttt{Morphon} structs:
+
+\begin{center}
+\texttt{voltage} | \texttt{threshold} | \texttt{input\_current} | \texttt{fired} | \texttt{refractory} | \texttt{leak\_decay} | \texttt{energy}
+\end{center}
+
+At 300 morphons, all seven arrays fit in $\sim$9.6~KB --- within a typical 32~KB L1 data cache. The source of truth remains the \texttt{Morphon} structs; a lightweight sync protocol propagates changes bidirectionally:
+\begin{itemize}
+  \item \textbf{Fast tick}: hot arrays only. Input currents extracted, voltage integrated, threshold checked, energy gated.
+  \item \textbf{Medium tick (every 10)}: \texttt{sync\_hot\_to\_structs()} before metabolic updates; \texttt{sync\_structs\_to\_hot()} after.
+  \item \textbf{Slow/glacial ticks}: \texttt{rebuild\_hot\_arrays()} after structural changes (synaptogenesis, division, apoptosis).
+\end{itemize}
+
+On the MNIST v2 workload (3000 images, 3 epochs, $\sim$1260 morphons), this reduces wall time from 568~s (V2, GlobalKWTA) to 130~s (V3, LocalInhibition) --- a \textbf{4.4$\times$ speedup} --- with no change in accuracy. The speedup compounds with network size because the fraction of time spent in the inner loop grows with $N$.
+
 \subsection{The Main Loop}
 
 \begin{algorithm}
@@ -52,6 +72,27 @@ The exact form of the readout matters. Three modifications were each individuall
 Each fix individually moved CartPole from $\sim$10 steps (random baseline) toward solving; together they produced the SOLVED result. The diagnostic that surfaces this is the \emph{output discrimination} metric $d_\pm$: the difference $V_1 - V_0$ measured separately for left-leaning and right-leaning pole probes. When $d_+$ and $d_-$ have opposite signs and $|d| > 5$, the readout has learned a usable policy. With any of the three fixes missing, $d_+$ and $d_-$ remain same-signed and the policy is stuck.
 
 The two pathways serve different purposes. Spike-based readout is closed-loop and online (suitable for control). Analog readout is open-loop and trained by a delta rule with DFA backprojection, providing exact gradients on the readout weights without requiring backpropagation through the spike network.
+
+\subsection{Inhibitory Spike-Timing-Dependent Plasticity}
+\label{sec:istdp}
+
+Local inhibition (Section~\ref{sec:exp_mnist}) requires the inhibitory interneuron weights to self-organize without explicit k-WTA supervision. We implement the symmetric iSTDP rule of \citet{vogels2011inhibitory}, applied per-delivered-spike rather than per-medium-tick:
+
+\paragraph{Pre-spike update.} When an inhibitory spike arrives at excitatory neuron $j$:
+\begin{equation}
+  \Delta w_{ij} = -\eta \cdot x_j^{\text{post}}
+\end{equation}
+where $x_j^{\text{post}}$ is the post-synaptic trace. An active excitatory neuron ($x_j > 0$) that receives an inhibitory spike immediately strengthens that inhibitory connection.
+
+\paragraph{Post-spike update.} When excitatory neuron $j$ fires:
+\begin{equation}
+  \Delta w_{ij} = -\eta \cdot (x_i^{\text{pre}} - \alpha), \quad \alpha = 2\rho_0\tau
+\end{equation}
+where $x_i^{\text{pre}}$ is the pre-synaptic trace of the inhibitory interneuron and $\rho_0$ is the target firing rate. When $x_i^{\text{pre}} > \alpha$ (inhibitory interneuron has been more active than the target rate warrants), inhibition strengthens; when $x_i^{\text{pre}} < \alpha$, it weakens. The $\alpha$ term sets the equilibrium point without requiring any global coordination.
+
+Weights are clamped to $[-5.0,\,-0.001]$ --- strictly negative, enforcing Dale's law for inhibitory connections.
+
+The critical difference from the rate-based predecessor is \emph{temporal resolution}. Rate-based iSTDP (fired once per 10 medium ticks, using a 100-tick activity average) could not react to within-burst hub activity; spike-timing iSTDP responds on the timescale of individual spike arrivals, matching the biological timescale of inhibitory short-term plasticity \citep{vogels2011inhibitory}.
 
 \subsection{Three-Factor Learning Rule}
 
