@@ -562,15 +562,21 @@ impl System {
                                     })
                                     .collect();
 
+                            // Hoisted neighborhood buffer — reused across all i to
+                                // eliminate the per-iteration `.collect()` allocation
+                                // (was the #1 hot site post edge-cache fix, ~600 samples).
+                            let mut neighborhood: Vec<(MorphonId, f64)> =
+                                Vec::with_capacity(positions.len());
                             for i in 0..positions.len() {
-                                let (center_id, _, ref center_pos) = positions[i];
+                                let (_center_id, _, ref center_pos) = positions[i];
 
                                 // Find neighbors within radius (including self)
-                                let mut neighborhood: Vec<(MorphonId, f64)> = positions
-                                    .iter()
-                                    .filter(|(_, _, pos)| center_pos.distance(pos) < local_radius)
-                                    .map(|&(id, input, _)| (id, input))
-                                    .collect();
+                                neighborhood.clear();
+                                for &(id, input, ref pos) in &positions {
+                                    if center_pos.distance(pos) < local_radius {
+                                        neighborhood.push((id, input));
+                                    }
+                                }
 
                                 if neighborhood.len() <= local_k {
                                     // Everyone wins in tiny neighborhoods
@@ -580,11 +586,14 @@ impl System {
                                     continue;
                                 }
 
-                                // Top-k by input in this neighborhood
-                                neighborhood.sort_by(|a, b| {
+                                // Top-k by input via partial selection (O(N) instead
+                                // of O(N log N) for full sort — we only need the
+                                // unordered top-k for the winner set).
+                                let k = local_k.min(neighborhood.len());
+                                neighborhood.select_nth_unstable_by(k - 1, |a, b| {
                                     b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
                                 });
-                                for &(id, _) in &neighborhood[..local_k.min(neighborhood.len())] {
+                                for &(id, _) in &neighborhood[..k] {
                                     global_winners.insert(id);
                                 }
                             }
@@ -1035,14 +1044,20 @@ impl System {
                     .map(|(id, _)| *id)
                     .collect();
                 for pre_id in &firing_ids {
-                    for (target_id, _) in self.topology.outgoing(*pre_id) {
+                    // Closure-based iteration: zero allocation per source.
+                    self.topology.for_each_outgoing(*pre_id, |target_id, _| {
                         if !critic_set.contains(&target_id) {
                             set.insert(target_id);
                         }
-                    }
+                    });
                 }
                 set
             };
+
+            // Hoisted incoming-edge buffer reused across every critic + actor
+            // morphon. Eliminates the per-call Vec::from_iter allocation that
+            // showed up as ~5–10k samples in the post-edge-cache profile.
+            let mut incoming_buf: Vec<(MorphonId, petgraph::graph::EdgeIndex)> = Vec::new();
 
             for &id in &morphon_ids {
                 if critic_set.contains(&id) {
@@ -1050,8 +1065,8 @@ impl System {
                     // The critic learns to predict V(s) by minimizing TD error.
                     // Weight update depends only on TD error × pre-synaptic trace,
                     // independent of the actor's eligibility computation.
-                    let incoming = self.topology.incoming_synapses_mut(id);
-                    for (_, edge_idx) in incoming {
+                    self.topology.collect_incoming_edges_into(id, &mut incoming_buf);
+                    for &(_, edge_idx) in &incoming_buf {
                         if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
                             // Decay traces (same as actor)
                             let trace_decay = (-dt / self.config.learning.tau_trace).exp();
@@ -1125,9 +1140,9 @@ impl System {
                         let th = self.config.homeostasis.threshold_astrocytic;
                         1.0 / (1.0 + (-(astro_state - th)).exp())
                     };
-                    let incoming = self.topology.incoming_synapses_mut(id);
+                    self.topology.collect_incoming_edges_into(id, &mut incoming_buf);
 
-                    for (pre_id, edge_idx) in incoming {
+                    for &(pre_id, edge_idx) in &incoming_buf {
                         let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
                         if let Some(synapse) = self.topology.synapse_mut(edge_idx) {
@@ -1262,26 +1277,28 @@ impl System {
                 })
                 .collect();
 
+            // Hoisted incoming-edge buffer for the combined-pass loop.
+            let mut edge_buf: Vec<(MorphonId, petgraph::graph::EdgeIndex)> = Vec::new();
+
             for &(id, fired, post_rate, plasticity_rate, in_exploration, frust_level, is_assoc) in
                 &morphon_states
             {
-                let incoming = self.topology.incoming_synapses_mut(id);
-                let edge_data: Vec<(MorphonId, petgraph::graph::EdgeIndex)> = incoming;
-                if edge_data.is_empty() {
+                self.topology.collect_incoming_edges_into(id, &mut edge_buf);
+                if edge_buf.is_empty() {
                     continue;
                 }
 
                 // --- Pass 1 (assoc only): compute L1 norm for weight normalization ---
                 let (norm_scale, do_normalize) = if is_assoc {
                     let mut pos_sum = 0.0_f64;
-                    for &(_, ei) in &edge_data {
+                    for &(_, ei) in &edge_buf {
                         if let Some(syn) = self.topology.graph.edge_weight(ei) {
                             if syn.weight > 0.0 {
                                 pos_sum += syn.weight;
                             }
                         }
                     }
-                    let target_norm = edge_data.len() as f64 * 0.3;
+                    let target_norm = edge_buf.len() as f64 * 0.3;
                     if pos_sum > 0.01 {
                         let tol = 0.1 + 0.15 * plasticity_rate.min(2.0);
                         ((target_norm / pos_sum).clamp(1.0 - tol, 1.0 + tol), true)
@@ -1293,7 +1310,7 @@ impl System {
                 };
 
                 // --- Pass 2: apply normalization + compensatory plasticity + frustration ---
-                for &(pre_id, edge_idx) in &edge_data {
+                for &(pre_id, edge_idx) in &edge_buf {
                     let pre_fired = self.morphons.get(&pre_id).map_or(false, |m| m.fired);
 
                     if let Some(synapse) = self.topology.synapse_mut(edge_idx) {

@@ -70,24 +70,29 @@ impl ResonanceEngine {
         // Generate spike events for each firing morphon's outgoing connections.
         // Spike strength is scaled by source morphon energy — metabolically
         // stressed morphons produce weaker signals (graceful degradation).
+        //
+        // Per-source allocation pattern: we still allocate one Vec per firing
+        // morphon (rayon's flat_map needs an IntoIterator), but we use the
+        // closure-based `for_each_outgoing_with_edge` so the topology helper
+        // itself does not allocate an intermediate Vec. The per-source Vec is
+        // pre-sized to a typical fan-out (32) to avoid 0→4→8→16→32 reallocs.
         let spike_gen = |&source_id: &MorphonId| -> Vec<SpikeEvent> {
             let energy_factor = morphons.get(&source_id)
                 .map(|m| (m.energy / 0.6).min(1.0))
                 .unwrap_or(1.0);
-            topology.outgoing_with_edge(source_id)
-                .into_iter()
-                .map(|(target_id, edge_idx, synapse)| {
-                    let eff_delay = synapse.effective_delay();
-                    SpikeEvent {
-                        source: source_id,
-                        target: target_id,
-                        strength: synapse.weight * energy_factor,
-                        delay: eff_delay,
-                        initial_delay: eff_delay,
-                        edge_idx: edge_idx.index() as u32,
-                    }
-                })
-                .collect()
+            let mut spikes: Vec<SpikeEvent> = Vec::with_capacity(32);
+            topology.for_each_outgoing_with_edge(source_id, |target_id, edge_idx, synapse| {
+                let eff_delay = synapse.effective_delay();
+                spikes.push(SpikeEvent {
+                    source: source_id,
+                    target: target_id,
+                    strength: synapse.weight * energy_factor,
+                    delay: eff_delay,
+                    initial_delay: eff_delay,
+                    edge_idx: edge_idx.index() as u32,
+                });
+            });
+            spikes
         };
 
         #[cfg(feature = "parallel")]
