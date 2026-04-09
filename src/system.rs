@@ -863,10 +863,24 @@ impl System {
         //    Hot path: uses the cached edge_idx captured at propagate-time
         //    instead of `synapse_between`, eliminating ~7K samples/run of
         //    HashMap+SipHash lookups (profiled with samply on standard mnist).
+        //
+        //    Safety: spike delays (min 0.5 ticks, typical < 10) are far shorter
+        //    than the slow-path prune period (100 steps), so edge indices are
+        //    stable for the lifetime of any in-flight spike. Debug builds assert
+        //    this invariant. `None` on spikes from old snapshots — skip those.
         for spike in &delivered {
-            let ei = petgraph::graph::EdgeIndex::new(spike.edge_idx as usize);
-            if let Some(synapse) = self.topology.synapse_mut(ei) {
-                synapse.pre_trace += 1.0;
+            if let Some(raw) = spike.edge_idx {
+                let ei = petgraph::graph::EdgeIndex::new(raw as usize);
+                #[cfg(debug_assertions)]
+                if let Some((src, tgt)) = self.topology.edge_endpoint_ids(ei) {
+                    debug_assert_eq!(src, spike.source,
+                        "stale edge_idx {raw}: source mismatch (got {src:?}, want {:?})", spike.source);
+                    debug_assert_eq!(tgt, spike.target,
+                        "stale edge_idx {raw}: target mismatch (got {tgt:?}, want {:?})", spike.target);
+                }
+                if let Some(synapse) = self.topology.synapse_mut(ei) {
+                    synapse.pre_trace += 1.0;
+                }
             }
         }
         let morphon_ids: Vec<MorphonId> = self.morphons.keys().copied().collect();

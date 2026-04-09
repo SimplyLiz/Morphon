@@ -221,6 +221,14 @@ impl Topology {
         self.graph.edge_weight_mut(edge)
     }
 
+    /// Returns the (source MorphonId, target MorphonId) for an edge, or None
+    /// if the index is out of range. Used in debug assertions to detect stale
+    /// cached EdgeIndex values after swap-remove pruning.
+    pub fn edge_endpoint_ids(&self, edge: EdgeIndex) -> Option<(MorphonId, MorphonId)> {
+        let (src, tgt) = self.graph.edge_endpoints(edge)?;
+        Some((self.graph[src], self.graph[tgt]))
+    }
+
     /// Get the synapse between two specific Morphons.
     pub fn synapse_between(&self, from: MorphonId, to: MorphonId) -> Option<(EdgeIndex, &Synapse)> {
         let from_idx = self.id_to_node.get(&from)?;

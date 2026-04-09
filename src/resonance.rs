@@ -33,9 +33,12 @@ pub struct SpikeEvent {
     /// via direct edge lookup instead of paying a `synapse_between` HashMap
     /// walk per spike. Stored as raw u32 to keep SpikeEvent free of petgraph
     /// types in its serde representation; reconstruct with
-    /// `petgraph::graph::EdgeIndex::new(edge_idx as usize)`.
+    /// `petgraph::graph::EdgeIndex::new(raw as usize)`.
+    ///
+    /// `None` when deserialized from old snapshots — the delivery loop skips
+    /// the pre_trace bump in that case rather than silently updating edge 0.
     #[serde(default)]
-    pub edge_idx: u32,
+    pub edge_idx: Option<u32>,
 }
 
 /// The resonance engine manages signal propagation through the network.
@@ -89,7 +92,7 @@ impl ResonanceEngine {
                     strength: synapse.weight * energy_factor,
                     delay: eff_delay,
                     initial_delay: eff_delay,
-                    edge_idx: edge_idx.index() as u32,
+                    edge_idx: Some(edge_idx.index() as u32),
                 });
             });
             spikes
@@ -215,7 +218,7 @@ mod tests {
             strength: 0.5,
             delay: 3.0,
             initial_delay: 3.0,
-            edge_idx: 0,
+            edge_idx: None,
         });
 
         // Step 1: delay 3 -> 2, not delivered
@@ -245,7 +248,7 @@ mod tests {
             strength: 0.7,
             delay: 0.5, // will be delivered in one step with dt=1.0
             initial_delay: 0.5,
-            edge_idx: 0,
+            edge_idx: None,
         });
 
         let _delivered = engine.deliver(&mut morphons, 1.0);
@@ -267,7 +270,7 @@ mod tests {
             strength: 0.3,
             delay: 0.0,
             initial_delay: 0.0,
-            edge_idx: 0,
+            edge_idx: None,
         });
         engine.pending_spikes.push_back(SpikeEvent {
             source: 3,
@@ -275,7 +278,7 @@ mod tests {
             strength: 0.4,
             delay: 0.0,
             initial_delay: 0.0,
-            edge_idx: 0,
+            edge_idx: None,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);
@@ -295,7 +298,7 @@ mod tests {
             strength: 0.5,
             delay: 5.0,
             initial_delay: 5.0,
-            edge_idx: 0,
+            edge_idx: None,
         });
         assert_eq!(engine.pending_count(), 1);
         engine.clear();
@@ -314,11 +317,36 @@ mod tests {
             strength: 0.5,
             delay: 0.0,
             initial_delay: 0.0,
-            edge_idx: 0,
+            edge_idx: None,
         });
 
         let delivered = engine.deliver(&mut morphons, 1.0);
         assert_eq!(delivered.len(), 1); // spike is consumed even if target missing
+    }
+
+    #[test]
+    fn propagate_caches_correct_edge_idx() {
+        // Verifies that edge_idx in the generated SpikeEvent matches the actual
+        // EdgeIndex returned by the topology, so the delivery loop's pre_trace
+        // bump targets the right synapse.
+        let mut topo = Topology::new();
+        topo.add_morphon(1);
+        topo.add_morphon(2);
+        let ei = topo.add_synapse(1, 2, Synapse::new(0.5)).unwrap();
+
+        let mut morphons = HashMap::new();
+        morphons.insert(1, make_morphon(1, true));
+        morphons.insert(2, make_morphon(2, false));
+
+        let mut engine = ResonanceEngine::new();
+        engine.propagate(&morphons, &topo);
+
+        assert_eq!(engine.pending_count(), 1);
+        let spike = engine.pending_spikes.front().unwrap();
+        assert_eq!(spike.source, 1);
+        assert_eq!(spike.target, 2);
+        assert_eq!(spike.edge_idx, Some(ei.index() as u32),
+            "cached edge_idx must match the actual EdgeIndex");
     }
 
     #[test]
