@@ -137,7 +137,31 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
     sys
 }
 
-fn create_v2(kwta_fraction: f64, local: bool) -> System {
+/// V2 (V2 architecture with V2 GlobalKWTA competition) and V3
+/// (V2 architecture with biological LocalInhibition) share everything except the
+/// competition mode. Single function so the comparison is paired.
+fn create_v2(kwta_fraction: f64, local: bool, local_inhibition: bool) -> System {
+    let competition_mode = if local_inhibition {
+        // V3 — biological lateral inhibition via iSTDP-tuned interneurons
+        // (Vogels et al. 2011). Created during developmental Phase 4.5;
+        // weights self-tune toward target_rate. No algorithmic k-WTA.
+        morphon_core::homeostasis::CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.10,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.5,
+            inhibition_radius: 0.0,
+            target_rate: Some(0.05),
+        }
+    } else {
+        // V2 — algorithmic top-k (Diehl & Cook style), with optional spatial
+        // neighborhoods when `local` is set.
+        morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
+            fraction: kwta_fraction,
+            local_radius: if local { 5.0 } else { 0.0 },
+            local_k: if local { 5 } else { 3 },
+        }
+    };
+
     let mut tm = morphon_core::TargetMorphology::cortical(6);
     tm.regions[0].target_density = 50;
     tm.regions[1].target_density = 150;
@@ -169,11 +193,7 @@ fn create_v2(kwta_fraction: f64, local: bool) -> System {
             ..Default::default()
         },
         homeostasis: HomeostasisParams {
-            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-                fraction: kwta_fraction,
-                local_radius: if local { 5.0 } else { 0.0 },
-                local_k: if local { 5 } else { 3 },
-            },
+            competition_mode,
             ..Default::default()
         },
         // Frozen during training — V2 features active during development only
@@ -498,10 +518,10 @@ fn main() {
         acc
     } else { 0.0 };
 
-    // === V2 ===
+    // === V2 (GlobalKWTA — algorithmic top-k) ===
     eprintln!("━━━ V2 ━━━");
     let t1 = Instant::now();
-    let mut v2 = create_v2(kwta, use_local_kwta);
+    let mut v2 = create_v2(kwta, use_local_kwta, false);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v2.inspect().total_morphons, v2.inspect().total_synapses, t1.elapsed().as_secs_f64());
     let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);
@@ -509,7 +529,27 @@ fn main() {
         &test_images, &test_labels, n_train, n_epochs, "V2  ", &mut rng_v);
     let v2_m = v2.inspect().total_morphons;
     let v2_s = v2.inspect().total_synapses;
+    let v2_duration_s = t1.elapsed().as_secs();
     eprintln!("  V2: {:.1}% | m={} s={} ({:.0}s)\n", v2_acc, v2_m, v2_s, t1.elapsed().as_secs_f64());
+
+    // === V3 (LocalInhibition — biological iSTDP interneurons) ===
+    // Same architecture as V2; only the lateral-inhibition mechanism differs.
+    // Investigates whether moving competition off the algorithmic O(N²) loop
+    // and onto the parallel spike-propagation path is faster AND/OR more
+    // accurate. Recovery test is V2-only for now (apples-to-apples is the
+    // train+test phase; recovery comparison is a follow-up).
+    eprintln!("━━━ V3 (LocalInhibition) ━━━");
+    let t_v3 = Instant::now();
+    let mut v3 = create_v2(kwta, use_local_kwta, true);
+    eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
+        v3.inspect().total_morphons, v3.inspect().total_synapses, t_v3.elapsed().as_secs_f64());
+    let mut rng_v3 = rand::rngs::StdRng::seed_from_u64(seed);
+    let v3_acc = train_and_eval(&mut v3, &train_images, &train_labels,
+        &test_images, &test_labels, n_train, n_epochs, "V3  ", &mut rng_v3);
+    let v3_m = v3.inspect().total_morphons;
+    let v3_s = v3.inspect().total_synapses;
+    let v3_duration_s = t_v3.elapsed().as_secs();
+    eprintln!("  V3: {:.1}% | m={} s={} ({:.0}s)\n", v3_acc, v3_m, v3_s, v3_duration_s);
 
     // === RECEPTIVE FIELD DUMP ===
     // Export top-K associative morphon RFs (S→A weights mapped to 28×28 pixel grid)
@@ -552,18 +592,19 @@ fn main() {
     // === SUMMARY ===
     if fast {
         eprintln!("╔═══════════════════════════════════════════╗");
-        eprintln!("║  V2 (fast):     {:>5.1}%                    ║", v2_acc);
-        eprintln!("║  Morphons: {}  Synapses: {}{}║", v2_m, v2_s,
-            " ".repeat(22 - format!("{}  Synapses: {}", v2_m, v2_s).len().min(22)));
+        eprintln!("║  V2 (GlobalKWTA):    {:>5.1}%  ({:>4}s)       ║", v2_acc, v2_duration_s);
+        eprintln!("║  V3 (LocalInhib.):   {:>5.1}%  ({:>4}s)       ║", v3_acc, v3_duration_s);
         eprintln!("╚═══════════════════════════════════════════╝");
     } else {
         eprintln!("╔═══════════════════════════════════════════╗");
-        eprintln!("║  Baseline:      {:>5.1}%                    ║", base_acc);
-        eprintln!("║  V2:            {:>5.1}%  ({:+.1}pp)            ║", v2_acc, v2_acc - base_acc);
-        eprintln!("║  Post-damage:   {:>5.1}%                    ║", damaged_acc);
-        eprintln!("║  Post-recovery: {:>5.1}%  ({:+.1}pp)            ║", recovery_acc, recovery_acc - damaged_acc);
-        eprintln!("║  Morphons: {} → {} → {}{}║", before, before - n_kill, after,
-            " ".repeat(27 - format!("{} → {} → {}", before, before - n_kill, after).len()));
+        eprintln!("║  Baseline:           {:>5.1}%                ║", base_acc);
+        eprintln!("║  V2 (GlobalKWTA):    {:>5.1}%  ({:+.1}pp vs BASE)  ║", v2_acc, v2_acc - base_acc);
+        eprintln!("║  V3 (LocalInhib.):   {:>5.1}%  ({:+.1}pp vs V2)    ║", v3_acc, v3_acc - v2_acc);
+        eprintln!("║  V2 wall: {:>4}s   V3 wall: {:>4}s            ║", v2_duration_s, v3_duration_s);
+        eprintln!("║  Post-damage:        {:>5.1}%                ║", damaged_acc);
+        eprintln!("║  Post-recovery:      {:>5.1}%  ({:+.1}pp)        ║", recovery_acc, recovery_acc - damaged_acc);
+        eprintln!("║  Morphons (V2): {} → {} → {}{}║", before, before - n_kill, after,
+            " ".repeat(22 - format!("{} → {} → {}", before, before - n_kill, after).len().min(22)));
         eprintln!("╚═══════════════════════════════════════════╝");
     }
 
@@ -574,11 +615,11 @@ fn main() {
     eprintln!("  steps/image: {}, medium_period: 10, slow_period: 5000", STEPS_PER_IMAGE);
     eprintln!("  k-WTA: {:.2}{}", kwta, if use_local_kwta { " (local)" } else { " (global)" });
     eprintln!("  Mature threshold: 0.3 (Endo)");
-    eprintln!("  total time: {:.0}s", t1.elapsed().as_secs_f64());
+    eprintln!("  V2 wall: {}s   V3 wall: {}s", v2_duration_s, v3_duration_s);
 
     // Save
     let version = env!("CARGO_PKG_VERSION");
-    let total_duration_s = t1.elapsed().as_secs();
+    let total_duration_s = v2_duration_s + v3_duration_s;
     let results = json!({
         "benchmark": "mnist_v2_supervised", "version": version,
         "profile": profile, "seed": seed,
@@ -593,9 +634,25 @@ fn main() {
             "kwta_local": use_local_kwta,
             "mature_threshold": 0.3,
         },
-        "baseline_acc": base_acc, "v2_acc": v2_acc,
+        "baseline_acc": base_acc,
+        "v2_acc": v2_acc,
+        "v2_morphons": v2_m,
+        "v2_synapses": v2_s,
+        "v2_duration_s": v2_duration_s,
+        "v2_competition_mode": "GlobalKWTA",
+        "v3_acc": v3_acc,
+        "v3_morphons": v3_m,
+        "v3_synapses": v3_s,
+        "v3_duration_s": v3_duration_s,
+        "v3_competition_mode": "LocalInhibition",
+        "v3_local_inhibition_params": {
+            "interneuron_ratio": 0.10,
+            "istdp_rate": 0.005,
+            "initial_inh_weight": -0.5,
+            "inhibition_radius": 0.0,
+            "target_rate": 0.05,
+        },
         "damaged_acc": damaged_acc, "recovery_acc": recovery_acc,
-        "v2_morphons": v2_m, "v2_synapses": v2_s,
         "total_duration_s": total_duration_s,
     });
     let dir = format!("docs/benchmark_results/v{}", version);
