@@ -87,6 +87,23 @@ impl Topology {
             .collect()
     }
 
+    /// Like `outgoing`, but also returns the EdgeIndex for each connection.
+    /// Used by `resonance::propagate` to cache the edge index in SpikeEvents,
+    /// which lets the spike-delivery loop bump pre_trace via direct edge lookup
+    /// instead of paying a `synapse_between` HashMap walk per spike.
+    pub fn outgoing_with_edge(&self, id: MorphonId) -> Vec<(MorphonId, EdgeIndex, &Synapse)> {
+        let Some(&idx) = self.id_to_node.get(&id) else {
+            return Vec::new();
+        };
+        self.graph
+            .edges_directed(idx, petgraph::Direction::Outgoing)
+            .map(|edge| {
+                let target_id = self.graph[edge.target()];
+                (target_id, edge.id(), edge.weight())
+            })
+            .collect()
+    }
+
     /// Get all incoming synapses for a Morphon (immutable).
     pub fn incoming_synapses(&self, id: MorphonId) -> Vec<(MorphonId, &Synapse)> {
         let Some(&idx) = self.id_to_node.get(&id) else {
@@ -130,9 +147,86 @@ impl Topology {
             .collect()
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    // Allocation-free edge iteration helpers.
+    //
+    // The Vec-returning methods above each allocate a fresh Vec on every call.
+    // Profiling (samply, mnist_v2 --fast) showed `Vec::from_iter` from these
+    // collect() calls as the #1 hot site after the EdgeIndex cache fix landed
+    // (~10k samples on a 3-min run, spread across 4 specializations). The two
+    // helpers below let hot callers either use a closure (zero allocation) or
+    // a hoisted reusable buffer (one allocation amortized across many calls).
+    //
+    // Cold callers can keep using the Vec-returning methods — clarity over
+    // micro-perf where it doesn't show up in the profile.
+    // ────────────────────────────────────────────────────────────────────
+
+    /// Closure-based outgoing iteration (zero allocation).
+    pub fn for_each_outgoing<F>(&self, id: MorphonId, mut f: F)
+    where
+        F: FnMut(MorphonId, &Synapse),
+    {
+        if let Some(&idx) = self.id_to_node.get(&id) {
+            for edge in self.graph.edges_directed(idx, petgraph::Direction::Outgoing) {
+                f(self.graph[edge.target()], edge.weight());
+            }
+        }
+    }
+
+    /// Closure-based outgoing iteration that also yields the EdgeIndex.
+    pub fn for_each_outgoing_with_edge<F>(&self, id: MorphonId, mut f: F)
+    where
+        F: FnMut(MorphonId, EdgeIndex, &Synapse),
+    {
+        if let Some(&idx) = self.id_to_node.get(&id) {
+            for edge in self.graph.edges_directed(idx, petgraph::Direction::Outgoing) {
+                f(self.graph[edge.target()], edge.id(), edge.weight());
+            }
+        }
+    }
+
+    /// Collect incoming `(source_id, edge_index)` pairs into a caller-provided
+    /// buffer (cleared first). The caller can then drop the borrow on `self`
+    /// and call `synapse_mut(edge_index)` freely — solves the "iterate then
+    /// mutate" pattern without allocating a fresh Vec per morphon.
+    pub fn collect_incoming_edges_into(
+        &self,
+        id: MorphonId,
+        buf: &mut Vec<(MorphonId, EdgeIndex)>,
+    ) {
+        buf.clear();
+        if let Some(&idx) = self.id_to_node.get(&id) {
+            for edge in self.graph.edges_directed(idx, petgraph::Direction::Incoming) {
+                buf.push((self.graph[edge.source()], edge.id()));
+            }
+        }
+    }
+
+    /// Collect outgoing `(target_id, edge_index)` pairs into a caller buffer.
+    pub fn collect_outgoing_edges_into(
+        &self,
+        id: MorphonId,
+        buf: &mut Vec<(MorphonId, EdgeIndex)>,
+    ) {
+        buf.clear();
+        if let Some(&idx) = self.id_to_node.get(&id) {
+            for edge in self.graph.edges_directed(idx, petgraph::Direction::Outgoing) {
+                buf.push((self.graph[edge.target()], edge.id()));
+            }
+        }
+    }
+
     /// Get a mutable reference to a synapse by edge index.
     pub fn synapse_mut(&mut self, edge: EdgeIndex) -> Option<&mut Synapse> {
         self.graph.edge_weight_mut(edge)
+    }
+
+    /// Returns the (source MorphonId, target MorphonId) for an edge, or None
+    /// if the index is out of range. Used in debug assertions to detect stale
+    /// cached EdgeIndex values after swap-remove pruning.
+    pub fn edge_endpoint_ids(&self, edge: EdgeIndex) -> Option<(MorphonId, MorphonId)> {
+        let (src, tgt) = self.graph.edge_endpoints(edge)?;
+        Some((self.graph[src], self.graph[tgt]))
     }
 
     /// Get the synapse between two specific Morphons.

@@ -1,13 +1,20 @@
 # MORPHON — Complete Development Roadmap
 ## From Validated Prototype to Morphogenetic Intelligence Platform
-### TasteHub GmbH — April 2026
+### TasteHub GmbH — April 2026 *(last reconciled against code: 2026-04-09)*
+
+> **Status note (2026-04-09):** This roadmap was written before Phase 0 and
+> Phase 1 landed. Current crate version is **4.0.0**. Phase 0 (paper + release)
+> and Phase 1 (local inhibitory competition with iSTDP) are **already shipped**.
+> Sparse-eligibility work for v4.0.0 is in progress on
+> `feat/sparse-eligibility-v4.0.0`. Dates in later phases are forecasts from
+> the original plan and have not been re-baselined.
 
 ---
 
 ## Current State (What Exists Today)
 
 ### Validated & Working
-- **morphon-core** Rust crate: 6,000+ lines, 154 tests, 24+ commits
+- **morphon-core** Rust crate: v4.0.0, 154+ tests
 - **CartPole-v1: SOLVED** (avg=195.2, episode 895, best=468)
 - **Endoquilibrium V1**: 550 lines, 7 vitals, 6 rules, 5 developmental stages, dynamic stage transitions validated
 - **Episode-gated tag-and-capture**: selective consolidation, weight entropy maintained
@@ -17,9 +24,11 @@
 - **Encoding discovery**: sparse zero-bias encoding + centered sigmoid + learnable bias
 - **Activity stabilization**: Jaccard=0.97 with reduced associative noise
 - **CMA-ES meta-optimization**: validated teach_hidden dominance, TD critic for RL
+- **Local inhibitory competition (iSTDP, Vogels 2011)**: `CellType::InhibitoryInterneuron`, `create_local_inhibitory_interneurons()` at bootstrap + cluster formation, iSTDP rule in `learning.rs`, medium-path update in `system.rs`, integrated into Endoquilibrium as its own regulated cell type. *(Phase 1 — shipped.)*
+- **Open-source release**: LICENSE, CITATION.cff, CONTRIBUTING, CHANGELOG, Zenodo DOI `10.5281/zenodo.19467243`, paper PDF in repo, Morphon / Morphon-OSS two-repo workflow. *(Phase 0 — shipped.)*
 
 ### Specified & Ready to Build
-- Endoquilibrium V2 spec (local inhibition + iSTDP + astrocytic gate + Phase A/B levers)
+- Endoquilibrium V2 spec — astrocytic gate + Phase A/B levers (local inhibition / iSTDP portion already shipped; see above)
 - Pulse Kernel Lite v2.0 spec (4 hot arrays, 6–8 hours)
 - Pulse Kernel v1.0 spec (full SoA + CSR — deferred, kept as reference)
 - LocalParams spec (per-morphon meta-plasticity — merged into Endo as Phase 2)
@@ -31,46 +40,49 @@
 
 ---
 
-## Phase 0: Publication & Funding (NOW — April 2026)
+## Phase 0: Publication & Funding — ✅ DONE (April 2026)
 
-**Duration: 1–2 weeks. Zero code changes.**
+**Shipped deliverables:**
 
-| Deliverable | Status | Action |
-|---|---|---|
-| arXiv preprint | Content complete, needs writing | Write the paper: architecture, failure-mode catalogue, Endoquilibrium analysis, CartPole SOLVED, MNIST self-healing, encoding discovery |
-| FFG Kleinprojekt | Application v2 ready | Fill Martyna's name, align costs with KLF 3.2, attach Saldenliste + CVs, submit via eCall |
-| MNIST diagnostics | Partially done | Sensory-only baseline, damage+recovery sweep (5 seeds), confusion matrix, per-class accuracy — for paper figures |
+| Deliverable | Status |
+|---|---|
+| Paper (`docs/paper/Morphogenic_Intelligence.tex` → PDF) | Done — content written, audited for fake citations, shipped as PDF in Morphon-OSS |
+| Zenodo DOI `10.5281/zenodo.19467243` | Published, wired into README / CITATION.cff |
+| Open-source release scaffolding | LICENSE, CITATION.cff, CONTRIBUTING, CHANGELOG, two-repo Morphon / Morphon-OSS workflow |
+| MNIST diagnostics for paper figures | Present in `docs/benchmark_results/` through v3.0.0; v4.0.0 sweep in progress |
 
-**Gate:** Paper on arXiv. FFG submitted. These create the timestamp and unlock funding.
+**Open (not tracked in this doc — check elsewhere):** FFG Kleinprojekt submission
+state, arXiv posting vs. Zenodo-only distribution.
 
 **Why this is Phase 0:** Everything after this builds on the credibility the paper and funding provide. Without the paper, the work isn't citable. Without the FFG, the next 12 months of development isn't funded.
 
 ---
 
-## Phase 1: Local Inhibitory Competition (May–June 2026)
+## Phase 1: Local Inhibitory Competition — ✅ DONE (landed pre-v4.0.0)
 
-**Duration: 3–4 weeks. The most important architectural change in the roadmap.**
+**Replaced global k-WTA with biologically correct local inhibition via iSTDP
+(Vogels et al. 2011). Integrated into Endoquilibrium as a regulated cell type
+rather than a separate subsystem.**
 
-**Goal:** Replace global k-WTA with biologically correct local inhibition using iSTDP (Vogels et al. 2011). This is the prerequisite for every subsequent phase.
+**Where it lives in the code:**
 
-| Step | What | Effort |
-|---|---|---|
-| 1.1 | Extract hardcoded winner_boost to HomeostasisParams | 1 hour |
-| 1.2 | CompetitionMode enum (GlobalKWTA / LocalInhibition) for A/B testing | 2 hours |
-| 1.3 | iSTDP rule in learning.rs for inhibitory synapses | 3 hours |
-| 1.4 | create_local_inhibitory_interneurons() — intra-cluster wiring | 4 hours |
-| 1.5 | Activity-dependent threshold adaptation (replaces winner-list boost) | 2 hours |
-| 1.6 | LocalInhibition branch in step() — skip global sort | 3 hours |
-| 1.7 | Validation metrics: population sparsity, lifetime sparsity, winner diversity entropy | 3 hours |
-| 1.8 | A/B benchmark: CartPole, 10 seeds per mode | Compute |
-| 1.9 | A/B benchmark: MNIST, 10 seeds per mode | Compute |
-| 1.10 | If validated: delete GlobalKWTA code path | 1 hour |
+| Step | Landed in |
+|---|---|
+| `CellType::InhibitoryInterneuron` + activation/receptors | `src/types.rs:37` |
+| iSTDP rule | `src/learning.rs:261` |
+| `create_local_inhibitory_interneurons()` — bootstrap wiring | `src/developmental.rs:278` |
+| `create_local_inhibitory_interneurons()` — intra-cluster wiring at cluster formation | `src/morphogenesis.rs:912` |
+| Medium-path iSTDP update in `step()` | `src/system.rs:938` |
+| iSTDP params (`iSTDPParams`: rate, target firing rate) | `src/homeostasis.rs:39` |
+| Interneurons as dedicated Endo target slot (`type_targets[6]`) | `src/endoquilibrium.rs:259`, `:450` |
+| Interneurons excluded from synaptogenesis pool + apoptosis protection | `src/morphogenesis.rs:139`, `:1242` |
+| Astrocytic gate bypass for `InhibitoryInterneuron` | `src/system.rs:1116` |
+| New Associative morphons wired to nearby interneurons at birth | `src/morphogenesis.rs:336`, `src/system.rs:1477` |
 
-**Gate:** CartPole not regressed (avg ≥ 195). MNIST winner diversity entropy significantly improved.
-
-**Expected impact:** MNIST accuracy from 26% to 40–60% (diverse representations → readout has features to learn from). CartPole unchanged or slightly improved.
-
-**Paper update:** Add competition comparison results to arXiv v2.
+**Open questions (not blockers, but worth a pass during Phase 3 MNIST push):**
+- `GlobalKWTA` code path — never removed; `kwta_local` flag still exists in benchmark configs (see `docs/benchmark_results/v4.0.0/mnist_v2_*.json`). Step 1.10 (delete GlobalKWTA) was never executed.
+- Formal A/B benchmark (CartPole × 10 seeds, MNIST × 10 seeds) as specified in steps 1.8–1.9 was not run as a standalone comparison.
+- Expected MNIST lift (26% → 40–60%) not yet observed; latest v4.0.0 fast-profile run reports `v2_acc=17.5%` but on 500 train / 2 epochs / fast profile — not comparable to the 26% baseline.
 
 ---
 
@@ -297,15 +309,15 @@
 
 ## Version Summary
 
-| Version | Phase | Key Feature | Target Date |
+| Version | Phase | Key Feature | Status |
 |---|---|---|---|
-| **v2.1** (current) | — | CartPole SOLVED, Endoquilibrium V1, MNIST 26% | April 2026 |
-| **v2.2** | Phase 0 | arXiv paper + FFG submitted | April 2026 |
-| **v3.0** | Phase 1 | Local inhibitory competition (iSTDP) | June 2026 |
-| **v3.1** | Phase 2A | Endo V2 Phase A levers | July 2026 |
-| **v3.2** | Phase 2A+ | Astrocytic gating (per-morphon plasticity gate) | August 2026 |
-| **v3.3** | Phase 2B | Structural plasticity regulation | August 2026 |
-| **v4.0** | Phase 3 | MNIST >50%, paper v2, conference submission | September 2026 |
+| **v2.1** | — | CartPole SOLVED, Endoquilibrium V1, MNIST 26% | ✅ shipped |
+| **v2.2** | Phase 0 | Paper PDF + Zenodo DOI + OSS release scaffolding | ✅ shipped |
+| **v3.0** | Phase 1 | Local inhibitory competition (iSTDP) | ✅ shipped |
+| **v3.1** | Phase 2A | Endo V2 Phase A levers | ✅ shipped (as part of current Endo) |
+| **v3.2** | Phase 2A+ | Astrocytic gating (per-morphon plasticity gate) | ✅ shipped (see `src/system.rs:1116`) |
+| **v3.3** | Phase 2B | Structural plasticity regulation | partial — verify against code |
+| **v4.0** (current branch) | Phase 3 | Sparse eligibility + MNIST breakthrough push | 🚧 `feat/sparse-eligibility-v4.0.0` |
 | **v5.0** | Phase 4 | Python SDK on PyPI | November 2026 |
 | **v5.1** | Phase 5 | Edge deployment, TasteHub PoC | January 2027 |
 | **v6.0** | Phase 6 | MorphonGenome | February 2027 |
