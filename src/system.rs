@@ -252,6 +252,14 @@ pub struct System {
     /// Cached per-morphon synapse maintenance costs. Recomputed on slow ticks
     /// (when topology changes via synaptogenesis/pruning) instead of every step.
     pub(crate) cached_maintenance_costs: HashMap<MorphonId, f64>,
+
+    /// Hot-path arrays for cache-friendly spike processing.
+    /// Rebuilt on slow/glacial path, synced to structs on medium path.
+    pub(crate) hot: crate::hot_arrays::HotArrays,
+
+    /// Endoquilibrium threshold bias cached as f32 for hot-path use.
+    /// Updated on medium tick from endo.channels.threshold_bias.
+    pub(crate) endo_threshold_bias: f32,
 }
 
 impl System {
@@ -370,6 +378,8 @@ impl System {
             endo,
             effective_max_morphons,
             cached_maintenance_costs: HashMap::new(),
+            hot: crate::hot_arrays::HotArrays::new(),
+            endo_threshold_bias: 0.0,
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -481,8 +491,141 @@ impl System {
             // Sensory, Motor, Modulatory keep plasticity_rate = 1.0
         }
 
+        // Build initial hot arrays from developmental state
+        system.rebuild_hot_arrays();
+
         system
     }
+
+    // =========================================================================
+    // Hot-array methods (Pulse Kernel Lite)
+    // =========================================================================
+
+    /// Rebuild hot arrays from scratch after any structural change.
+    /// Called after slow/glacial path or on initialization.
+    fn rebuild_hot_arrays(&mut self) {
+        let n = self.morphons.len();
+        self.hot.allocate(n);
+        self.hot.id_to_idx.clear();
+        self.hot.active_count = 0;
+
+        for (&id, morphon) in &self.morphons {
+            let j = self.hot.active_count;
+            self.hot.voltage[j] = morphon.potential as f32;
+            self.hot.threshold[j] = morphon.threshold as f32;
+            self.hot.input_current[j] = 0.0;
+            self.hot.fired[j] = morphon.fired;
+            self.hot.fired_prev[j] = false;
+            self.hot.refractory[j] = morphon.refractory_timer as f32;
+            self.hot.leak_decay[j] = if morphon.cell_type == CellType::Motor { 0.0 } else { 0.9 };
+            self.hot.energy[j] = morphon.energy as f32;
+            self.hot.idx_to_id[j] = id;
+            self.hot.id_to_idx.insert(id, j);
+            self.hot.active_count += 1;
+        }
+    }
+
+    /// Sync hot-path results into Morphon structs for medium-path learning rules.
+    /// Sets prev_potential BEFORE overwriting potential (for PE computation in medium_update).
+    fn sync_hot_to_structs(&mut self) {
+        for j in 0..self.hot.active_count {
+            let id = self.hot.idx_to_id[j];
+            if let Some(morphon) = self.morphons.get_mut(&id) {
+                morphon.prev_potential = morphon.potential; // save old before overwrite
+                morphon.potential = self.hot.voltage[j] as f64;
+                morphon.fired = self.hot.fired[j];
+                morphon.refractory_timer = self.hot.refractory[j] as f64;
+                morphon.energy = self.hot.energy[j] as f64;
+            }
+        }
+    }
+
+    /// Sync updated thresholds from Morphon structs back to hot arrays.
+    /// Called at end of medium-path tick after medium_update() ran.
+    fn sync_structs_to_hot(&mut self) {
+        let bias = self.endo.channels.threshold_bias;
+        self.endo_threshold_bias = bias as f32;
+        for j in 0..self.hot.active_count {
+            let id = self.hot.idx_to_id[j];
+            if let Some(morphon) = self.morphons.get(&id) {
+                self.hot.threshold[j] = morphon.threshold as f32;
+                self.hot.energy[j] = morphon.energy as f32;
+                // Also update leak_decay in case cell type changed
+                self.hot.leak_decay[j] = if morphon.cell_type == CellType::Motor { 0.0 } else { 0.9 };
+            }
+        }
+    }
+
+    /// Fast-path step: runs hot-array integration + threshold + reset.
+    /// Replaces per-morphon morphon.step() calls for the fast path.
+    /// Structs are accessed minimally: input_accumulator extract, age++, activity_history, energy.
+    fn fast_step(&mut self, dt: f32) {
+        let bias = self.endo_threshold_bias;
+        let n = self.hot.active_count;
+
+        // 1. Swap fired buffers
+        std::mem::swap(&mut self.hot.fired, &mut self.hot.fired_prev);
+
+        // 2. Extract input_accumulator → hot.input_current
+        //    Also increment age and handle refractory in structs
+        for j in 0..n {
+            let id = self.hot.idx_to_id[j];
+            if let Some(m) = self.morphons.get_mut(&id) {
+                self.hot.input_current[j] = m.input_accumulator as f32;
+                m.input_accumulator = 0.0;
+                m.age += 1;
+            }
+        }
+
+        // 3. Fast integrate (pure hot array — no struct access)
+        for j in 0..n {
+            if self.hot.refractory[j] > 0.0 {
+                // Decrement refractory, skip integration
+                self.hot.refractory[j] = (self.hot.refractory[j] - dt).max(0.0);
+                self.hot.fired[j] = false;
+                continue;
+            }
+            // Leaky integration: V = V * decay + I
+            let v = self.hot.voltage[j] * self.hot.leak_decay[j] + self.hot.input_current[j];
+            self.hot.voltage[j] = v.clamp(-10.0, 10.0);
+
+            // Threshold check: voltage + energy gate (matches original fired condition).
+            // hot.energy is the gating mechanism — zero-energy morphons cannot fire.
+            let fires = self.hot.voltage[j] >= self.hot.threshold[j] + bias
+                && self.hot.energy[j] > 0.0;
+            self.hot.fired[j] = fires;
+
+            if fires {
+                // Deduct firing cost from hot.energy (no struct access needed).
+                // Clamped to 0.0 — prevents negative energy runaway between medium ticks.
+                let firing_cost = self.config.metabolic.firing_cost as f32;
+                self.hot.energy[j] = (self.hot.energy[j] - firing_cost).max(0.0);
+                // Set refractory (will be checked next tick)
+                self.hot.refractory[j] = dt; // 1 tick of refractory
+            }
+        }
+
+        // 4. Sync fired back to structs (resonance.propagate reads morphon.fired)
+        //    Also push to activity_history and write energy back to struct.
+        for j in 0..n {
+            let id = self.hot.idx_to_id[j];
+            if let Some(m) = self.morphons.get_mut(&id) {
+                m.fired = self.hot.fired[j];
+                m.refractory_timer = self.hot.refractory[j] as f64;
+                m.energy = self.hot.energy[j] as f64;
+                if self.hot.fired[j] {
+                    m.activity_history.push(1.0);
+                } else if self.hot.refractory[j] <= 0.0 {
+                    // Only push 0.0 if not in refractory (matches original behavior)
+                    m.activity_history.push(0.0);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // End of hot-array methods
+    // =========================================================================
 
     /// Run one simulation step using the dual-clock architecture.
     ///
@@ -665,11 +808,6 @@ impl System {
         // Apply Endo Phase B lever: frustration_sensitivity_mult scales stagnation_threshold.
         // Higher mult → higher threshold → more tolerant (Proliferating).
         // Lower mult → lower threshold → more sensitive (Mature).
-        let mut frustration_config = self.config.morphogenesis.frustration.clone();
-        frustration_config.stagnation_threshold *=
-            self.endo.channels.frustration_sensitivity_mult as f64;
-        let frustration_config = &frustration_config;
-        let threshold_bias = self.endo.channels.threshold_bias as f64;
         // Recompute maintenance costs only on slow ticks (topology changes)
         // or on the very first step (cache empty). Avoids O(N×M) hyperbolic
         // distance calculations every step.
@@ -701,23 +839,10 @@ impl System {
                 })
                 .collect();
         }
-        {
-            let System {
-                ref cached_maintenance_costs,
-                ref mut morphons,
-                ..
-            } = *self;
-            #[cfg(feature = "parallel")]
-            morphons.par_iter_mut().for_each(|(id, m)| {
-                let cost = cached_maintenance_costs.get(id).copied().unwrap_or(0.0);
-                m.step(dt, cost, metabolic, frustration_config, threshold_bias);
-            });
-            #[cfg(not(feature = "parallel"))]
-            morphons.values_mut().for_each(|m| {
-                let cost = cached_maintenance_costs.get(&m.id).copied().unwrap_or(0.0);
-                m.step(dt, cost, metabolic, frustration_config, threshold_bias);
-            });
-        }
+        // Hot-path fast step: integrates voltage, checks threshold, handles refractory.
+        // Replaces per-morphon morphon.step() in the hot path.
+        // metabolic/PE/frustration/threshold regulation run on medium path via medium_update().
+        self.fast_step(dt as f32);
 
         // Reward-correlated energy: morphons that fire when reward arrives earn energy.
         // Hubs fire for all inputs → reward ±symmetric → net zero income.
@@ -924,6 +1049,12 @@ impl System {
                     m.feedback_signal = feedback;
                 }
             }
+        }
+
+        // === MEDIUM SYNC: hot → structs ===
+        // Must happen before Endoquilibrium and learning so morphon.potential/fired are current.
+        if tick.medium {
+            self.sync_hot_to_structs();
         }
 
         // === ENDOQUILIBRIUM (before learning) ===
@@ -1395,6 +1526,29 @@ impl System {
             }
         }
 
+        // === MEDIUM PATH: metabolic + PE + frustration + homeostatic regulation ===
+        // Called instead of morphon.step() for these slow-path operations.
+        if tick.medium {
+            let dt_f = dt;
+            let metabolic = self.config.metabolic.clone();
+            let mut frustration_cfg = self.config.morphogenesis.frustration.clone();
+            frustration_cfg.stagnation_threshold *=
+                self.endo.channels.frustration_sensitivity_mult as f64;
+            let maint: Vec<(MorphonId, f64)> = self
+                .cached_maintenance_costs
+                .iter()
+                .map(|(&id, &cost)| (id, cost))
+                .collect();
+            let maint_map: std::collections::HashMap<MorphonId, f64> =
+                maint.into_iter().collect();
+            for m in self.morphons.values_mut() {
+                let cost = maint_map.get(&m.id).copied().unwrap_or(0.0);
+                m.medium_update(dt_f, cost, &metabolic, &frustration_cfg);
+            }
+            // Sync updated thresholds back to hot arrays
+            self.sync_structs_to_hot();
+        }
+
         // === SLOW PATH ===
         if tick.slow {
             // Apply Endo Phase B levers to slow-path parameters.
@@ -1472,6 +1626,9 @@ impl System {
             self.topology.update_all_synapses(|synapse| {
                 synapse.update_myelination(1.0, &myelin_ctx);
             });
+
+            // Rebuild hot arrays after structural changes (synaptogenesis, pruning, migration)
+            self.rebuild_hot_arrays();
         }
 
         // === GLACIAL PATH (with checkpoint/rollback protection) ===
@@ -1622,6 +1779,9 @@ impl System {
                 self.diag.rollback_triggered = true;
                 self.diag.total_rollbacks += 1;
             }
+
+            // Rebuild hot arrays after structural changes (division, death, fusion, apoptosis)
+            self.rebuild_hot_arrays();
         }
 
         // === V2: DREAMING ENGINE ===

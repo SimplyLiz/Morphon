@@ -40,6 +40,7 @@
 //! ```
 
 pub mod types;
+pub mod hot_arrays;
 pub mod morphon;
 pub mod neuromodulation;
 pub mod topology;

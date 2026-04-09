@@ -129,6 +129,8 @@ impl System {
             endo: snapshot.endo,
             effective_max_morphons,
             cached_maintenance_costs: std::collections::HashMap::new(),
+            hot: crate::hot_arrays::HotArrays::new(),
+            endo_threshold_bias: 0.0,
         }
     }
 

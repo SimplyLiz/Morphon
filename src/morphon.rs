@@ -514,6 +514,23 @@ impl Morphon {
             self.activity_history.push(0.0);
         }
 
+        // Medium-path operations: PE, frustration, homeostatic regulation, metabolic.
+        self.medium_update(dt, synapse_maintenance_cost, metabolic, frustration_config);
+    }
+
+    /// Medium-path update: prediction error, desire, frustration, homeostatic threshold
+    /// regulation, division pressure, metabolic energy, and cooldown bookkeeping.
+    ///
+    /// Extracted from `step()` for the hot-array world where the fast path runs on dense
+    /// arrays and medium-path ops run once every 10 ticks on Morphon structs directly.
+    /// Called by `step()` for backward compat, and by `System::step()` on the medium tick.
+    pub fn medium_update(
+        &mut self,
+        dt: f64,
+        synapse_maintenance_cost: f64,
+        metabolic: &MetabolicConfig,
+        frustration_config: &FrustrationConfig,
+    ) {
         // Update prediction error
         let expected = self.prev_potential; // simple prediction: previous state
         self.prediction_error = (self.potential - expected).abs();

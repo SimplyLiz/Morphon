@@ -83,7 +83,7 @@ fn bench_learning_update(c: &mut Criterion) {
 
         b.iter(|| {
             for syn in &mut synapses {
-                learning::update_eligibility(syn, true, 0.8, &params, 1.0);
+                learning::update_eligibility(syn, true, 0.8, &params, 1.0, 0);
             }
         });
     });
@@ -173,7 +173,7 @@ fn bench_synaptogenesis(c: &mut Criterion) {
         }
 
         b.iter(|| {
-            morphogenesis::synaptogenesis(&morphons, &mut topo, &params, &mut rng);
+            morphogenesis::synaptogenesis(&morphons, &mut topo, &params, &mut rng, 1000, 0);
         });
     });
 }
@@ -246,7 +246,7 @@ fn bench_synaptic_scaling(c: &mut Criterion) {
                 (morphons, topo)
             },
             |(morphons, mut topo)| {
-                homeostasis::synaptic_scaling(&morphons, &mut topo);
+                homeostasis::synaptic_scaling(&morphons, &mut topo, 1.0);
             },
             criterion::BatchSize::SmallInput,
         );
