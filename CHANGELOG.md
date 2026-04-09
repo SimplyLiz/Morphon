@@ -17,8 +17,6 @@ The first version released alongside the arXiv/Zenodo preprint
   generated from the benchmark JSONs via `figures/generate.py` (matplotlib)
   and the WASM visualizer (Playwright)
 - TikZ architecture diagram (`figures/architecture.tex`)
-- NLP readiness benchmark (`examples/nlp_readiness.rs`) — 4-tier
-  synthetic text benchmark measuring prerequisites for language tasks
 - Metabolic pressure primitives:
   `reward_energy_coefficient`, `superlinear_firing_factor`
 - Reward-correlated energy in `reward_contrastive()` so fired morphons

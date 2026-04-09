@@ -47,8 +47,7 @@ All of these are welcome, in rough order of enthusiasm:
 
 - **New benchmarks or tasks.** The roadmap in
   [`docs/plans/morphon-complete-roadmap.md`](docs/plans/morphon-complete-roadmap.md)
-  describes the planned next benchmarks (temporal sequence processing, NLP
-  once prerequisites are met, etc.). Adding unrelated benchmarks is unlikely
+  describes the planned next benchmarks (temporal sequence processing, etc.). Adding unrelated benchmarks is unlikely
   to be merged unless they fit the roadmap.
 
 - **Refactors that don't change numbers.** The code is not pretty. Cleaning
@@ -82,7 +81,7 @@ All of these are welcome, in rough order of enthusiasm:
    approach before you spend time on it.
 2. Work from a feature branch off `main`.
 3. Run `cargo test` locally and include the result in the PR description.
-4. Run the relevant benchmark (CartPole / mnist_v2 / nlp_readiness) and
+4. Run the relevant benchmark (CartPole / mnist_v2) and
    include the JSON output.
 5. Reference the issue the PR addresses.
 6. Expect a review turnaround of days to weeks — this is a small team.

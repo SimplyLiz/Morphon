@@ -48,10 +48,10 @@ We attempted to solve the NLP Tier 3 compositionality problem (XOR-like token co
 
 **Key insight for Morphons:** The recurrent reservoir's state trajectory IS the temporal representation. No separate context encoding, no hash-based projection, no dedicated context ports. The reservoir does all the work.
 
-### 0.3 NLP Readiness Assessment
+### 0.3 Temporal Capability Assessment
 
-| Component | Status | NLP Readiness |
-|-----------|--------|---------------|
+| Component | Status | Notes |
+|-----------|--------|-------|
 | Dual-clock scheduler | ✅ Fully implemented | Excellent |
 | Hyperbolic geometry | ✅ Fully implemented | Natural hierarchy |
 | Neuromodulation (4 channels) | ✅ Fully implemented | Reward/novelty/arousal |
@@ -63,9 +63,9 @@ We attempted to solve the NLP Tier 3 compositionality problem (XOR-like token co
 
 **Bottom line:** We need recurrent connections + sequential input + longer eligibility traces. That's it. The rest is scaffolding we don't need yet.
 
-### 0.4 How This Solves NLP Tier 3
+### 0.4 Compositional Sequence Processing
 
-The NLP Tier 3 task: given two characters presented sequentially, are they same-group (VV/CC) or different-group (VC/CV)?
+The compositional task: given two tokens presented sequentially, are they same-group (VV/CC) or different-group (VC/CV)?
 
 1. Feed character A at step 1 → reservoir state encodes A
 2. Feed character B at step 2 → reservoir state evolves to encode (A+B)
@@ -465,9 +465,9 @@ Output: 0 if same-group (VV or CC), 1 if different-group (VC or CV)
 - Sequence length: 2 (one char per step)
 - Reward: contrastive on correct/incorrect classification
 
-**Success criterion:** >60% accuracy (matches NLP readiness Tier 3 threshold).
+**Success criterion:** >60% accuracy on compositional XOR.
 
-**Why this matters:** This is the gate for NLP readiness level 3/3. It proves the system can combine token meanings — the core of language.
+**Why this matters:** This is the gate for temporal sequence processing. It proves the system can combine token meanings via recurrent dynamics — the core capability needed for any sequential task.
 
 ---
 
@@ -572,13 +572,13 @@ The DeMorphon spec describes composite organisms with internal body plans that n
 | 2f | Tune on next-element prediction | 2e | Error <0.1 for period-3 repeating sequences |
 | 2g | Full regression: CartPole + MNIST unchanged | 2a | No regression |
 
-### Phase 3: NLP Tier 3 — Compositionality
+### Phase 3: Compositionality Benchmark
 
 | Step | What | Depends on | Test |
 |---|---|---|---|
-| 3a | Write NLP Tier 3 benchmark (sequential char input) | Phase 2 | Runs |
-| 3b | Train on vowel/consonant composition | 3a | >60% accuracy |
-| 3c | Validate NLP readiness level 3/3 | 3b | All 4 tiers pass |
+| 3a | Write compositionality benchmark (sequential token input, XOR task) | Phase 2 | Runs |
+| 3b | Train on same-group vs different-group token pairs | 3a | >60% accuracy |
+| 3c | Validate compositional reasoning end-to-end | 3b | >60% accuracy stable across seeds |
 
 ### Phase 5: Add Context Feedback If Needed (Deferred)
 
@@ -755,9 +755,9 @@ This diagnostic is critical for debugging. Without it, we can't tell if a failin
 ### v2.0 — Research Findings & Dead Paths (April 2026)
 
 - Added §0: Research findings (NeuronSpark, Nam et al., Zheng et al.) and dead path documentation (XOR circuits)
-- Added NLP readiness assessment
-- Added Benchmark D: NLP Tier 3 — Compositionality
-- Added Phase 4: NLP Tier 3 implementation
+- Added temporal capability assessment (§0.3)
+- Added Benchmark D: Compositionality
+- Added Phase 3: Compositionality benchmark implementation
 - Added interaction with DeMorphon spec
 - Added design principle #5: Attractor-based compositionality
 

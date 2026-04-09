@@ -12,7 +12,6 @@ All benchmarks save JSON results to `docs/benchmark_results/v{version}/` for tra
 |-----------|-------|---------------------|-----------------|
 | `cartpole`        | RL control                   | **avg=195.2 SOLVED** (v0.5.0) | ~10 min |
 | `mnist_v2`        | Static classification        | 31% intact / **52.5% post-damage** | ~25 min |
-| `nlp_readiness`   | Text-like pattern processing | Level 3/3 (analog readout) | ~3 min |
 | `mnist`           | Two-phase STDP + post-hoc    | ~20% (legacy)            | ~25 min |
 | `classify_tiny`   | 3-class smoke test           | (regression detector)    | ~15 sec |
 | `classify_3class` | 3-class smoke test           | (regression detector)    | ~15 sec |
@@ -183,71 +182,6 @@ cargo run --example mnist_v2 --release -- --seed=123
 
 ---
 
-## NLP Readiness
-
-**File:** `examples/nlp_readiness.rs`
-
-**Task:** A 4-tier synthetic benchmark measuring how close MI is to handling language. **Not** an NLP task — tests *prerequisites* for language.
-
-**Why this benchmark:** Language requires (1) handling text-like input encoding, (2) positional sensitivity, (3) temporal memory, (4) compositional semantics. This benchmark tests each capability separately so you can see which is missing.
-
-### Tiers
-
-| Tier | What it tests | Input | Task | Pass threshold |
-|------|--------------|-------|------|----------------|
-| 0: **Bag-of-Chars**  | Text-like encoding handling | 27-dim freq | Vowel-heavy vs consonant-heavy | 65% |
-| 1: **One-Hot Scale** | Dimensional scaling          | 135-dim flat | Same task at scale | 60% |
-| 2: **Memory**        | Temporal context             | 27-dim × 3 sequential | Classify by FIRST char | 55% |
-| 3: **Composition**   | XOR-like compositional       | 54-dim       | Token-pair XOR | 60% |
-
-### How to run
-
-```bash
-cargo run --example nlp_readiness --release              # quick (~3 min)
-cargo run --example nlp_readiness --release -- --standard
-cargo run --example nlp_readiness --release -- --extended
-```
-
-All data is **synthetic** — no external downloads needed. All tiers use the analog readout pathway.
-
-### Expected results (v3.0.0)
-
-| Tier | Accuracy | Status |
-|------|---------|--------|
-| 0: Bag-of-Chars  | **99%** | PASS |
-| 1: One-Hot Scale | **62%** | PASS |
-| 2: Memory        | **85%** | PASS |
-| 3: Composition   | 42%     | FAIL (XOR needs nonlinear hidden features) |
-
-**NLP Readiness Level: 3/3** with analog readout.
-
-### Interpretation
-
-The pattern across tiers is the central finding:
-- **The MI substrate creates discriminative representations.** Tiers 0-2 prove this — analog readout extracts 69-99% accuracy from morphon potentials.
-- **The spike pipeline destroys the information.** When the same network is read via spikes (`teach_supervised`), all tiers drop to chance (~50%). The information IS in the potentials — spike conversion + propagation + integration loses it.
-- **Compositional reasoning is missing.** Tier 3 (XOR) fails because the analog readout is linear and XOR requires nonlinear hidden features. This needs a working spike-based credit-assignment path through the hidden layer.
-- **Temporal memory exists at the potential level.** Tier 2 at 88% means residual potentials retain information across sequential `process()` calls. The substrate for the temporal sequence processing spec already works.
-
-### Output JSON
-
-`docs/benchmark_results/v{version}/nlp_{timestamp}.json`:
-```json
-{
-  "benchmark": "nlp_readiness",
-  "readiness_level": 3,
-  "composition_capable": false,
-  "tiers": {
-    "tier0_bag_of_chars": { "accuracy": 99.0, "passed": true, ... },
-    "tier1_onehot_scale": { "accuracy": 69.0, "passed": true, ... },
-    "tier2_memory":       { "accuracy": 88.0, "passed": true, ... },
-    "tier3_composition":  { "accuracy": 40.0, "passed": false, ... }
-  }
-}
-```
-
----
-
 ## MNIST (Legacy)
 
 **File:** `examples/mnist.rs`
@@ -325,8 +259,6 @@ The numbers in `docs/paper/paper/Morphogenic_Intelligence.tex` come from:
 # MNIST 31% intact / 52.5% post-recovery: v3.0.0 quick profile
 cargo run --example mnist_v2 --release
 
-# NLP readiness Level 3/3: v3.0.0 quick profile
-cargo run --example nlp_readiness --release
 ```
 
 All result JSONs are saved to `docs/benchmark_results/v{version}/` so you can verify the exact numbers used in the paper.

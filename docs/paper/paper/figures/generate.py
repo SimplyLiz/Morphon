@@ -97,60 +97,7 @@ def fig_self_healing():
     print(f"  wrote {out.name}")
 
 
-# ─── Figure 2: NLP readiness benchmark ───────────────────────────────────────
-def fig_nlp_readiness():
-    """4 tiers × 2 readouts (spike vs analog) bar chart."""
-    runs = load_all("nlp_*.json")
-    if not runs:
-        print("  fig_nlp_readiness: no NLP runs found, skipping")
-        return
-    # Take the most recent run that has all 4 tiers
-    best = None
-    for r in reversed(runs):
-        if "tiers" in r and len(r["tiers"]) >= 4:
-            best = r
-            break
-    if not best:
-        print("  fig_nlp_readiness: no complete tier results, skipping")
-        return
-
-    tier_keys = ["tier0_bag_of_chars", "tier1_onehot_scale", "tier2_memory", "tier3_composition"]
-    labels = ["Tier 0\nBag-of-Chars", "Tier 1\nOne-Hot Scale", "Tier 2\nMemory", "Tier 3\nComposition"]
-    spike_baseline = [50, 50, 50, 50]  # chance level for binary tasks
-    analog_results = [best["tiers"].get(k, {}).get("accuracy", 0) for k in tier_keys]
-    thresholds = [best["tiers"].get(k, {}).get("pass_threshold", 60) for k in tier_keys]
-
-    x = np.arange(len(labels))
-    width = 0.35
-
-    fig, ax = plt.subplots(figsize=(5.5, 3.2))
-    ax.bar(x - width/2, spike_baseline, width, label="Spike-based\n(chance)",
-           color="#bdbdbd", edgecolor="black", linewidth=0.5)
-    bars2 = ax.bar(x + width/2, analog_results, width, label="Analog readout",
-                   color="#5b9bd5", edgecolor="black", linewidth=0.5)
-    for bar, v in zip(bars2, analog_results):
-        ax.text(bar.get_x() + bar.get_width() / 2, v + 1, f"{v:.0f}%",
-                ha="center", va="bottom", fontsize=8)
-
-    # Threshold lines
-    for i, t in enumerate(thresholds):
-        ax.hlines(t, x[i] - 0.4, x[i] + 0.4, colors="red", linestyles="--", linewidth=0.8)
-
-    ax.set_ylabel("Accuracy (%)")
-    ax.set_ylim(0, 110)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.legend(loc="upper right", framealpha=0.9)
-    ax.set_title("NLP readiness: spike pipeline vs analog readout")
-    ax.text(0.02, 0.98, "Red dashes = pass threshold per tier",
-            transform=ax.transAxes, fontsize=7, va="top", color="red")
-    out = FIG_DIR / "nlp_readiness.pdf"
-    fig.savefig(out)
-    plt.close(fig)
-    print(f"  wrote {out.name}")
-
-
-# ─── Figure 3: Plasticity vs accuracy ────────────────────────────────────────
+# ─── Figure 2: Plasticity vs accuracy ────────────────────────────────────────
 def fig_plasticity_accuracy():
     """The pm-vs-accuracy table from the failure modes section as a scatter."""
     # Hand-coded from the experiments — these are not in the JSONs because
@@ -297,7 +244,6 @@ def main():
     print(f"  results dir: {RESULTS_DIR}")
     print(f"  output dir: {FIG_DIR}")
     fig_self_healing()
-    fig_nlp_readiness()
     fig_plasticity_accuracy()
     fig_cartpole_curve()
     fig_receptive_fields()

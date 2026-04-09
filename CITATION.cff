@@ -7,7 +7,7 @@ abstract: >
   apoptosis at runtime under local developmental rules. Includes a full
   dual-clock scheduler, three-factor learning, tag-and-capture consolidation,
   Endoquilibrium homeostatic regulation, hyperbolic embedding, WASM visualizer,
-  and benchmark examples (CartPole, MNIST, NLP readiness).
+  and benchmark examples (CartPole, MNIST).
 type: software
 authors:
   - family-names: Welsch

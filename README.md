@@ -20,8 +20,6 @@ Morphon-Core is a biologically-inspired, adaptive intelligence engine that imple
 | **CartPole-v1** | **SOLVED** avg=195.2 | v0.5.0 standard profile (1000 ep). v3.0.0 quick profile reaches avg=166 in 200 episodes — learning confirmed but SOLVED criterion not yet reproduced within shorter budget. |
 | **MNIST (intact)** | 30.0% | Quick profile, v3.0.0, seed=42 |
 | **MNIST (post-recovery)** | **48.0%** | After 30% damage + regrowth — exceeds intact baseline by **+18.0pp** |
-| **NLP Tier 0 (bag-of-chars)** | 46% spike / **99% analog** | Same network, same potentials, two readout types |
-| **NLP Tier 2 (sequential memory)** | 48% spike / **85% analog** | Temporal memory exists in residual potentials |
 
 See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide.
 
@@ -35,16 +33,7 @@ The mechanism: original training accumulated entrenched "hub" morphons — high-
 
 ### The Spike-vs-Analog Gap
 
-On every NLP tier, spike-based readout collapses to chance (~50%) while analog readout extracts 99%/62%/85% from the *same morphon potentials*. The information that distinguishes classes is present in the network state — the analog readout proves it — but the spike pipeline destroys it through propagation delays, leaky integration, and multi-hop accumulation.
-
-| NLP Tier | Task | Spike | Analog |
-|----------|------|-------|--------|
-| 0: Bag-of-Chars | 27-dim freq encoding, 2-class | 46% | **99%** |
-| 1: One-Hot Scale | 135-dim flat, same task | 51% | **62%** |
-| 2: Memory | 27-dim/step × 3 sequential | 48% | **85%** |
-| 3: Composition | 54-dim, XOR over token pairs | 50% | 42% |
-
-This is the central diagnostic for any spiking architecture targeting classification. The failure is in the *output pathway*, not feature formation — STDP + k-WTA + reward modulation does form discriminative features. Biology solves this via dedicated analog readout pathways (e.g., Purkinje cell integration in the cerebellum). Tier 3 (XOR) fails because the linear analog readout cannot provide the nonlinear hidden features XOR requires.
+Morphon potentials carry discriminative representations that the spike pipeline cannot deliver to motor morphons intact. Spike conversion, propagation delays, leaky integration, and multi-hop accumulation are each lossy. A linear analog readout over morphon potentials is therefore the correct output mechanism for classification — not a shortcut. Biology makes the same separation: Purkinje cells in the cerebellum integrate fiber inputs in analog rather than thresholding to binary spikes for motor control.
 
 ## Key Features
 

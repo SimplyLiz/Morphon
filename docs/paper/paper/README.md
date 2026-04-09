@@ -40,9 +40,7 @@ Draft. 14 pages. All headline numbers reproduce on v3.0.0.
 - 28 bibliography entries (placeholder refs removed)
 - 3 figures generated from JSON benchmark results:
   - `figures/self_healing.pdf` — MNIST 4-bar (random, intact, damaged, recovered)
-  - `figures/nlp_readiness.pdf` — 4 tiers × 2 readouts comparison
   - `figures/plasticity_accuracy.pdf` — pm vs accuracy scatter
-- v3.0.0 NLP readiness verified: Tier 0/1/2/3 = 99/62/85/42
 - v2.4.0 MNIST self-healing reproduced from JSON (31.0 → 52.5%)
 
 ### Still TODO
