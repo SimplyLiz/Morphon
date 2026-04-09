@@ -33,14 +33,14 @@ Standard MNIST, 784 input pixels (28$\times$28), 10 output classes. Cortical dev
 \paragraph{Results.}
 \begin{table}[h]
 \centering
-\caption{MNIST results across versions and training conditions ($\sim$1260 morphons, $\sim$74K synapses post-training). v4.1.0 quick profile (3000 samples, 3 epochs), seed=42.}
+\caption{MNIST results across versions and training conditions ($\sim$1260--1290 morphons, $\sim$74K synapses post-training). v4.1.0 quick profile (3000 samples, 3 epochs), seed=42. Accuracy varies $\pm$2--3pp across independent runs due to stochastic synaptogenesis.}
 \label{tab:mnist}
 \begin{tabular}{lcc}
 \toprule
 Condition & Accuracy & Notes \\
 \midrule
-Baseline V2 (GlobalKWTA, intact) & 44.5\% & After rate-based iSTDP → spike-timing fix \\
-Baseline V3 (LocalInhib + iSTDP) & 44.5\% & Vogels 2011, per-spike; 4.4$\times$ faster wall-time \\
+Baseline V2 (GlobalKWTA, intact) & 44--44.5\% & Rate-based iSTDP → spike-timing fix \\
+Baseline V3 (LocalInhib + iSTDP) & 44.5--48\% & Vogels 2011, per-spike; $\geq$V2; 4.4$\times$ faster \\
 Post-damage (30\% killed) & 48.0\% & Random ablation of associative morphons \\
 Post-recovery (regrow + retrain) & 33.5\% & 500 recovery samples, quick profile \\
 \midrule
