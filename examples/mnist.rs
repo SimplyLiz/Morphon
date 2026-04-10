@@ -153,7 +153,7 @@ fn create_system(local_inh: bool) -> System {
             ..DevelopmentalConfig::cortical()
         },
         scheduler: SchedulerConfig {
-            medium_period: 1,   // STDP every step — Poisson needs per-spike coincidence detection
+            medium_period: 10,  // STDP every 10 steps — matches v2 baseline; period=1 compounds HSD 10× per fired morphon
             slow_period: 1000,  // structural changes very infrequent
             glacial_period: 5000,
             homeostasis_period: 50, // normalization once per image
@@ -347,11 +347,9 @@ fn main() {
     system.config.metabolic.superlinear_firing_factor = 2.0;
     system.config.lifecycle.apoptosis = true;
 
-    // Disable HSD during pruning — medium_period=1 makes it compound 10× harder
-    // than the old medium_period=10 baseline that produced 44.5%. Over 1500 images
-    // at FR~0.03: weight × (0.999)^2250 ≈ 0.10×. Normalization can't compensate
-    // fast enough (clamped to ±tol per tick). We want metabolic/apoptotic pressure
-    // to select neurons, not weight erosion to kill everything.
+    // Disable HSD during pruning — we want metabolic/apoptotic pressure to select
+    // neurons, not weight erosion. HSD during Phase 1 is already limited by
+    // medium_period=10 (fires only on medium ticks where the morphon also fires).
     system.config.learning.heterosynaptic_depression = 0.0;
 
     // Enable analog readout for reward signal
@@ -400,15 +398,16 @@ fn main() {
     // =========================================================================
     println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
-    // Freeze STDP and synaptic scaling — but leave slow/glacial active.
-    // Synaptogenesis during Phase 2 (every ~20 images) builds class-specific
-    // connections between co-active neurons. Combined with frozen synaptic scaling
-    // (weights can grow unconstrained), class-specific synapses become strong →
-    // well-separated digit representations → high posthoc accuracy.
-    // Freezing slow/glacial here kills this mechanism and causes mode collapse.
+    // Freeze STDP weights — but keep k-WTA (homeostasis) and slow/glacial active.
+    // medium_period freeze stops STDP weight updates so Phase 1 features are preserved.
+    // homeostasis must keep running so k-WTA still selects sparse winners per image —
+    // without it the hidden layer produces dense/no responses and labeling fails.
+    // Synaptogenesis (slow path, period=1000) intentionally left on: it builds
+    // class-specific connections between co-active neurons during labeling, giving
+    // well-separated digit representations and higher posthoc accuracy.
     system.config.scheduler.medium_period = 999_999;
     // slow_period and glacial_period stay at their configured values (1000 / 5000)
-    system.config.scheduler.homeostasis_period = 999_999;
+    // homeostasis_period stays at 50 — k-WTA must keep running during labeling
     system.config.homeostasis.winner_boost = 0.0;
     system.config.lifecycle.apoptosis = false; // stop killing during eval
 
@@ -485,6 +484,11 @@ fn main() {
                 class_votes[assigned_class] += spikes;
             }
         }
+
+        // Guard against silent network: if no neurons fired, skip this image
+        // rather than letting max_by_key tie-break to the last index (digit 9).
+        let max_votes = *class_votes.iter().max().unwrap_or(&0);
+        if max_votes == 0 { ct[test_labels[i]] += 1; continue; }
 
         let pred = class_votes.iter().enumerate()
             .max_by_key(|&(_, count)| count)
