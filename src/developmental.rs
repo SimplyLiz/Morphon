@@ -15,6 +15,56 @@ use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Configuration for recurrent connectivity within the Associative population.
+///
+/// Recurrent connections create an Echo State Network / Liquid State Machine
+/// reservoir: the recurrent reservoir's state trajectory encodes temporal context
+/// across multiple `process()` calls without any separate context-injection mechanism.
+///
+/// Defaults to disabled (`enabled: false`) — existing tasks (CartPole, MNIST)
+/// are completely unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecurrentConfig {
+    /// Whether to create recurrent connections during development.
+    /// Off by default — opt-in for temporal tasks.
+    pub enabled: bool,
+
+    /// Fraction of possible Assoc→Assoc connections to create.
+    /// Biology: ~0.1–0.2 (sparse recurrence). Start conservative.
+    pub recurrent_connectivity: f64,
+
+    /// Weight range for recurrent synapses: sampled from
+    /// [-recurrent_weight_scale, +recurrent_weight_scale].
+    /// Should be weaker than feedforward (~0.5× feedforward strength).
+    pub recurrent_weight_scale: f64,
+
+    /// Uniform random delay range [min, max] in timesteps.
+    /// Longer delays extend the reservoir's temporal memory within
+    /// a single `process()` call.
+    pub delay_range: (f64, f64),
+
+    /// Whether recurrent synapses undergo STDP.
+    /// `true`: network learns temporal patterns in the recurrence.
+    /// `false`: recurrence provides fixed-timescale echoes (more stable initially).
+    pub plastic: bool,
+
+    /// Allow self-connections (autapses).
+    pub allow_autapses: bool,
+}
+
+impl Default for RecurrentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            recurrent_connectivity: 0.15,
+            recurrent_weight_scale: 0.4,
+            delay_range: (1.0, 3.0),
+            plastic: true,
+            allow_autapses: false,
+        }
+    }
+}
+
 /// Configuration for a developmental program.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DevelopmentalConfig {
@@ -36,6 +86,9 @@ pub struct DevelopmentalConfig {
     pub target_input_size: Option<usize>,
     /// If set, overrides the number of Motor morphons to match the task output size.
     pub target_output_size: Option<usize>,
+    /// Recurrent connectivity within the Associative population.
+    /// Disabled by default — opt-in for temporal sequence tasks.
+    pub recurrent: RecurrentConfig,
 }
 
 /// Target ratios of cell types (must sum to 1.0).
@@ -63,6 +116,7 @@ impl Default for DevelopmentalConfig {
             },
             target_input_size: None,
             target_output_size: None,
+            recurrent: RecurrentConfig::default(),
         }
     }
 }
@@ -107,6 +161,38 @@ impl DevelopmentalConfig {
                 modulatory: 0.1,
             },
             ..Default::default()
+        }
+    }
+
+    /// Preset: Temporal — for sequence classification and prediction tasks.
+    ///
+    /// Enables recurrent reservoir with sparse Assoc→Assoc connections.
+    /// Uses Hippocampal wiring (higher modulatory ratio for credit assignment),
+    /// larger seed to give the reservoir enough folding capacity for attractor
+    /// separation (spec recommends seed_size ≥ 100).
+    pub fn temporal() -> Self {
+        Self {
+            program: DevelopmentalProgram::Hippocampal,
+            seed_size: 120,
+            dimensions: 6,
+            initial_connectivity: 0.15,
+            proliferation_rounds: 2,
+            type_ratios: CellTypeRatios {
+                sensory: 0.2,
+                associative: 0.5,
+                motor: 0.1,
+                modulatory: 0.2,
+            },
+            recurrent: RecurrentConfig {
+                enabled: true,
+                recurrent_connectivity: 0.15,
+                recurrent_weight_scale: 0.4,
+                delay_range: (1.0, 4.0),
+                plastic: true,
+                allow_autapses: false,
+            },
+            target_input_size: None,
+            target_output_size: None,
         }
     }
 }
@@ -241,7 +327,51 @@ pub fn develop(
         }
     }
 
-    // === Phase 4.5: Local Inhibitory Interneurons (iSTDP competition) ===
+    // === Phase 4.5: Recurrent Reservoir (Temporal Processing) ===
+    // When RecurrentConfig::enabled, create sparse Assoc→Assoc connections.
+    // These form an Echo State Network / Liquid State Machine reservoir:
+    // the reservoir's state trajectory encodes temporal context without
+    // any separate context-injection mechanism.
+    // Off by default — CartPole and MNIST are completely unaffected.
+    if config.recurrent.enabled {
+        let assoc_ids: Vec<MorphonId> = morphons
+            .values()
+            .filter(|m| m.cell_type == CellType::Associative)
+            .map(|m| m.id)
+            .collect();
+        let n = assoc_ids.len();
+        if n >= 2 {
+            let n_target = (config.recurrent.recurrent_connectivity
+                * n as f64
+                * n as f64) as usize;
+            let ws = config.recurrent.recurrent_weight_scale;
+            let (d_min, d_max) = config.recurrent.delay_range;
+            let mut created = 0;
+            let mut attempts = 0;
+            let max_attempts = n_target * 10;
+            while created < n_target && attempts < max_attempts {
+                attempts += 1;
+                let src = assoc_ids[rng.random_range(0..n)];
+                let tgt = assoc_ids[rng.random_range(0..n)];
+                if !config.recurrent.allow_autapses && src == tgt {
+                    continue;
+                }
+                if topology.has_connection(src, tgt) {
+                    continue;
+                }
+                let w = rng.random_range(-ws..ws);
+                let delay = if d_max > d_min {
+                    d_min + rng.random_range(0.0..(d_max - d_min))
+                } else {
+                    d_min
+                };
+                topology.add_synapse(src, tgt, Synapse::new(w).with_delay(delay));
+                created += 1;
+            }
+        }
+    }
+
+    // === Phase 4.6: Local Inhibitory Interneurons (iSTDP competition) ===
     // When CompetitionMode::LocalInhibition, create inhibitory interneurons
     // wired to Associative morphons for emergent lateral inhibition.
     create_local_inhibitory_interneurons(

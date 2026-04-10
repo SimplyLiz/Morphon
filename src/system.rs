@@ -2310,6 +2310,47 @@ impl System {
         }
     }
 
+    /// Train the first readout output as a continuous regression target (MSE / delta rule).
+    ///
+    /// Unlike `train_readout` (softmax cross-entropy for N-way classification),
+    /// this performs direct gradient descent on (output - target)² for scalar outputs.
+    /// Use for prediction tasks where the target is a continuous value, not a class index.
+    pub fn train_readout_value(&mut self, target: f64, learning_rate: f64) {
+        if !self.use_analog_readout || self.readout_weights.is_empty() {
+            return;
+        }
+        let outputs = self.read_output_analog();
+        if outputs.is_empty() {
+            return;
+        }
+        let predicted = if outputs[0].is_finite() { outputs[0] } else { 0.0 };
+        let error = target - predicted; // gradient of 0.5*(predicted-target)²
+
+        let activities: HashMap<MorphonId, f64> = self.readout_weights[0]
+            .keys()
+            .filter_map(|&id| {
+                self.morphons.get(&id).map(|m| {
+                    let p = if m.potential.is_finite() { m.potential.clamp(-10.0, 10.0) } else { 0.0 };
+                    (id, 1.0 / (1.0 + (-p).exp()) - 0.5)
+                })
+            })
+            .collect();
+
+        if let Some(b) = self.readout_bias.get_mut(0) {
+            let delta = learning_rate * error;
+            if delta.is_finite() {
+                *b = (*b + delta).clamp(-5.0, 5.0);
+            }
+        }
+        for (&id, w) in self.readout_weights[0].iter_mut() {
+            let act = activities.get(&id).copied().unwrap_or(0.0);
+            let delta = learning_rate * act * error;
+            if delta.is_finite() {
+                *w = (*w + delta).clamp(-5.0, 5.0);
+            }
+        }
+    }
+
     /// Number of input ports (sensory Morphons available for external input).
     pub fn input_size(&self) -> usize {
         self.input_ports.len()
@@ -2484,6 +2525,59 @@ impl System {
     /// Inject an arousal signal.
     pub fn inject_arousal(&mut self, strength: f64) {
         self.modulation.inject_arousal(strength);
+    }
+
+    /// Signal the start of a new sequence (temporal processing tasks).
+    ///
+    /// Resets temporal context so information from the previous sequence
+    /// does not bleed into the next one. Specifically:
+    ///
+    /// 1. **Working memory cleared** — active patterns from the last sequence
+    ///    are irrelevant to the new one.
+    /// 2. **Eligibility traces zeroed** — prevents credit from the last
+    ///    sequence leaking into this one's weight updates.
+    /// 3. **Novelty burst injected** — sequence boundaries are inherently
+    ///    novel; high novelty keeps the network maximally attentive at onset.
+    ///
+    /// Does NOT reset membrane potentials — the network's learned dynamic
+    /// state carries over. Only the accumulated temporal context resets.
+    ///
+    /// For RL tasks, `inject_reward()` + environment reset already serves
+    /// this function. This method is for supervised sequence tasks.
+    pub fn sequence_reset(&mut self) {
+        // 1. Clear working memory
+        self.memory.working.clear();
+
+        // 2. Zero eligibility traces on all synapses
+        for edge_idx in self.topology.graph.edge_indices() {
+            if let Some(syn) = self.topology.graph.edge_weight_mut(edge_idx) {
+                syn.eligibility = 0.0;
+            }
+        }
+
+        // 3. Reset membrane voltages so each trial starts from a clean baseline.
+        //    Without this, residual state from trial N bleeds into trial N+1 and
+        //    the reservoir can't produce consistent states for the same input pattern.
+        for m in self.morphons.values_mut() {
+            m.potential = 0.0;
+            m.prev_potential = 0.0;
+            m.fired = false;
+            m.input_accumulator = 0.0;
+            m.refractory_timer = 0.0;
+        }
+        for j in 0..self.hot.active_count {
+            self.hot.voltage[j] = 0.0;
+            self.hot.input_current[j] = 0.0;
+            self.hot.fired[j] = false;
+            self.hot.fired_prev[j] = false;
+            self.hot.refractory[j] = 0.0;
+        }
+
+        // 4. Clear in-flight spikes (stale spikes from previous trial can activate wrong neurons)
+        self.resonance.clear();
+
+        // 5. Mild novelty burst — signals context boundary without saturating plasticity
+        self.modulation.inject_novelty(0.3);
     }
 
     /// Inject a targeted reward at a specific output port's morphon.

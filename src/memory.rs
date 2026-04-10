@@ -102,6 +102,13 @@ impl WorkingMemory {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
+
+    /// Clear all active patterns. Used by `System::sequence_reset()` at
+    /// sequence boundaries so temporal context from the previous sequence
+    /// does not bleed into the next one.
+    pub fn clear(&mut self) {
+        self.items.clear();
+    }
 }
 
 /// An episodic memory trace — a snapshot of a significant event.

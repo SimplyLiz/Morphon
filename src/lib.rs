@@ -70,7 +70,7 @@ pub use system::{System, SystemConfig, SystemStats};
 pub use types::{
     CellType, DevelopmentalProgram, LifecycleConfig, ModulatorType, MorphonId,
 };
-pub use developmental::{DevelopmentalConfig, TargetMorphology, TargetRegion};
+pub use developmental::{DevelopmentalConfig, RecurrentConfig, TargetMorphology, TargetRegion};
 pub use lineage::LineageTree;
 pub use diagnostics::Diagnostics;
 pub use field::{FieldConfig, FieldType, MorphonField};
