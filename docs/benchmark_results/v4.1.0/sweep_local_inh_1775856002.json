@@ -1,0 +1,42 @@
+{
+  "benchmark": "local_inhibition_sweep",
+  "profile": "quick",
+  "reference": {
+    "accuracy": 44.0,
+    "duration_s": 120,
+    "initial_inh_weight": -0.5,
+    "istdp_rate": 0.005
+  },
+  "results": [
+    {
+      "accuracy": 46.0,
+      "duration_s": 137,
+      "initial_inh_weight": -0.5,
+      "istdp_rate": 0.001,
+      "label": "slow-rate"
+    },
+    {
+      "accuracy": 47.0,
+      "duration_s": 190,
+      "initial_inh_weight": -0.5,
+      "istdp_rate": 0.002,
+      "label": "med-rate"
+    },
+    {
+      "accuracy": 48.5,
+      "duration_s": 349,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.005,
+      "label": "soft-inh"
+    },
+    {
+      "accuracy": 49.0,
+      "duration_s": 170,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.001,
+      "label": "slow+soft"
+    }
+  ],
+  "seed": 42,
+  "version": "4.1.0"
+}

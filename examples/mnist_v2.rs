@@ -140,15 +140,17 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
 /// V2 (V2 architecture with V2 GlobalKWTA competition) and V3
 /// (V2 architecture with biological LocalInhibition) share everything except the
 /// competition mode. Single function so the comparison is paired.
-fn create_v2(kwta_fraction: f64, local: bool, local_inhibition: bool) -> System {
+///
+/// `istdp_rate` and `initial_inh_weight` are only used when `local_inhibition=true`.
+fn create_v2(kwta_fraction: f64, local: bool, local_inhibition: bool, istdp_rate: f64, initial_inh_weight: f64) -> System {
     let competition_mode = if local_inhibition {
         // V3 — biological lateral inhibition via iSTDP-tuned interneurons
         // (Vogels et al. 2011). Created during developmental Phase 4.5;
         // weights self-tune toward target_rate. No algorithmic k-WTA.
         morphon_core::homeostasis::CompetitionMode::LocalInhibition {
             interneuron_ratio: 0.10,
-            istdp_rate: 0.005,
-            initial_inh_weight: -0.5,
+            istdp_rate,
+            initial_inh_weight,
             inhibition_radius: 0.0,
             target_rate: Some(0.05),
         }
@@ -330,6 +332,12 @@ fn train_and_eval(
         let mut window_pos = 0_usize;
         let mut window_filled = 0_usize;
 
+        // Ep1 is unsupervised STDP feature formation — reward signals are withheld.
+        // Injecting reward in ep1 causes Endo to converge prematurely: the network
+        // games binary reward by collapsing to one class (reward→0.99, ng→0.24).
+        // Ep2+ get the full supervised signal once representations have diversified.
+        let supervised = epoch > 0;
+
         for (bi, &idx) in indices.iter().take(n_train).enumerate() {
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
@@ -340,24 +348,29 @@ fn train_and_eval(
             let predicted = system.read_output().iter().enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i).unwrap_or(0);
-            // Only inject reward when correct — prevents reward_slow inflation
-            // that triggers premature Mature at 11% accuracy
-            if predicted == correct {
-                system.reward_contrastive(correct, 0.5, 0.2);
+
+            if supervised {
+                // Only inject reward when correct — prevents reward_slow inflation
+                // that triggers premature Mature at 11% accuracy
+                if predicted == correct {
+                    system.reward_contrastive(correct, 0.5, 0.2);
+                }
             }
             window_buf[window_pos] = predicted == correct;
             window_pos = (window_pos + 1) % WINDOW;
             if window_filled < WINDOW { window_filled += 1; }
             let window_correct: usize = window_buf[..window_filled].iter().filter(|&&x| x).count();
             let running_acc = window_correct as f64 / window_filled as f64;
-            // Only report once window is full — partial windows inflate early accuracy
-            // which pumps recent_performance → reward_slow → premature Mature
-            if window_filled >= WINDOW {
-                system.report_performance(running_acc);
+            if supervised {
+                // Only report once window is full — partial windows inflate early accuracy
+                // which pumps recent_performance → reward_slow → premature Mature
+                if window_filled >= WINDOW {
+                    system.report_performance(running_acc);
+                }
             }
 
             // Episode-end consolidation per image
-            let reward = if predicted == correct { 1.0 } else { 0.0 };
+            let reward = if supervised && predicted == correct { 1.0 } else { 0.0 };
             system.report_episode_end(reward);
 
             let report_interval = if n_train <= 500 { 250 } else { 1000 };
@@ -417,6 +430,7 @@ fn main() {
 
     let no_kwta = args.iter().any(|a| a == "--no-kwta");
     let debug = args.iter().any(|a| a == "--debug");
+    let do_sweep = args.iter().any(|a| a == "--sweep");
     // --kwta=0.15 to override the default fraction
     let kwta_override: Option<f64> = args.iter()
         .find(|a| a.starts_with("--kwta="))
@@ -426,6 +440,66 @@ fn main() {
     // === DIAGNOSTIC: is the hidden layer discriminative? (skipped in fast unless --debug) ===
     let kwta = if no_kwta { 1.0 } else { kwta_override.unwrap_or(0.05) };
     let use_local_kwta = kwta_override.is_none() && !no_kwta;
+
+    // === LOCAL INHIBITION PARAM SWEEP (--sweep) ===
+    // Runs 4 V3 variants only — skips Baseline, V2, Damage.
+    // Sweeps istdp_rate × initial_inh_weight to fix ep1 mode collapse.
+    // Reference (from full run): istdp_rate=0.005, initial_inh_weight=-0.5 → 44%, 120s, peak 53%.
+    if do_sweep {
+        let sweep_params: &[(f64, f64, &str)] = &[
+            (0.001, -0.5, "slow-rate"),
+            (0.002, -0.5, "med-rate"),
+            (0.005, -0.2, "soft-inh"),
+            (0.001, -0.2, "slow+soft"),
+        ];
+        eprintln!("=== LocalInhibition param sweep — {} combinations ===", sweep_params.len());
+        eprintln!("  Reference (0.005, -0.5): 44% final, 120s, peak 53% mid ep3\n");
+        let version = env!("CARGO_PKG_VERSION");
+        let mut sweep_results = Vec::new();
+        for &(rate, inh_w, label) in sweep_params {
+            eprintln!("━━━ {} (istdp_rate={}, initial_inh_weight={}) ━━━", label, rate, inh_w);
+            let t = Instant::now();
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut sys = create_v2(kwta, use_local_kwta, true, rate, inh_w);
+            eprintln!("  {} morphons, {} synapses", sys.inspect().total_morphons, sys.inspect().total_synapses);
+            let acc = train_and_eval(&mut sys, &train_images, &train_labels,
+                &test_images, &test_labels, n_train, n_epochs, label, &mut rng);
+            let elapsed = t.elapsed().as_secs();
+            eprintln!("  {} → {:.1}% in {}s\n", label, acc, elapsed);
+            sweep_results.push(json!({
+                "label": label,
+                "istdp_rate": rate,
+                "initial_inh_weight": inh_w,
+                "accuracy": acc,
+                "duration_s": elapsed,
+            }));
+        }
+        eprintln!("╔═══════════════════════════════════════════════════╗");
+        eprintln!("║  Reference (0.005, -0.5):  44.0%   120s           ║");
+        for r in &sweep_results {
+            eprintln!("║  {:12} ({:.3}, {:4.1}):  {:>5.1}%  {:>4}s           ║",
+                r["label"].as_str().unwrap_or(""),
+                r["istdp_rate"].as_f64().unwrap_or(0.0),
+                r["inh_w"].as_f64().unwrap_or(0.0),
+                r["accuracy"].as_f64().unwrap_or(0.0),
+                r["duration_s"].as_u64().unwrap_or(0));
+        }
+        eprintln!("╚═══════════════════════════════════════════════════╝");
+        let dir = format!("docs/benchmark_results/v{}", version);
+        fs::create_dir_all(&dir).ok();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let path = format!("{}/sweep_local_inh_{}.json", dir, ts);
+        fs::write(&path, serde_json::to_string_pretty(&json!({
+            "benchmark": "local_inhibition_sweep",
+            "version": version,
+            "profile": profile,
+            "seed": seed,
+            "reference": { "istdp_rate": 0.005, "initial_inh_weight": -0.5, "accuracy": 44.0, "duration_s": 120 },
+            "results": sweep_results,
+        })).unwrap()).unwrap();
+        eprintln!("Saved to {}", path);
+        return;
+    }
     if kwta_override.is_some() { eprintln!("k-WTA fraction override: {:.2} (global)\n", kwta); }
     if !fast || debug {
     eprintln!("━━━ DIAGNOSTIC ━━━");
@@ -521,7 +595,7 @@ fn main() {
     // === V2 (GlobalKWTA — algorithmic top-k) ===
     eprintln!("━━━ V2 ━━━");
     let t1 = Instant::now();
-    let mut v2 = create_v2(kwta, use_local_kwta, false);
+    let mut v2 = create_v2(kwta, use_local_kwta, false, 0.005, -0.5);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v2.inspect().total_morphons, v2.inspect().total_synapses, t1.elapsed().as_secs_f64());
     let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);
@@ -540,7 +614,7 @@ fn main() {
     // train+test phase; recovery comparison is a follow-up).
     eprintln!("━━━ V3 (LocalInhibition) ━━━");
     let t_v3 = Instant::now();
-    let mut v3 = create_v2(kwta, use_local_kwta, true);
+    let mut v3 = create_v2(kwta, use_local_kwta, true, 0.001, -0.2);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v3.inspect().total_morphons, v3.inspect().total_synapses, t_v3.elapsed().as_secs_f64());
     let mut rng_v3 = rand::rngs::StdRng::seed_from_u64(seed);
@@ -647,8 +721,8 @@ fn main() {
         "v3_competition_mode": "LocalInhibition",
         "v3_local_inhibition_params": {
             "interneuron_ratio": 0.10,
-            "istdp_rate": 0.005,
-            "initial_inh_weight": -0.5,
+            "istdp_rate": 0.001,
+            "initial_inh_weight": -0.2,
             "inhibition_radius": 0.0,
             "target_rate": 0.05,
         },
