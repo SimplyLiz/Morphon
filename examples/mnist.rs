@@ -246,7 +246,7 @@ fn main() {
     let (phase1_epochs, phase1_samples, phase2_epochs, phase2_samples, phase3_samples, phase3_epochs, test_n) = match profile {
         "extended" => (3, 5000, 3, 5000, 10_000, 5, 1000),
         "standard" => (2, 3000, 2, 3000, 10_000, 3, 500),
-        _          => (1, 1000, 1, 1000,  2_000, 2, 200),
+        _          => (3, 1000, 2, 1000,  2_000, 5, 200),
     };
 
     let local_inh = use_local_inhibition();
@@ -313,11 +313,8 @@ fn main() {
             // three-factor modulation alive throughout the 50-step presentation.
             let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
 
-            // Contrastive reward: correct output gets reward, others get inhibited.
-            // This drives reward_energy_coefficient — specialists earn energy,
-            // hubs that fire for everything get ±symmetric reward → net zero income.
-            let label = train_labels[idx];
-            system.reward_contrastive(label, 0.5, 0.3);
+            // No label signal in Phase 1 — this phase is purely unsupervised.
+            // reward_contrastive() belongs in Phase 1.5+ where the readout is enabled.
 
             if (bi + 1) % 500 == 0 {
                 let s = system.inspect();
@@ -403,15 +400,14 @@ fn main() {
     // =========================================================================
     println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
-    // Freeze hidden layer — disable ALL plasticity and structural changes.
-    // medium_period freezes STDP weight updates.
-    // slow/glacial freezes synaptogenesis + pruning — without this, the
-    // slow path keeps rewiring (every 1000 steps = every 20 images), destroying
-    // the STDP features we built in Phase 1 and disconnecting neurons
-    // (observed: FR→0.000 at end, 8% readout accuracy despite training).
+    // Freeze STDP and synaptic scaling — but leave slow/glacial active.
+    // Synaptogenesis during Phase 2 (every ~20 images) builds class-specific
+    // connections between co-active neurons. Combined with frozen synaptic scaling
+    // (weights can grow unconstrained), class-specific synapses become strong →
+    // well-separated digit representations → high posthoc accuracy.
+    // Freezing slow/glacial here kills this mechanism and causes mode collapse.
     system.config.scheduler.medium_period = 999_999;
-    system.config.scheduler.slow_period = 999_999;
-    system.config.scheduler.glacial_period = 999_999;
+    // slow_period and glacial_period stay at their configured values (1000 / 5000)
     system.config.scheduler.homeostasis_period = 999_999;
     system.config.homeostasis.winner_boost = 0.0;
     system.config.lifecycle.apoptosis = false; // stop killing during eval
@@ -468,6 +464,12 @@ fn main() {
     for &c in neuron_labels.values() { class_neuron_counts[c] += 1; }
     println!("  {} neurons labeled: {:?}\n", labeled_count, class_neuron_counts);
 
+    let max_class_share = class_neuron_counts.iter().max().copied().unwrap_or(0);
+    let collapse_pct = max_class_share as f64 / labeled_count.max(1) as f64 * 100.0;
+    if collapse_pct > 60.0 {
+        println!("  *** WARNING: MODE COLLAPSE — {:.0}% of neurons assigned to one class ***\n", collapse_pct);
+    }
+
     // Test: classify by which class's neurons are most active
     println!("--- Testing with post-hoc labels ---\n");
     let mut cc = vec![0usize; NUM_CLASSES];
@@ -518,12 +520,16 @@ fn main() {
     // extracting far more discriminative signal from the same STDP features.
     // Reservoir-computing literature shows this bumps ~52% post-hoc → 85%+.
     //
-    // Hidden layer stays frozen (medium_period=999999 from Phase 2).
-    // Only readout_weights change via train_readout().
+    // NOW freeze slow/glacial — Phase 2 synaptogenesis built class-specific topology;
+    // Phase 3 needs the network to be structurally stable so the readout maps to
+    // consistent hidden representations. Without this, ongoing synaptogenesis
+    // rewires the reservoir mid-training → FR→0, 8% readout accuracy.
+    system.config.scheduler.slow_period = 999_999;
+    system.config.scheduler.glacial_period = 999_999;
     // =========================================================================
-    println!("--- PHASE 3: Supervised readout fine-tuning ({phase3_epochs} epochs, LR=0.02) ---\n");
+    println!("--- PHASE 3: Supervised readout fine-tuning ({phase3_epochs} epochs, LR=0.05) ---\n");
 
-    const PHASE3_LR: f64 = 0.02;
+    const PHASE3_LR: f64 = 0.05;
 
     for epoch in 0..phase3_epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
