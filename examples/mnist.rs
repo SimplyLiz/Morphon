@@ -227,31 +227,6 @@ fn classify(system: &mut System, rates: &[f64], rng: &mut impl Rng) -> usize {
         .unwrap_or(0)
 }
 
-/// Evaluate test accuracy and per-class breakdown.
-fn evaluate(system: &mut System, images: &[Vec<f64>], labels: &[usize],
-            n: usize, rng: &mut impl Rng) -> (f64, Vec<serde_json::Value>) {
-    let mut cc = vec![0usize; 10];
-    let mut ct = vec![0usize; 10];
-    for i in 0..images.len().min(n) {
-        let p = classify(system, &images[i], rng);
-        ct[labels[i]] += 1;
-        if p == labels[i] { cc[labels[i]] += 1; }
-    }
-    let total_correct: usize = cc.iter().sum();
-    let total_n = images.len().min(n);
-    let acc = total_correct as f64 / total_n as f64 * 100.0;
-
-    let mut per_class = Vec::new();
-    for c in 0..10 {
-        if ct[c] > 0 {
-            let class_acc = cc[c] as f64 / ct[c] as f64 * 100.0;
-            println!("  {}: {:.1}% ({}/{})", c, class_acc, cc[c], ct[c]);
-            per_class.push(json!({"digit": c, "accuracy": class_acc, "correct": cc[c], "total": ct[c]}));
-        }
-    }
-    (acc, per_class)
-}
-
 fn parse_profile() -> &'static str {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--extended") { "extended" }
@@ -265,10 +240,13 @@ fn use_local_inhibition() -> bool {
 
 fn main() {
     let profile = parse_profile();
-    let (phase1_epochs, phase1_samples, phase2_epochs, phase2_samples, test_n) = match profile {
-        "extended" => (3, 5000, 3, 5000, 1000),
-        "standard" => (2, 3000, 2, 3000, 500),
-        _          => (1, 1000, 1, 1000, 200),
+    // phase3_samples: how many training images per Phase 3 epoch.
+    // Standard/extended use full 10k set — more samples = better readout.
+    // Quick uses 2k so the total run stays under ~5 minutes.
+    let (phase1_epochs, phase1_samples, phase2_epochs, phase2_samples, phase3_samples, phase3_epochs, test_n) = match profile {
+        "extended" => (3, 5000, 3, 5000, 10_000, 5, 1000),
+        "standard" => (2, 3000, 2, 3000, 10_000, 3, 500),
+        _          => (1, 1000, 1, 1000,  2_000, 2, 200),
     };
 
     let local_inh = use_local_inhibition();
@@ -352,8 +330,10 @@ fn main() {
         }
 
         let s = system.inspect();
-        println!("Phase1 Epoch {} complete | m={} s={} fr={:.3}\n",
-            epoch + 1, s.total_morphons, s.total_synapses, s.firing_rate);
+        let diag = system.diagnostics();
+        println!("Phase1 Epoch {} complete | m={} s={} fr={:.3} w_mean={:.4} w_std={:.4}\n",
+            epoch + 1, s.total_morphons, s.total_synapses, s.firing_rate,
+            diag.weight_mean, diag.weight_std);
     }
 
     // =========================================================================
@@ -369,6 +349,13 @@ fn main() {
     system.config.metabolic.reward_energy_coefficient = 0.01;
     system.config.metabolic.superlinear_firing_factor = 2.0;
     system.config.lifecycle.apoptosis = true;
+
+    // Disable HSD during pruning — medium_period=1 makes it compound 10× harder
+    // than the old medium_period=10 baseline that produced 44.5%. Over 1500 images
+    // at FR~0.03: weight × (0.999)^2250 ≈ 0.10×. Normalization can't compensate
+    // fast enough (clamped to ±tol per tick). We want metabolic/apoptotic pressure
+    // to select neurons, not weight erosion to kill everything.
+    system.config.learning.heterosynaptic_depression = 0.0;
 
     // Enable analog readout for reward signal
     system.enable_analog_readout();
@@ -401,9 +388,11 @@ fn main() {
     }
 
     let s_after = system.inspect();
+    let diag_after = system.diagnostics();
     let total_deaths = s_before.total_morphons - s_after.total_morphons;
-    println!("Phase1.5 complete | m={} s={} fr={:.3} | {} morphons pruned\n",
-        s_after.total_morphons, s_after.total_synapses, s_after.firing_rate, total_deaths);
+    println!("Phase1.5 complete | m={} s={} fr={:.3} | {} morphons pruned | w_mean={:.4} w_std={:.4}\n",
+        s_after.total_morphons, s_after.total_synapses, s_after.firing_rate, total_deaths,
+        diag_after.weight_mean, diag_after.weight_std);
 
     // =========================================================================
     // PHASE 2: Post-hoc labeling (Diehl & Cook 2015)
@@ -414,9 +403,16 @@ fn main() {
     // =========================================================================
     println!("--- PHASE 2: Post-hoc neuron labeling (Diehl & Cook style) ---\n");
 
-    // Freeze hidden layer — disable all plasticity mechanisms for evaluation.
-    system.config.scheduler.medium_period = 999999;
-    system.config.scheduler.homeostasis_period = 999999;
+    // Freeze hidden layer — disable ALL plasticity and structural changes.
+    // medium_period freezes STDP weight updates.
+    // slow/glacial freezes synaptogenesis + pruning — without this, the
+    // slow path keeps rewiring (every 1000 steps = every 20 images), destroying
+    // the STDP features we built in Phase 1 and disconnecting neurons
+    // (observed: FR→0.000 at end, 8% readout accuracy despite training).
+    system.config.scheduler.medium_period = 999_999;
+    system.config.scheduler.slow_period = 999_999;
+    system.config.scheduler.glacial_period = 999_999;
+    system.config.scheduler.homeostasis_period = 999_999;
     system.config.homeostasis.winner_boost = 0.0;
     system.config.lifecycle.apoptosis = false; // stop killing during eval
 
@@ -511,10 +507,50 @@ fn main() {
         }
     }
 
+    // =========================================================================
+    // PHASE 3: Aggressive supervised readout training — frozen hidden layer.
+    //
+    // Post-hoc labeling (Phase 2) is a crude WTA vote: each neuron is pinned
+    // to one class and contributes equally. It discards all graded signal from
+    // neurons that respond weakly to a class.
+    //
+    // The delta-rule readout can use ALL 500 hidden neurons with learned weights,
+    // extracting far more discriminative signal from the same STDP features.
+    // Reservoir-computing literature shows this bumps ~52% post-hoc → 85%+.
+    //
+    // Hidden layer stays frozen (medium_period=999999 from Phase 2).
+    // Only readout_weights change via train_readout().
+    // =========================================================================
+    println!("--- PHASE 3: Supervised readout fine-tuning ({phase3_epochs} epochs, LR=0.02) ---\n");
+
+    const PHASE3_LR: f64 = 0.02;
+
+    for epoch in 0..phase3_epochs {
+        let mut indices: Vec<usize> = (0..train_images.len()).collect();
+        indices.shuffle(&mut rng);
+
+        for (bi, &idx) in indices.iter().take(phase3_samples).enumerate() {
+            let _fired = present_image(&mut system, &train_images[idx], STEPS_PER_IMAGE, &mut rng);
+            system.train_readout(train_labels[idx], PHASE3_LR);
+
+            if (bi + 1) % 2000 == 0 {
+                println!("  Phase3 Ep{} [{:>5}/{phase3_samples}]", epoch + 1, bi + 1);
+            }
+        }
+
+        // Mid-training accuracy check (analog readout)
+        let mut e_correct = 0usize;
+        let e_total = test_images.len().min(test_n);
+        for i in 0..e_total {
+            let p = classify(&mut system, &test_images[i], &mut rng);
+            if p == test_labels[i] { e_correct += 1; }
+        }
+        let e_acc = e_correct as f64 / e_total as f64 * 100.0;
+        println!("Phase3 Epoch {}/{phase3_epochs} → readout acc: {e_acc:.1}%\n", epoch + 1);
+    }
+
     // === Analog Readout Evaluation ===
-    // When contrastive reward is used, it trains the Motor readout weights.
-    // Evaluate using the analog readout (system.read_output()) which is what
-    // the contrastive reward actually optimizes.
+    // Full per-class breakdown after Phase 3 readout training.
     println!("\n=== Analog Readout Test ===");
     let mut ar_cc = vec![0usize; NUM_CLASSES];
     let mut ar_ct = vec![0usize; NUM_CLASSES];
@@ -560,7 +596,12 @@ fn main() {
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),
         "phase1": { "epochs": phase1_epochs, "samples_per_epoch": phase1_samples },
         "phase2": { "epochs": phase2_epochs, "samples_per_epoch": phase2_samples },
-        "results": { "test_accuracy": test_acc, "per_class": per_class },
+        "phase3": { "epochs": phase3_epochs, "samples_per_epoch": phase3_samples, "lr": PHASE3_LR },
+        "results": {
+            "posthoc_accuracy": test_acc,
+            "readout_accuracy": ar_acc,
+            "per_class_posthoc": per_class,
+        },
         "system": {
             "morphons": s.total_morphons, "synapses": s.total_synapses,
             "clusters": s.fused_clusters, "generation": s.max_generation,
