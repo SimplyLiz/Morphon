@@ -314,6 +314,82 @@ fn evaluate(system: &mut System, images: &[Vec<f64>], labels: &[usize], n: usize
     correct as f64 / tested as f64 * 100.0
 }
 
+/// Evaluate and return (accuracy, confusion matrix [true][pred]).
+fn evaluate_with_confusion(system: &mut System, images: &[Vec<f64>], labels: &[usize], n: usize)
+    -> (f64, [[u32; NUM_CLASSES]; NUM_CLASSES])
+{
+    let mut matrix = [[0u32; NUM_CLASSES]; NUM_CLASSES];
+    let tested = images.len().min(n);
+    for i in 0..tested {
+        let pred = classify(system, &images[i]);
+        let true_label = labels[i];
+        if true_label < NUM_CLASSES && pred < NUM_CLASSES {
+            matrix[true_label][pred] += 1;
+        }
+    }
+    let correct: u32 = (0..NUM_CLASSES).map(|c| matrix[c][c]).sum();
+    let acc = correct as f64 / tested as f64 * 100.0;
+    (acc, matrix)
+}
+
+fn print_confusion_matrix(matrix: &[[u32; NUM_CLASSES]; NUM_CLASSES]) {
+    eprintln!("\n━━━ CONFUSION MATRIX (rows=true, cols=pred) ━━━");
+    eprint!("    ");
+    for c in 0..NUM_CLASSES { eprint!("{:>5}", c); }
+    eprintln!("  | recall");
+    for r in 0..NUM_CLASSES {
+        eprint!("{:>3} ", r);
+        let row_total: u32 = matrix[r].iter().sum();
+        for c in 0..NUM_CLASSES {
+            eprint!("{:>5}", matrix[r][c]);
+        }
+        let recall = if row_total > 0 { matrix[r][r] as f64 / row_total as f64 * 100.0 } else { 0.0 };
+        eprintln!("  | {:.0}%", recall);
+    }
+    eprint!("    ");
+    for c in 0..NUM_CLASSES {
+        let col_total: u32 = (0..NUM_CLASSES).map(|r| matrix[r][c]).sum();
+        let prec = if col_total > 0 { matrix[c][c] as f64 / col_total as f64 * 100.0 } else { 0.0 };
+        eprint!("{:>4}%", prec as u32);
+    }
+    eprintln!("\n    (prec per class)");
+}
+
+/// Dump morphon activations for the full test set to CSV for offline MLP eval.
+/// Format: label, act_0, act_1, ..., act_N  (sorted by morphon ID)
+fn dump_activations(system: &mut System, images: &[Vec<f64>], labels: &[usize], path: &str) {
+    // Collect sorted associative+stem morphon IDs — same set the linear readout uses.
+    let mut morph_ids: Vec<MorphonId> = system.morphons.values()
+        .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+        .map(|m| m.id)
+        .collect();
+    morph_ids.sort();
+    if morph_ids.is_empty() { return; }
+
+    let mut rows: Vec<String> = Vec::with_capacity(images.len() + 1);
+    // Header
+    let header: Vec<String> = std::iter::once("label".to_string())
+        .chain(morph_ids.iter().map(|id| format!("m{}", id)))
+        .collect();
+    rows.push(header.join(","));
+
+    for (img, &label) in images.iter().zip(labels.iter()) {
+        present_image(system, img);
+        let acts: Vec<f64> = morph_ids.iter().map(|&id| {
+            system.morphons.get(&id).map(|m| {
+                let p = if m.potential.is_finite() { m.potential.clamp(-10.0, 10.0) } else { 0.0 };
+                1.0 / (1.0 + (-p).exp()) - 0.5
+            }).unwrap_or(0.0)
+        }).collect();
+        let mut row = vec![label.to_string()];
+        row.extend(acts.iter().map(|v| format!("{:.6}", v)));
+        rows.push(row.join(","));
+    }
+
+    fs::write(path, rows.join("\n")).unwrap_or_else(|e| eprintln!("  [warn] activation dump failed: {e}"));
+    eprintln!("  Dumped {} activation vectors ({} features) → {}", images.len(), morph_ids.len(), path);
+}
+
 fn train_and_eval(
     system: &mut System,
     train_images: &[Vec<f64>], train_labels: &[usize],
@@ -748,6 +824,16 @@ fn main() {
     let v3_s = v3.inspect().total_synapses;
     let v3_duration_s = t_v3.elapsed().as_secs();
     eprintln!("  V3: {:.1}% | m={} s={} ({:.0}s)\n", v3_acc, v3_m, v3_s, v3_duration_s);
+
+    // === CONFUSION MATRIX + ACTIVATION DUMP (V3) ===
+    if !fast {
+        let (_, confusion) = evaluate_with_confusion(&mut v3, &test_images, &test_labels, n_test);
+        print_confusion_matrix(&confusion);
+        let version = env!("CARGO_PKG_VERSION");
+        let act_path = format!("docs/benchmark_results/v{}/v3_activations.csv", version);
+        fs::create_dir_all(format!("docs/benchmark_results/v{}", version)).ok();
+        dump_activations(&mut v3, &test_images, &test_labels, &act_path);
+    }
 
     // === RECEPTIVE FIELD DUMP ===
     // Export top-K associative morphon RFs (S→A weights mapped to 28×28 pixel grid)
