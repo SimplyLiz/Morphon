@@ -238,6 +238,22 @@ Cascade Invalidation           ←──  ANCS compute_blast_radius()
 (transitive Dependents)             traversiert Dependency Graph
 ```
 
+**v4.3.0: Interne Reconsolidation als Brücke**
+
+MORPHON v4.3.0 führt `reconsolidate()` ein — eine Nader-style labile Reconsolidation. Synapsen, die konsolidiert wurden, werden wieder labil (un-konsolidiert), wenn der Morphon-interne `desire`-Wert einen Schwellenwert `theta_reconsolidate` überschreitet. Das ist das interne Pendant zu TruthKeepers SUPPORTED→HYPOTHESIS-Übergang:
+
+```
+MORPHON intern                     TruthKeeper/ANCS extern
+──────────────────────             ────────────────────────────
+syn.consolidated = true            truth_state = SUPPORTED
+  ↓ (desire > theta_reconsolidate)   ↓ (source change event)
+syn.consolidated = false           truth_state = HYPOTHESIS
+  ↓ (re-learning)                    ↓ (re-verification)
+syn.consolidated = true            truth_state = SUPPORTED
+```
+
+Der Unterschied: MORPHON-seitige Reconsolidation reagiert auf interne metabolische Signale (Energiedruck, hohe Desire), ANCS-seitige auf externe Quell-Änderungen. Beide führen zum selben Zustandsübergang — labile Plastizität, Re-Lernen, Re-Konsolidierung. Im integrierten System werden beide Pfade in dieselbe `morphon_justifications`-Tabelle geschrieben: `consolidation_level` wechselt von `consolidated` → `plastic` → `consolidated`.
+
 **Konkret — der Sensor-Austausch-Flow:**
 
 ```
@@ -515,8 +531,9 @@ print(f"Demotion candidates: {system.pressure.candidates_count()}")
 
 **Quick Wins (sofort machbar):**
 1. F7 Pressure-Logik nach Rust portieren (ANCS v2 ist spezifiziert, nur Portierung nötig)
-2. Justification-Tabelle in ANCS Schema hinzufügen (eine Migration, ~50 Zeilen SQL)
+2. Justification-Tabelle in ANCS Schema hinzufügen (eine Migration, ~50 Zeilen SQL) — `consolidation_level` (plastic/stabilized/consolidated/petrified) ist ab MORPHON v4.3.0 in der Runtime voll implementiert; das SQL-Schema ist direkt mappbar
 3. AXION T3 Encoder als Rust-Crate wrappen (für Feld-Broadcast)
+4. Reconsolidation-Events in ANCS schreiben: `reconsolidate()` (v4.3.0) generiert MORPHON-interne SUPPORTED→HYPOTHESIS-Übergänge — diese als ANCS-Events zu exportieren ist ein einzeiliger Hook in `system.rs`
 
 ---
 

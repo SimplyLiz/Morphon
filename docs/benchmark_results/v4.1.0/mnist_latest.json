@@ -1,0 +1,101 @@
+{
+  "benchmark": "mnist",
+  "diagnostics": {
+    "active_tags": 532,
+    "consolidated": 0,
+    "total_captures": 0,
+    "weight_mean": 0.03830478245315891,
+    "weight_std": 0.7444904968199011
+  },
+  "method": "two-phase (unsupervised STDP + GlobalKWTA)",
+  "phase1": {
+    "epochs": 2,
+    "samples_per_epoch": 3000
+  },
+  "phase2": {
+    "epochs": 2,
+    "samples_per_epoch": 3000
+  },
+  "phase3": {
+    "epochs": 3,
+    "lr": 0.02,
+    "samples_per_epoch": 10000
+  },
+  "profile": "standard",
+  "results": {
+    "per_class_posthoc": [
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 0,
+        "total": 56
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 1,
+        "total": 57
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 2,
+        "total": 51
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 3,
+        "total": 49
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 4,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 5,
+        "total": 46
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 6,
+        "total": 50
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 7,
+        "total": 51
+      },
+      {
+        "accuracy": 0.0,
+        "correct": 0,
+        "digit": 8,
+        "total": 40
+      },
+      {
+        "accuracy": 100.0,
+        "correct": 54,
+        "digit": 9,
+        "total": 54
+      }
+    ],
+    "posthoc_accuracy": 10.8,
+    "readout_accuracy": 9.2
+  },
+  "system": {
+    "clusters": 0,
+    "firing_rate": 0.0,
+    "generation": 1,
+    "morphons": 1218,
+    "prediction_error": 0.6080439259079232,
+    "synapses": 71487
+  },
+  "timestamp": 1775849420,
+  "version": "4.1.0"
+}

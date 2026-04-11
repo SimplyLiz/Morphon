@@ -1,0 +1,18 @@
+{
+  "benchmark": "temporal",
+  "results": {
+    "pred_period3": {
+      "mae": 413.7470924952794,
+      "n_steps": 12000,
+      "pass": false,
+      "period": 3
+    },
+    "pred_period5": {
+      "mae": 0.07634018522844999,
+      "n_steps": 12000,
+      "pass": true,
+      "period": 5
+    }
+  },
+  "version": "4.1.0"
+}

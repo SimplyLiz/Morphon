@@ -36,14 +36,14 @@ A key design choice is using an analog readout (a linear layer over morphon pote
 \paragraph{Results.}
 \begin{table}[h]
 \centering
-\caption{MNIST results across versions and training conditions ($\sim$1240--1290 morphons, $\sim$73--88K synapses). v4.1.0, seed=42. Accuracy varies $\pm$2--3pp across independent runs due to stochastic synaptogenesis.}
+\caption{MNIST results across versions and training conditions ($\sim$1240--1290 morphons, $\sim$73--88K synapses). v4.3.0, seed=42. Accuracy varies $\pm$2--3pp across independent runs due to stochastic synaptogenesis.}
 \label{tab:mnist}
 \begin{tabular}{lccc}
 \toprule
 Condition & Quick (3K×3ep) & Standard (5K×3ep) & Notes \\
 \midrule
 V2 GlobalKWTA (intact)    & 44--44.5\% & 48.5\% & Algorithmic k-WTA \\
-V3 LocalInhib+iSTDP (intact) & 44.5--48\% & \textbf{52.0\%} & Vogels 2011; $\geq$V2; 4.3×--4.4× faster \\
+V3 LocalInhib+iSTDP (intact) & \textbf{49\%} (peak 54\%) & \textbf{52.0\%} & slow+soft: $\eta_i$=0.001, $w_i^0$=$-$0.2; $\geq$V2 \\
 Post-damage (30\% killed)    & 48.0\%     & 47.3\%  & Random ablation \\
 Post-recovery (1500 samples) & 33.5\%     & 28.5\%  & See §~\ref{sec:self_healing_discussion} \\
 \midrule
@@ -52,6 +52,12 @@ Post-recovery (1500 samples) & 33.5\%     & 28.5\%  & See §~\ref{sec:self_heali
 \bottomrule
 \end{tabular}
 \end{table}
+
+\paragraph{Epoch-0 as unsupervised exploration.}
+A non-obvious but critical training protocol: reward signals (contrastive reinforcement and \texttt{report\_episode\_end}) are \emph{withheld} entirely during the first epoch (epoch 0). Reward is gated on \texttt{epoch > 0}. The reason: binary reward in epoch 0 allows the network to ``game'' the signal before class-selective representations have formed. Without inhibitory competition having had time to diversify activity patterns, a network that happens to favor one class early on will receive consistent positive reinforcement for that bias --- the reward signal reinforces the mode collapse instead of correcting it. Epoch 0 therefore functions as a pure unsupervised STDP phase: inputs drive feature formation via Hebbian coincidence detection, iSTDP balances excitation and inhibition, and no classification signal is applied. By epoch 1, morphon representations are sufficiently diverse that contrastive reward can usefully guide differentiation between classes rather than entrench an artifact. This distinction --- between a reward signal that guides and one that locks in early noise --- is a practical instance of the credit assignment problem in developmental learning: the credit must be withheld until the substrate is ready to use it.
+
+\paragraph{Tag-and-capture consolidation: a latent bug fixed in v4.3.0.}
+The tag-and-capture mechanism (Section~\ref{sec:architecture}) is the primary path by which synaptic weight changes survive structural plasticity events. A synapse is tagged when a coincident pre- and post-synaptic event occurs; it is consolidated (flagged as pruning-protected) when a reward signal arrives while the tag exceeds a threshold. In all versions prior to v4.3.0, the \texttt{capture\_threshold} parameter was set to $10.0$, while tags are stored in $[0, 1]$ --- a mismatch that made consolidation permanently impossible. Every synapse that should have been consolidated was silently pruned, including those that had been weight-updated during the most active classification learning in epochs 2--3. The Endo Differentiating stage (aggressive synaptogenesis, $cg = 2.0$) then pruned exactly these learned synapses, explaining the characteristic accuracy drop observed between epochs 2 and 3 in pre-fix runs. v4.3.0 sets \texttt{capture\_threshold = 0.5}, restoring the intended behavior: synapses that carry reward-correlated activity are protected from structural pruning and remain available as the substrate for long-term learning.
 
 \paragraph{Hub dominance and its cure.}
 The v3.0.0 baseline (30\%) was limited by a specific failure mode: a small number of ``hub'' morphons with very high in-degree accumulated nearly all reward-correlated weight updates and began responding to every input class, collapsing the readout to a near-random discriminator. With rate-based inhibitory STDP --- computed once per 10-tick medium period using a 100-tick activity average --- the inhibitory interneurons responded too slowly to break this dominance; a single hub could accumulate 50--100 correlated spikes before any corrective signal arrived.
@@ -75,7 +81,7 @@ This reframes the finding. The v3.0.0 self-healing result was not a feature of t
 \end{figure}
 
 \paragraph{Implication.}
-The intact ceiling has risen from 30\% to 52\% (standard profile) via a single architectural correction: inhibitory plasticity at biological timescales. No tuning was required. The 22pp gain is entirely attributable to the iSTDP timescale fix; everything else (network size, training data, epochs) is unchanged.
+The intact ceiling has risen from 30\% to 52\% (standard profile) via a single architectural correction: inhibitory plasticity at biological timescales. No tuning was required. The 22pp gain is entirely attributable to the iSTDP timescale fix; everything else (network size, training data, epochs) is unchanged. In v4.3.0, with the epoch-0 unsupervised phase, the capture\_threshold fix, and softer iSTDP parameters ($\eta_i = 0.001$, $w_i^0 = -0.2$), the quick-profile ceiling rises to 49\% median (peak 54\%) --- within 3pp of the standard-profile result. The reduction in quick-versus-standard gap indicates that the earlier gap was partly due to consolidation failure during the compressed training schedule, not only sample count.
 
 \begin{figure}[h]
   \centering

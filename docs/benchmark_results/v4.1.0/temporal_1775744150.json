@@ -1,0 +1,18 @@
+{
+  "benchmark": "temporal",
+  "results": {
+    "seq_len4": {
+      "accuracy": 0.74325,
+      "n_trials": 4000,
+      "pass": false,
+      "seq_len": 4
+    },
+    "seq_len8": {
+      "accuracy": 0.82875,
+      "n_trials": 4000,
+      "pass": true,
+      "seq_len": 8
+    }
+  },
+  "version": "4.1.0"
+}

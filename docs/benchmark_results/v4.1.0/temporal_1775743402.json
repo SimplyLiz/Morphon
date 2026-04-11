@@ -1,0 +1,18 @@
+{
+  "benchmark": "temporal",
+  "results": {
+    "dms_delay3": {
+      "accuracy": 0.7233333333333334,
+      "delay": 3,
+      "n_trials": 3000,
+      "pass": false
+    },
+    "dms_delay5": {
+      "accuracy": 0.7066666666666667,
+      "delay": 5,
+      "n_trials": 3000,
+      "pass": true
+    }
+  },
+  "version": "4.1.0"
+}
