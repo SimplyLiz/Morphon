@@ -28,6 +28,7 @@ use crate::scheduler::SchedulerConfig;
 use crate::topology::Topology;
 use crate::types::*;
 use rand::Rng;
+use rand::SeedableRng;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,13 @@ pub struct SystemConfig {
     /// Hybrid = supervised until consolidation_gate, then TD-only.
     #[serde(default)]
     pub readout_mode: ReadoutTrainingMode,
+
+    /// Optional RNG seed for fully deterministic initialization and training.
+    /// When set, System::new(), enable_analog_readout(), and step() all use
+    /// a seeded SmallRng — two runs with the same config + seed produce identical results.
+    /// When None (default), seeded from OS entropy (non-deterministic).
+    #[serde(default)]
+    pub rng_seed: Option<u64>,
 }
 
 impl SystemConfig {
@@ -109,6 +117,7 @@ impl Default for SystemConfig {
             endoquilibrium: crate::endoquilibrium::EndoConfig::default(),
             dream: DreamConfig::default(),
             readout_mode: ReadoutTrainingMode::default(),
+            rng_seed: None,
         }
     }
 }
@@ -273,12 +282,19 @@ pub struct System {
 
     /// V6: Auto-Merge candidate buffer — tracks co-activating proximate morphon groups.
     pub(crate) auto_merge_candidates: morphogenesis::AutoMergeCandidates,
+
+    /// Seeded RNG for deterministic runs. Initialized from config.rng_seed if set,
+    /// otherwise from OS entropy. All rand calls in System use this — never rand::rng().
+    pub(crate) rng: rand::rngs::SmallRng,
 }
 
 impl System {
     /// Create a new MI System by running its developmental program.
     pub fn new(config: SystemConfig) -> Self {
-        let mut rng = rand::rng();
+        let mut rng = match config.rng_seed {
+            Some(seed) => rand::rngs::SmallRng::seed_from_u64(seed),
+            None => rand::rngs::SmallRng::from_rng(&mut rand::rng()),
+        };
 
         // Resolve effective morphon cap: governance takes precedence over morphogenesis.
         // The governance cap is a constitutional constraint the system cannot override.
@@ -394,6 +410,7 @@ impl System {
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
             auto_merge_candidates: morphogenesis::AutoMergeCandidates::default(),
+            rng,
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -497,8 +514,8 @@ impl System {
         for m in system.morphons.values_mut() {
             if m.cell_type == CellType::Associative || m.cell_type == CellType::Stem {
                 // Log-normal(mu=-0.3, sigma=0.7) → median ~0.74, ~20% below 0.3, ~20% above 1.5
-                let u1: f64 = rng.random_range(0.001..1.0_f64);
-                let u2: f64 = rng.random_range(0.0..std::f64::consts::TAU);
+                let u1: f64 = system.rng.random_range(0.001..1.0_f64);
+                let u2: f64 = system.rng.random_range(0.0..std::f64::consts::TAU);
                 let normal = (-2.0 * u1.ln()).sqrt() * u2.cos(); // Box-Muller
                 let log_normal = (-0.3 + 0.7 * normal).exp();
                 m.plasticity_rate = log_normal.clamp(0.1, 2.5);
@@ -654,7 +671,6 @@ impl System {
     pub fn step(&mut self) -> MorphogenesisReport {
         let dt = self.config.dt;
         self.step_count += 1;
-        let mut rng = rand::rng();
 
         let tick = self.config.scheduler.tick(self.step_count);
         let mut report = MorphogenesisReport::default();
@@ -1629,7 +1645,7 @@ impl System {
                 &slow_learning,
                 self.modulation.homeostasis,
                 &self.config.lifecycle,
-                &mut rng,
+                &mut self.rng,
                 self.field.as_ref(),
                 self.config.governance.max_connectivity_per_morphon,
                 self.step_count,
@@ -1744,7 +1760,7 @@ impl System {
                 self.config.governance.max_unverified_fraction,
                 self.modulation.arousal,
                 &self.config.lifecycle,
-                &mut rng,
+                &mut self.rng,
                 self.config.target_morphology.as_ref(),
                 self.step_count,
                 &self.config.homeostasis.competition_mode,
@@ -2168,14 +2184,13 @@ impl System {
 
         let n_assoc = assoc_ids.len().max(1) as f64;
         let scale = 1.0 / n_assoc.sqrt();
-        let mut rng = rand::rng();
-        use rand::Rng;
 
-        self.readout_weights = (0..self.output_ports.len())
+        let n_outputs = self.output_ports.len();
+        self.readout_weights = (0..n_outputs)
             .map(|_| {
                 assoc_ids
                     .iter()
-                    .map(|&id| (id, rng.random_range(-scale..scale)))
+                    .map(|&id| (id, self.rng.random_range(-scale..scale)))
                     .collect()
             })
             .collect();
@@ -2191,7 +2206,7 @@ impl System {
         let sens_scale = 1.0 / n_total.sqrt();
         for weights in &mut self.readout_weights {
             for &id in &sensory_ids {
-                weights.insert(id, rng.random_range(-sens_scale..sens_scale));
+                weights.insert(id, self.rng.random_range(-sens_scale..sens_scale));
             }
         }
 

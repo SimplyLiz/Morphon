@@ -91,6 +91,7 @@ impl System {
             snapshot.config.developmental.target_input_size,
             snapshot.config.developmental.target_output_size,
         );
+        let rng_seed = snapshot.config.rng_seed;
 
         System {
             morphons: snapshot.morphons,
@@ -132,6 +133,13 @@ impl System {
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
             auto_merge_candidates: crate::morphogenesis::AutoMergeCandidates::default(),
+            rng: {
+                use rand::SeedableRng;
+                match rng_seed {
+                    Some(seed) => rand::rngs::SmallRng::seed_from_u64(seed),
+                    None => rand::rngs::SmallRng::from_rng(&mut rand::rng()),
+                }
+            },
         }
     }
 
