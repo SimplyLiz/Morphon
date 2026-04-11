@@ -176,6 +176,7 @@ fn create_system(local_inh: bool) -> System {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.0005, // gentler for large network
             heterosynaptic_depression: 0.001, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.05,
@@ -193,6 +194,7 @@ fn create_system(local_inh: bool) -> System {
             fusion: false,
             apoptosis: false,    // OFF during Phase 1 — enabled at Phase 2 transition
             migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig {
             reward_energy_coefficient: 0.0,    // OFF during Phase 1 (no reward signal)

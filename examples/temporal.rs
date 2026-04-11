@@ -88,6 +88,7 @@ fn build_system(
             fusion: false,
             apoptosis: false,
             migration: false,
+            synaptogenesis: true,
         },
         morphogenesis: MorphogenesisParams {
             ..MorphogenesisParams::default()

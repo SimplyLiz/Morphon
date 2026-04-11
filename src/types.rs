@@ -113,7 +113,14 @@ pub struct LifecycleConfig {
     pub apoptosis: bool,
     /// Allow migration in information space.
     pub migration: bool,
+    /// Allow synaptogenesis (new synapse growth on slow ticks).
+    /// Disabled during warm-up to keep bootstrap topology intact.
+    #[serde(default = "crate::types::lifecycle_default_true")]
+    pub synaptogenesis: bool,
 }
+
+#[doc(hidden)]
+pub fn lifecycle_default_true() -> bool { true }
 
 impl Default for LifecycleConfig {
     fn default() -> Self {
@@ -123,6 +130,7 @@ impl Default for LifecycleConfig {
             fusion: true,
             apoptosis: true,
             migration: true,
+            synaptogenesis: true,
         }
     }
 }

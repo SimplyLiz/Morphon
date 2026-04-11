@@ -70,6 +70,7 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.001,
             heterosynaptic_depression: 0.002, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: Some(60),
@@ -82,6 +83,7 @@ fn make_system(target_inputs: usize, target_outputs: usize) -> SystemConfig {
             apoptosis: false,
             differentiation: false,
             migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,
@@ -191,6 +193,7 @@ fn run_option_c(rng: &mut impl Rng) -> Vec<f64> {
             apoptosis: false,
             differentiation: false,
             migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,
@@ -254,7 +257,9 @@ fn main() {
         learning: LearningParams::default(),
         morphogenesis: MorphogenesisParams { max_morphons: Some(20), ..Default::default() },
         homeostasis: Default::default(),
-        lifecycle: LifecycleConfig { division: false, fusion: false, apoptosis: false, differentiation: false, migration: false },
+        lifecycle: LifecycleConfig { division: false, fusion: false, apoptosis: false, differentiation: false, migration: false,
+            synaptogenesis: true,
+        },
         metabolic: MetabolicConfig::default(),
         dt: 1.0, working_memory_capacity: 3, episodic_memory_capacity: 10,
         ..Default::default()

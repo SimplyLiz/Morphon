@@ -162,6 +162,7 @@ fn create_system(competition_mode: CompetitionMode) -> System {
             transmitter_potentiation: 0.002, // anti-silence: floor on dw when pre fires but post quiet
             heterosynaptic_depression: 0.003, // anti-runaway: depress all inputs when post fires
             tag_accumulation_rate: 0.3,       // moderate — between instant (1.0) and v2.0.0's 0.05
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,
@@ -182,6 +183,7 @@ fn create_system(competition_mode: CompetitionMode) -> System {
             fusion: false,
             apoptosis: false,
             migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         endoquilibrium: EndoConfig { enabled: true, ..Default::default() },

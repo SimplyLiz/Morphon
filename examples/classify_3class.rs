@@ -57,6 +57,7 @@ fn main() {
         lifecycle: LifecycleConfig {
             division: false, fusion: false, apoptosis: false,
             differentiation: false, migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,

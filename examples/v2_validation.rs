@@ -147,6 +147,7 @@ fn base_config() -> SystemConfig {
             alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.002,
             heterosynaptic_depression: 0.003, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             migration_rate: 0.08,
@@ -166,6 +167,7 @@ fn base_config() -> SystemConfig {
             fusion: false,
             apoptosis: false,
             migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         dt: 1.0,
@@ -468,6 +470,7 @@ fn experiment_self_healing() {
         config.lifecycle = LifecycleConfig {
             division: false, differentiation: true, fusion: false,
             apoptosis: false, migration: false,
+            synaptogenesis: true,
         };
         let mut sys = System::new(config);
         sys.enable_analog_readout();

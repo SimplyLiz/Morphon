@@ -60,7 +60,32 @@ pub struct MorphogenesisParams {
     /// V2: Frustration-driven stochastic exploration configuration.
     #[serde(default)]
     pub frustration: FrustrationConfig,
+
+    /// V6: Graceful Degradation — minimum morphon energy to participate in
+    /// synaptogenesis or division. Survival-mode morphons (energy ≤ this) are
+    /// excluded from structural plasticity until energy recovers.
+    #[serde(default = "default_min_energy_for_morphogenesis")]
+    pub min_energy_for_morphogenesis: f64,
+
+    /// V6: Auto-Merge — minimum co-activating spatially proximate morphons
+    /// to register a fusion candidate (second sighting triggers fusion).
+    #[serde(default = "default_auto_merge_threshold")]
+    pub auto_merge_threshold: usize,
+
+    /// V6: Auto-Merge — simulation steps within which a candidate group must
+    /// re-trigger to confirm fusion. Outside the window, registration resets.
+    #[serde(default = "default_auto_merge_window")]
+    pub auto_merge_window: u64,
+
+    /// V6: Auto-Merge — Poincaré ball distance threshold for "spatially proximate".
+    #[serde(default = "default_auto_merge_proximity")]
+    pub auto_merge_proximity: f64,
 }
+
+fn default_min_energy_for_morphogenesis() -> f64 { 0.2 }
+fn default_auto_merge_threshold() -> usize { 3 }
+fn default_auto_merge_window() -> u64 { 50 }
+fn default_auto_merge_proximity() -> f64 { 0.3 }
 
 impl Default for MorphogenesisParams {
     fn default() -> Self {
@@ -82,6 +107,10 @@ impl Default for MorphogenesisParams {
             min_motor_fraction: 0.02,
             max_single_type_fraction: 0.80,
             frustration: FrustrationConfig::default(),
+            min_energy_for_morphogenesis: default_min_energy_for_morphogenesis(),
+            auto_merge_threshold: default_auto_merge_threshold(),
+            auto_merge_window: default_auto_merge_window(),
+            auto_merge_proximity: default_auto_merge_proximity(),
         }
     }
 }
@@ -137,11 +166,14 @@ pub fn synaptogenesis(
 
     // Pre-filter: only morphons with recent activity are candidates.
     // InhibitoryInterneurons are excluded — their connectivity is managed by iSTDP.
+    // V6: Survival-mode morphons (low energy) are excluded — no structural growth
+    // while energy is critically depleted.
     let activity_threshold = params.synaptogenesis_threshold * 0.5; // scale: 0.6 * 0.5 = 0.3 at default
     let active: Vec<MorphonId> = morphons
         .values()
         .filter(|m| m.cell_type != CellType::InhibitoryInterneuron
-            && m.activity_history.mean() >= activity_threshold)
+            && m.activity_history.mean() >= activity_threshold
+            && m.energy > params.min_energy_for_morphogenesis)
         .map(|m| m.id)
         .collect();
 
@@ -295,7 +327,9 @@ pub fn division(
             // Only Associative and Stem can divide — Sensory/Motor are fixed I/O ports,
             // Modulatory is controlled by fusion. Without this, Sensory morphons
             // (100% firing from constant input) reproduce endlessly.
+            // V6: Survival-mode morphons cannot divide — no resources to spare for offspring.
             (m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
+            && m.energy > params.min_energy_for_morphogenesis
             && m.should_divide(params.division_threshold)
         })
         .map(|m| m.id)
@@ -1288,6 +1322,109 @@ pub fn apoptosis(
     count
 }
 
+/// V6: Auto-Merge — buffer of co-activation groups that are candidates for fusion.
+///
+/// Maps a deterministic hash of a sorted MorphonId group to `(group, first_seen_step)`.
+/// When the same group fires together within `auto_merge_window` steps of the first
+/// sighting, it is confirmed as a fusion candidate. This two-step trigger prevents
+/// fusing on spurious coincidences.
+#[derive(Default)]
+pub struct AutoMergeCandidates {
+    candidates: HashMap<u64, (Vec<MorphonId>, u64)>,
+}
+
+impl AutoMergeCandidates {
+    /// Compute a deterministic key for a group of morphons (order-independent).
+    fn key(group: &[MorphonId]) -> u64 {
+        let mut sorted = group.to_vec();
+        sorted.sort();
+        sorted
+            .iter()
+            .fold(0u64, |acc, id| acc.wrapping_mul(1_000_003).wrapping_add(*id as u64))
+    }
+
+    /// Register or confirm a candidate group.
+    /// Returns `Some(group)` on the second sighting within the window (confirmed).
+    /// Returns `None` on first sighting (registered).
+    pub fn update(
+        &mut self,
+        group: Vec<MorphonId>,
+        step: u64,
+        window: u64,
+    ) -> Option<Vec<MorphonId>> {
+        let key = Self::key(&group);
+        if let Some((_, first_seen)) = self.candidates.get(&key) {
+            if step.saturating_sub(*first_seen) <= window {
+                // Confirmed — remove and return for fusion
+                self.candidates.remove(&key);
+                return Some(group);
+            }
+        }
+        // First sighting (or expired — overwrite)
+        self.candidates.insert(key, (group, step));
+        None
+    }
+
+    /// Remove stale candidates older than 2× window to prevent unbounded growth.
+    pub fn evict_stale(&mut self, step: u64, window: u64) {
+        self.candidates
+            .retain(|_, (_, first_seen)| step.saturating_sub(*first_seen) <= window * 2);
+    }
+}
+
+/// V6: Find groups of ≥N spatially proximate morphons that all fired this step
+/// and check them against the candidate buffer.
+///
+/// Returns confirmed fusion groups (second sighting within window).
+/// Groups that appear for the first time are registered but not returned.
+pub fn check_auto_merge(
+    fired: &[MorphonId],
+    morphons: &HashMap<MorphonId, Morphon>,
+    candidates: &mut AutoMergeCandidates,
+    params: &MorphogenesisParams,
+    step: u64,
+) -> Vec<Vec<MorphonId>> {
+    candidates.evict_stale(step, params.auto_merge_window);
+
+    // Only unfused morphons participate — already-fused ones are handled by the cluster system
+    let fired_morphons: Vec<&Morphon> = fired
+        .iter()
+        .filter_map(|id| morphons.get(id))
+        .filter(|m| m.fused_with.is_none())
+        .collect();
+
+    if fired_morphons.len() < params.auto_merge_threshold {
+        return Vec::new();
+    }
+
+    let mut confirmed = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+
+    for i in 0..fired_morphons.len() {
+        let anchor = fired_morphons[i];
+        if visited.contains(&anchor.id) {
+            continue;
+        }
+        // Find all fired morphons within proximity of this anchor
+        let group: Vec<MorphonId> = fired_morphons
+            .iter()
+            .filter(|m| anchor.position.distance(&m.position) < params.auto_merge_proximity)
+            .map(|m| m.id)
+            .collect();
+
+        if group.len() >= params.auto_merge_threshold {
+            for &id in &group {
+                visited.insert(id);
+            }
+            if let Some(g) = candidates.update(group, step, params.auto_merge_window) {
+                confirmed.push(g);
+            }
+        }
+    }
+
+    confirmed
+}
+
 /// Run morphogenesis mechanisms based on scheduler tick.
 ///
 /// Uses the dual-clock architecture: slow-path processes (synaptogenesis, pruning,
@@ -1307,7 +1444,9 @@ pub fn step_slow(
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
-    report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
+    if lifecycle.synaptogenesis {
+        report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
+    }
     report.synapses_pruned = pruning(topology, learning_params, morphons);
 
     if lifecycle.migration {

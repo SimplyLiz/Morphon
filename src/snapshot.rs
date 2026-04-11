@@ -131,6 +131,7 @@ impl System {
             cached_maintenance_costs: std::collections::HashMap::new(),
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
+            auto_merge_candidates: crate::morphogenesis::AutoMergeCandidates::default(),
         }
     }
 

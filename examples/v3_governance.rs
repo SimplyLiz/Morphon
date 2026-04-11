@@ -56,7 +56,8 @@ fn main() {
                 fusion: false,
                 apoptosis: true,
                 migration: true,
-            },
+            synaptogenesis: true,
+        },
             ..Default::default()
         };
         let mut system = System::new(config);
@@ -127,7 +128,8 @@ fn main() {
                 fusion: true,
                 apoptosis: false,
                 migration: false,
-            },
+            synaptogenesis: true,
+        },
             ..Default::default()
         };
         let mut system = System::new(config);
@@ -256,7 +258,8 @@ fn main() {
                 fusion: true,
                 apoptosis: false,
                 migration: false,
-            },
+            synaptogenesis: true,
+        },
             ..Default::default()
         };
         let mut system = System::new(config);

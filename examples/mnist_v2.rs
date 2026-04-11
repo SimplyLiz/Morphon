@@ -61,7 +61,7 @@ fn base_learning_params() -> LearningParams {
         a_minus: -0.8,
         tau_tag: 200.0,
         tag_threshold: 0.5,
-        capture_threshold: 10.0,
+        capture_threshold: 0.5,   // tags max at 1.0 — 10.0 made consolidation impossible
         capture_rate: 0.5,
         weight_max: 1.5,
         weight_min: 0.01,
@@ -71,6 +71,7 @@ fn base_learning_params() -> LearningParams {
         alpha_homeostasis: 0.1,
         transmitter_potentiation: 0.0005,
         heterosynaptic_depression: 0.001, tag_accumulation_rate: 0.3,
+        ..Default::default()
     }
 }
 
@@ -93,7 +94,8 @@ fn frozen_lifecycle() -> LifecycleConfig {
         fusion: false,
         apoptosis: false,
         migration: false,
-    }
+            synaptogenesis: true,
+        }
 }
 
 fn create_baseline(kwta_fraction: f64, local: bool) -> System {
@@ -653,6 +655,7 @@ fn main() {
         v2.config.lifecycle = LifecycleConfig {
             division: true, differentiation: true, fusion: false,
             apoptosis: false, migration: true,
+            synaptogenesis: true,
         };
         v2.config.scheduler.slow_period = 200;
         v2.config.scheduler.glacial_period = 500;

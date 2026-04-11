@@ -3,6 +3,13 @@
 //! Uses the Dual-Clock Architecture (Section 3.8) to separate fast inference
 //! from slow morphogenesis, with homeostatic protection mechanisms throughout.
 
+/// V6: Graceful Degradation — energy thresholds for three-mode operation.
+/// Full mode (> DEGRADED): three-factor learning with all neuromodulation channels.
+/// Degraded mode (SURVIVAL..DEGRADED]: simplified learning — only homeostasis channel.
+/// Survival mode (≤ SURVIVAL): no firing, no weight updates — energy regeneration only.
+const ENERGY_DEGRADED_THRESHOLD: f64 = 0.5;
+const ENERGY_SURVIVAL_THRESHOLD: f64 = 0.2;
+
 use crate::developmental::{self, DevelopmentalConfig, TargetMorphology};
 use crate::diagnostics::Diagnostics;
 use crate::field::{FieldConfig, MorphonField};
@@ -260,6 +267,9 @@ pub struct System {
     /// Endoquilibrium threshold bias cached as f32 for hot-path use.
     /// Updated on medium tick from endo.channels.threshold_bias.
     pub(crate) endo_threshold_bias: f32,
+
+    /// V6: Auto-Merge candidate buffer — tracks co-activating proximate morphon groups.
+    pub(crate) auto_merge_candidates: morphogenesis::AutoMergeCandidates,
 }
 
 impl System {
@@ -380,6 +390,7 @@ impl System {
             cached_maintenance_costs: HashMap::new(),
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
+            auto_merge_candidates: morphogenesis::AutoMergeCandidates::default(),
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -413,6 +424,7 @@ impl System {
             fusion: false,
             apoptosis: false,
             migration: false,
+            synaptogenesis: false, // warm-up builds correlations, not new structure
         };
 
         for step in 0..100_u64 {
@@ -589,10 +601,11 @@ impl System {
             let v = self.hot.voltage[j] * self.hot.leak_decay[j] + self.hot.input_current[j];
             self.hot.voltage[j] = v.clamp(-10.0, 10.0);
 
-            // Threshold check: voltage + energy gate (matches original fired condition).
-            // hot.energy is the gating mechanism — zero-energy morphons cannot fire.
+            // Threshold check: voltage + energy gate.
+            // V6 Graceful Degradation: survival mode (energy ≤ 0.2) silences the morphon
+            // without killing it — energy can regenerate and firing resumes when restored.
             let fires = self.hot.voltage[j] >= self.hot.threshold[j] + bias
-                && self.hot.energy[j] > 0.0;
+                && self.hot.energy[j] > ENERGY_SURVIVAL_THRESHOLD as f32;
             self.hot.fired[j] = fires;
 
             if fires {
@@ -1265,6 +1278,7 @@ impl System {
                         plast_rate,
                         astro_state,
                         post_ct,
+                        post_energy,
                     ) = self
                         .morphons
                         .get(&id)
@@ -1290,6 +1304,7 @@ impl System {
                                 m.plasticity_rate,
                                 m.astrocytic_state,
                                 m.cell_type,
+                                m.energy,
                             )
                         })
                         .unwrap_or((
@@ -1301,6 +1316,7 @@ impl System {
                             1.0,
                             0.5,
                             CellType::Stem,
+                            1.0,
                         ));
                     // Astrocytic gate: sigmoid(a - threshold). Bypassed for Modulatory/InhibitoryInterneuron.
                     let astro_gate = if post_ct == CellType::Modulatory
@@ -1326,90 +1342,107 @@ impl System {
                                 self.step_count,
                             );
 
-                            if is_assoc && feedback_sig.abs() > 0.001 {
-                                // DFA climbing-fiber rule: Δw = pre_trace × feedback_signal × lr
-                                // Uses pre_trace (decaying memory of recent pre-synaptic firing)
-                                // NOT eligibility (which is STDP-gated and attenuates the signal).
-                                // NOT binary pre_fired (too sparse at 5% firing rate).
-                                // pre_trace persists ~10 steps after firing — "is this synapse
-                                // carrying signal?" — the right gate for targeted DFA updates.
-                                // Biologically: climbing fibers override STDP timing requirements.
-                                let dfa_lr = 0.02
-                                    * plast_rate
-                                    * self.endo.channels.plasticity_mult as f64
-                                    * astro_gate; // scaled by Anchor/Sail + Endo + astrocytic gate
-                                let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
-                                let weight_decay = 0.001 * synapse.weight;
-                                let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr
-                                    - weight_decay)
-                                    * consolidation_scale;
-                                synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
+                            // V6: Graceful Degradation — survival mode skips all weight updates.
+                            // Eligibility traces still decay (update_eligibility ran above).
+                            if post_energy > ENERGY_SURVIVAL_THRESHOLD {
+                                if is_assoc && feedback_sig.abs() > 0.001 {
+                                    // DFA climbing-fiber rule: Δw = pre_trace × feedback_signal × lr
+                                    // Uses pre_trace (decaying memory of recent pre-synaptic firing)
+                                    // NOT eligibility (which is STDP-gated and attenuates the signal).
+                                    // NOT binary pre_fired (too sparse at 5% firing rate).
+                                    // pre_trace persists ~10 steps after firing — "is this synapse
+                                    // carrying signal?" — the right gate for targeted DFA updates.
+                                    // Biologically: climbing fibers override STDP timing requirements.
+                                    let dfa_lr = 0.02
+                                        * plast_rate
+                                        * self.endo.channels.plasticity_mult as f64
+                                        * astro_gate; // scaled by Anchor/Sail + Endo + astrocytic gate
+                                    let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
+                                    let weight_decay = 0.001 * synapse.weight;
+                                    let delta_w = (synapse.pre_trace * feedback_sig * dfa_lr
+                                        - weight_decay)
+                                        * consolidation_scale;
+                                    synapse.weight = (synapse.weight + delta_w).clamp(-wmax, wmax);
 
-                                // V3: Record reinforcement event
-                                if delta_w.abs() > 0.001 {
-                                    if let Some(ref mut j) = synapse.justification {
-                                        j.record_reinforcement(
-                                            self.step_count,
-                                            delta_w,
-                                            self.modulation.reward,
-                                        );
+                                    // V3: Record reinforcement event
+                                    if delta_w.abs() > 0.001 {
+                                        if let Some(ref mut j) = synapse.justification {
+                                            j.record_reinforcement(
+                                                self.step_count,
+                                                delta_w,
+                                                self.modulation.reward,
+                                            );
+                                        }
                                     }
-                                }
 
-                                // Tag synapses where DFA update was strong.
-                                // Accumulate tag (not set to max) — capture is deferred to
-                                // episode end where performance-relative decisions are made.
-                                let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
-                                if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
-                                    synapse.tag = (synapse.tag
-                                        + dfa_strength
-                                            * self.config.learning.tag_accumulation_rate)
-                                        .min(1.0);
-                                    synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
-                                }
-                                synapse.age += 1;
-                                if synapse.eligibility.abs() > 0.1 {
-                                    synapse.usage_count += 1;
-                                }
-                            } else {
-                                // Standard three-factor for Motor, Sensory, Modulatory
-                                // Scaled by per-morphon plasticity_rate (Anchor/Sail) × Endo plasticity_mult
-                                let plasticity = self.modulation.plasticity_rate()
-                                    * plast_rate
-                                    * self.endo.channels.plasticity_mult as f64
-                                    * astro_gate;
-                                let endo_gains = [
-                                    self.endo.channels.reward_gain as f64,
-                                    self.endo.channels.novelty_gain as f64,
-                                    self.endo.channels.arousal_gain as f64,
-                                    self.endo.channels.homeostasis_gain as f64,
-                                ];
-                                let weight_before = synapse.weight;
-                                let captured = learning::apply_weight_update(
-                                    synapse,
-                                    &self.modulation,
-                                    &self.config.learning,
-                                    plasticity,
-                                    &post_receptors,
-                                    endo_gains,
-                                    &post_sensitivity,
-                                );
-                                // Per-tick capture is disabled — capture is now episode-gated
-                                // via report_episode_end(). Tags still accumulate per-tick.
-                                let _ = captured;
-                                // V3: Record reinforcement event
-                                let delta_w_3f = synapse.weight - weight_before;
-                                if delta_w_3f.abs() > 0.001 {
-                                    if let Some(ref mut j) = synapse.justification {
-                                        j.record_reinforcement(
-                                            self.step_count,
-                                            delta_w_3f,
-                                            self.modulation.reward,
-                                        );
+                                    // Tag synapses where DFA update was strong.
+                                    // Accumulate tag (not set to max) — capture is deferred to
+                                    // episode end where performance-relative decisions are made.
+                                    let dfa_strength = (synapse.pre_trace * feedback_sig).abs();
+                                    if dfa_strength > 0.1 && synapse.consolidation_level < 1.0 {
+                                        synapse.tag = (synapse.tag
+                                            + dfa_strength
+                                                * self.config.learning.tag_accumulation_rate)
+                                            .min(1.0);
+                                        synapse.tag_strength = synapse.tag_strength.max(dfa_strength);
                                     }
+                                    synapse.age += 1;
+                                    if synapse.eligibility.abs() > 0.1 {
+                                        synapse.usage_count += 1;
+                                    }
+                                } else {
+                                    // Standard three-factor for Motor, Sensory, Modulatory
+                                    // Scaled by per-morphon plasticity_rate (Anchor/Sail) × Endo plasticity_mult
+                                    let plasticity = self.modulation.plasticity_rate()
+                                        * plast_rate
+                                        * self.endo.channels.plasticity_mult as f64
+                                        * astro_gate;
+                                    let endo_gains = [
+                                        self.endo.channels.reward_gain as f64,
+                                        self.endo.channels.novelty_gain as f64,
+                                        self.endo.channels.arousal_gain as f64,
+                                        self.endo.channels.homeostasis_gain as f64,
+                                    ];
+                                    // V6: Degraded mode — zero out reward/novelty/arousal, keep
+                                    // only homeostasis channel for structural stability.
+                                    let degraded_mod;
+                                    let modulation_ref = if post_energy <= ENERGY_DEGRADED_THRESHOLD {
+                                        let mut m = self.modulation.clone();
+                                        m.reward = 0.0;
+                                        m.novelty = 0.0;
+                                        m.arousal = 0.0;
+                                        degraded_mod = m;
+                                        &degraded_mod
+                                    } else {
+                                        &self.modulation
+                                    };
+                                    let weight_before = synapse.weight;
+                                    let captured = learning::apply_weight_update(
+                                        synapse,
+                                        modulation_ref,
+                                        &self.config.learning,
+                                        plasticity,
+                                        &post_receptors,
+                                        endo_gains,
+                                        &post_sensitivity,
+                                    );
+                                    // Per-tick capture is disabled — capture is now episode-gated
+                                    // via report_episode_end(). Tags still accumulate per-tick.
+                                    let _ = captured;
+                                    // V3: Record reinforcement event
+                                    let delta_w_3f = synapse.weight - weight_before;
+                                    if delta_w_3f.abs() > 0.001 {
+                                        if let Some(ref mut j) = synapse.justification {
+                                            j.record_reinforcement(
+                                                self.step_count,
+                                                delta_w_3f,
+                                                self.modulation.reward,
+                                            );
+                                        }
+                                    }
+                                    // L2 weight decay on all three-factor synapses
+                                    synapse.weight -= 0.0005 * synapse.weight;
                                 }
-                                // L2 weight decay on all three-factor synapses
-                                synapse.weight -= 0.0005 * synapse.weight;
                             }
                         }
                     }
@@ -1602,6 +1635,33 @@ impl System {
             report.synapses_pruned = slow_report.synapses_pruned;
             report.migrations = slow_report.migrations;
             self.diag.pruning_events_recent = slow_report.synapses_pruned as u32;
+
+            // V6: Contradiction-Driven Reconsolidation — un-consolidate synapses
+            // whose post-synaptic morphons show chronic high prediction error.
+            let _reconsolidated = learning::reconsolidate(
+                &mut self.topology,
+                &self.morphons,
+                &self.config.learning,
+            );
+
+            // V6: Auto-Merge — check for co-activating proximate morphon groups.
+            // Confirmed groups (second sighting within window) become fusion candidates.
+            let fired_ids: Vec<MorphonId> = self
+                .morphons
+                .values()
+                .filter(|m| m.fired)
+                .map(|m| m.id)
+                .collect();
+            let _merge_groups = morphogenesis::check_auto_merge(
+                &fired_ids,
+                &self.morphons,
+                &mut self.auto_merge_candidates,
+                &self.config.morphogenesis,
+                self.step_count,
+            );
+            // merge_groups contains confirmed groups — future work: route into fusion()
+            // For now they're tracked and can be inspected; the two-step filter alone
+            // gives useful signal about redundant spatial co-activations.
 
             // V2: Update bioelectric field — write morphon states, diffuse
             if let Some(ref mut field) = self.field {
@@ -3179,6 +3239,22 @@ impl System {
                 self.modulation.inject_novelty(curiosity_strength * 0.5);
             }
         }
+    }
+
+    /// V6: Multi-index memory retrieval via Reciprocal Rank Fusion.
+    ///
+    /// Queries both working memory (recent active patterns) and episodic memory
+    /// (consolidated high-reward episodes) and fuses the rankings. Patterns
+    /// that appear in both stores with good overlap get boosted scores.
+    ///
+    /// Useful for pattern completion: inject the returned patterns' morphons
+    /// to bias the network toward previously learned states.
+    pub fn retrieve_memory(
+        &self,
+        query: &[MorphonId],
+        top_k: usize,
+    ) -> Vec<crate::memory::MemoryRetrievalResult> {
+        self.memory.retrieve_fused(query, top_k)
     }
 
     /// Get system inspection statistics.

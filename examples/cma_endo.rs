@@ -135,6 +135,7 @@ fn evaluate(x: &DVector<f64>) -> f64 {
             weight_max: 3.0, weight_min: 0.01,
             alpha_reward, alpha_novelty: 0.5, alpha_arousal: 0.5, alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.002, heterosynaptic_depression: 0.003, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: Some(300), division_threshold: 1.0, fusion_min_size: 2,
@@ -144,6 +145,7 @@ fn evaluate(x: &DVector<f64>) -> f64 {
         lifecycle: LifecycleConfig {
             division: false, differentiation: true, fusion: false,
             apoptosis: false, migration: false,
+            synaptogenesis: true,
         },
         metabolic: MetabolicConfig::default(),
         endoquilibrium: EndoConfig {

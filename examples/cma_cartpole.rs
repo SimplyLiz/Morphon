@@ -107,6 +107,7 @@ fn evaluate(x: &DVector<f64>) -> f64 {
             weight_max: 5.0, weight_min: 0.01,
             alpha_reward: 3.0, alpha_novelty: 0.5, alpha_arousal: 1.0, alpha_homeostasis: 0.1,
             transmitter_potentiation: 0.001, heterosynaptic_depression: 0.002, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: Some(300), division_threshold: 1.0, fusion_min_size: 2,

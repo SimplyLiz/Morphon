@@ -9,9 +9,11 @@
 //!   - When a strong reward signal arrives, tagged synapses are "captured" (permanent weight change)
 //!   - This solves credit assignment for delayed reward without global gradients
 
-use crate::morphon::Synapse;
+use crate::morphon::{Morphon, Synapse};
 use crate::neuromodulation::Neuromodulation;
-use crate::types::{ModulatorType, ReceptorSet};
+use crate::topology::Topology;
+use crate::types::{ModulatorType, MorphonId, ReceptorSet};
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// Parameters for the three-factor learning rule.
@@ -55,7 +57,28 @@ pub struct LearningParams {
     /// v0.5.0 used instant tagging (tag=1.0). v2.0.0 switched to gradual (0.05).
     /// Higher = faster credit assignment, lower = more selective consolidation.
     pub tag_accumulation_rate: f64,
+
+    /// V6: Minimum reward_correlation to protect a synapse from pruning.
+    /// Synapses with reward_correlation ≥ this threshold survive even if weight is low.
+    #[serde(default = "default_reward_correlation_min")]
+    pub reward_correlation_min: f64,
+
+    /// V6: Morphon desire (EMA of prediction error) threshold that triggers reconsolidation.
+    /// When a morphon's desire exceeds this, its consolidated incoming synapses are
+    /// un-consolidated so they can re-learn. Prevents early bad weights from being frozen.
+    #[serde(default = "default_theta_reconsolidate")]
+    pub theta_reconsolidate: f64,
+
+    /// V6: Fraction of weight preserved on reconsolidation — partial reset, not erasure.
+    /// 0.8 = keep 80% of the weight, so the synapse is nudged back toward plasticity
+    /// without losing all learned structure.
+    #[serde(default = "default_reconsolidate_weight_decay")]
+    pub reconsolidate_weight_decay: f64,
 }
+
+fn default_reward_correlation_min() -> f64 { 0.002 }
+fn default_theta_reconsolidate() -> f64 { 0.3 }
+fn default_reconsolidate_weight_decay() -> f64 { 0.8 }
 
 impl Default for LearningParams {
     fn default() -> Self {
@@ -77,6 +100,9 @@ impl Default for LearningParams {
             transmitter_potentiation: 0.001,  // small floor — prevents silent death
             heterosynaptic_depression: 0.002, // slight depression on all inputs when post fires
             tag_accumulation_rate: 0.3,       // moderate — between instant (1.0) and v2.0.0's sluggish (0.05)
+            reward_correlation_min: default_reward_correlation_min(),
+            theta_reconsolidate: default_theta_reconsolidate(),
+            reconsolidate_weight_decay: default_reconsolidate_weight_decay(),
         }
     }
 }
@@ -198,6 +224,11 @@ pub fn apply_weight_update(
     let h = sens(&ModulatorType::Homeostasis) * params.alpha_homeostasis * modulation.homeostasis * channel_gains[3];
     let m = r + n + a + h;
 
+    // V6: Forward-reference density — track how much this synapse's activity correlates
+    // with downstream reward. Used to protect high-value synapses from pruning.
+    synapse.reward_correlation =
+        synapse.reward_correlation * 0.99 + synapse.eligibility.abs() * r.abs() * 0.01;
+
     // Standard three-factor: fast eligibility × receptor-gated modulation
     // Consolidated synapses get reduced updates (10% residual plasticity at level=1.0)
     let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
@@ -256,6 +287,61 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         && synapse.age > 100
         && synapse.weight.abs() < effective_weight_min
         && synapse.usage_count < 5
+        // V6: Protect synapses with high forward-reference density — they carry
+        // reward-correlated signal even when their weight is currently weak.
+        && synapse.reward_correlation < params.reward_correlation_min
+}
+
+/// V6: Contradiction-Driven Reconsolidation — un-consolidate synapses whose
+/// post-synaptic targets show sustained high prediction error.
+///
+/// Biological basis: Nader et al. (2000) — retrieved memories become transiently
+/// labile and can be modified before re-consolidation (amygdala reconsolidation).
+///
+/// When a morphon's `desire` (EMA of PE) exceeds `theta_reconsolidate`, its
+/// incoming consolidated synapses are un-consolidated so three-factor learning
+/// can re-tune them. The weight is partially decayed (not erased) to preserve
+/// structural information while restoring plasticity.
+///
+/// Returns the number of synapses reconsolidated.
+pub fn reconsolidate(
+    topology: &mut Topology,
+    morphons: &HashMap<MorphonId, Morphon>,
+    params: &LearningParams,
+) -> usize {
+    // Collect targets with sustained high prediction error
+    let candidates: Vec<MorphonId> = morphons
+        .values()
+        .filter(|m| m.desire > params.theta_reconsolidate)
+        .map(|m| m.id)
+        .collect();
+
+    let mut count = 0;
+    for tgt_id in candidates {
+        // Collect edge indices first to avoid borrow conflict
+        let edges: Vec<_> = topology
+            .incoming_synapses_mut(tgt_id)
+            .into_iter()
+            .map(|(_, ei)| ei)
+            .collect();
+        for ei in edges {
+            if let Some(syn) = topology.synapse_mut(ei) {
+                if syn.consolidated {
+                    syn.consolidated = false;
+                    syn.consolidation_level *= 0.5;
+                    // Seed a fresh tag from current eligibility so the synapse
+                    // immediately participates in subsequent capture events
+                    syn.tag = syn.eligibility.abs().max(0.1);
+                    syn.tag_strength *= 0.5;
+                    // Partial weight decay — nudges toward plasticity without
+                    // discarding learned structure
+                    syn.weight *= params.reconsolidate_weight_decay;
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 /// Vogels 2011 iSTDP — pre-spike update (inhibitory neuron fires).

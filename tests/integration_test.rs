@@ -139,6 +139,7 @@ fn test_lifecycle_config_disables_features() {
             fusion: false,
             apoptosis: false,
             migration: false,
+            synaptogenesis: true,
         },
         ..Default::default()
     };

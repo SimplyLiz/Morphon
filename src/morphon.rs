@@ -62,6 +62,14 @@ pub struct Synapse {
     /// compose) — the synapse only needs visiting when pre or post is active.
     #[serde(default)]
     pub last_update_step: u64,
+
+    /// V6: Rolling EMA of |eligibility| × |reward_channel| — forward-reference density.
+    /// Measures whether this synapse's activity correlates with downstream reward.
+    /// Synapses with high reward correlation are protected from pruning even if their
+    /// weight is currently low (they carry credit-assignment signal).
+    /// EMA α=0.01 (slow decay, window ~100 medium ticks).
+    #[serde(default)]
+    pub reward_correlation: f64,
 }
 
 impl Synapse {
@@ -82,6 +90,7 @@ impl Synapse {
             myelination: 0.0,
             justification: None,
             last_update_step: 0,
+            reward_correlation: 0.0,
         }
     }
 

@@ -83,6 +83,7 @@ fn create_system() -> System {
             alpha_homeostasis: 0.2,
             transmitter_potentiation: 0.001,
             heterosynaptic_depression: 0.002, tag_accumulation_rate: 0.3,
+            ..Default::default()
         },
         morphogenesis: MorphogenesisParams {
             max_morphons: Some(200),

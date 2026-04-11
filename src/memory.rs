@@ -6,7 +6,7 @@
 
 use crate::types::*;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// A working memory item — a pattern of active Morphon IDs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +108,25 @@ impl WorkingMemory {
     /// does not bleed into the next one.
     pub fn clear(&mut self) {
         self.items.clear();
+    }
+
+    /// V6: Rank items by pattern overlap with `query`.
+    /// Returns `(item_index, score)` pairs sorted descending by score.
+    /// Score = Jaccard-like overlap × current activation.
+    pub fn rank_by_pattern(&self, query: &[MorphonId]) -> Vec<(usize, f64)> {
+        let mut ranked: Vec<(usize, f64)> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let denom = query.len().max(item.pattern.len()).max(1);
+                let overlap = query.iter().filter(|id| item.pattern.contains(id)).count();
+                let score = (overlap as f64 / denom as f64) * item.activation;
+                (i, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked
     }
 }
 
@@ -219,6 +238,28 @@ impl EpisodicMemory {
     pub fn is_empty(&self) -> bool {
         self.episodes.is_empty()
     }
+
+    /// V6: Rank episodes by pattern overlap with `query`.
+    /// Returns `(episode_index, score)` sorted descending by score.
+    /// Score = Jaccard-like overlap × consolidation × (reward + 0.1).
+    pub fn rank_by_pattern(&self, query: &[MorphonId]) -> Vec<(usize, f64)> {
+        let mut ranked: Vec<(usize, f64)> = self
+            .episodes
+            .iter()
+            .enumerate()
+            .map(|(i, ep)| {
+                let ep_ids: Vec<MorphonId> = ep.pattern.iter().map(|(id, _)| *id).collect();
+                let denom = query.len().max(ep_ids.len()).max(1);
+                let overlap = query.iter().filter(|id| ep_ids.contains(id)).count();
+                let score = (overlap as f64 / denom as f64)
+                    * ep.consolidation.max(0.1)
+                    * (ep.reward + 0.1);
+                (i, score)
+            })
+            .collect();
+        ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        ranked
+    }
 }
 
 /// Procedural Memory — the topology IS the memory.
@@ -279,6 +320,24 @@ impl ProceduralMemory {
     }
 }
 
+/// V6: Source store for a fused memory retrieval result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemorySource {
+    Working,
+    Episodic,
+}
+
+/// V6: A memory retrieval result from fused multi-index search.
+#[derive(Debug, Clone)]
+pub struct MemoryRetrievalResult {
+    /// The morphon pattern stored in this memory item.
+    pub pattern: Vec<MorphonId>,
+    /// RRF-fused relevance score (higher = more relevant to the query).
+    pub score: f64,
+    /// Which memory store this came from.
+    pub source: MemorySource,
+}
+
 /// The combined triple-memory system.
 pub struct TripleMemory {
     pub working: WorkingMemory,
@@ -293,6 +352,54 @@ impl TripleMemory {
             episodic: EpisodicMemory::new(episodic_capacity),
             procedural: ProceduralMemory::new(1000),
         }
+    }
+
+    /// V6: Reciprocal Rank Fusion retrieval across working and episodic memory.
+    ///
+    /// Each store ranks its items by pattern overlap with `query`. The RRF formula
+    /// `score(item) = Σ 1/(k + rank_in_store)` combines the rankings without
+    /// requiring score normalization. Items appearing in both stores get boosted.
+    ///
+    /// `k=60` is the standard RRF smoothing constant (Cormack et al. 2009).
+    ///
+    /// Returns up to `top_k` results sorted by descending RRF score.
+    pub fn retrieve_fused(&self, query: &[MorphonId], top_k: usize) -> Vec<MemoryRetrievalResult> {
+        const K: f64 = 60.0;
+        let mut scores: HashMap<Vec<MorphonId>, f64> = HashMap::new();
+        let mut sources: HashMap<Vec<MorphonId>, MemorySource> = HashMap::new();
+
+        // Working memory contributions
+        let w_patterns = self.working.active_patterns();
+        for (rank, (idx, _)) in self.working.rank_by_pattern(query).iter().enumerate() {
+            if let Some(item) = w_patterns.get(*idx) {
+                let pattern = item.pattern.clone();
+                *scores.entry(pattern.clone()).or_insert(0.0) +=
+                    1.0 / (K + rank as f64 + 1.0);
+                sources.entry(pattern).or_insert(MemorySource::Working);
+            }
+        }
+
+        // Episodic memory contributions
+        let episodes = self.episodic.episodes();
+        for (rank, (idx, _)) in self.episodic.rank_by_pattern(query).iter().enumerate() {
+            if let Some(ep) = episodes.get(*idx) {
+                let pattern: Vec<MorphonId> = ep.pattern.iter().map(|(id, _)| *id).collect();
+                *scores.entry(pattern.clone()).or_insert(0.0) +=
+                    1.0 / (K + rank as f64 + 1.0);
+                sources.entry(pattern).or_insert(MemorySource::Episodic);
+            }
+        }
+
+        let mut results: Vec<MemoryRetrievalResult> = scores
+            .into_iter()
+            .map(|(pattern, score)| {
+                let source = sources.remove(&pattern).unwrap_or(MemorySource::Working);
+                MemoryRetrievalResult { pattern, score, source }
+            })
+            .collect();
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(top_k);
+        results
     }
 }
 
