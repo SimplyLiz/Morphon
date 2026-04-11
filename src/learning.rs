@@ -77,7 +77,7 @@ pub struct LearningParams {
 }
 
 fn default_reward_correlation_min() -> f64 { 0.002 }
-fn default_theta_reconsolidate() -> f64 { 0.3 }
+fn default_theta_reconsolidate() -> f64 { 0.6 }
 fn default_reconsolidate_weight_decay() -> f64 { 0.8 }
 
 impl Default for LearningParams {

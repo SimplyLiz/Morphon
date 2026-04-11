@@ -7,8 +7,11 @@
 /// Full mode (> DEGRADED): three-factor learning with all neuromodulation channels.
 /// Degraded mode (SURVIVAL..DEGRADED]: simplified learning — only homeostasis channel.
 /// Survival mode (≤ SURVIVAL): no firing, no weight updates — energy regeneration only.
-const ENERGY_DEGRADED_THRESHOLD: f64 = 0.5;
-const ENERGY_SURVIVAL_THRESHOLD: f64 = 0.2;
+/// Thresholds are near-depletion (0.05/0.1), not mid-range — synapse maintenance costs
+/// drive morphon energy well below 0.5 during normal training, so 0.5 would disable
+/// three-factor learning for the vast majority of training steps.
+const ENERGY_DEGRADED_THRESHOLD: f64 = 0.1;
+const ENERGY_SURVIVAL_THRESHOLD: f64 = 0.05;
 
 use crate::developmental::{self, DevelopmentalConfig, TargetMorphology};
 use crate::diagnostics::Diagnostics;

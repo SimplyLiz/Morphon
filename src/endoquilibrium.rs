@@ -694,14 +694,27 @@ impl AllostasisPredictor {
         } else {
             1.0
         };
-        // Mature: require 2000+ ticks of history. At medium_period=10 and 10 steps/image,
-        // that's 2000 images. Prevents premature Mature during the critical learning phase
-        // where reward_slow inflates from early high-accuracy windows.
+        // RPE gate: use prediction error convergence as the principled maturity signal
+        // instead of a fixed 2000-tick time gate (which was a calibrated patch).
+        // pe_converged = PE slow EMA low + stable (low CV) + enough PE history accumulated.
+        // PE slow is task-agnostic: when the network stops being surprised by inputs,
+        // it has genuinely converged — independent of the reward schedule or task structure.
+        // Minimum 500 ticks prevents noise-based early triggering during Proliferating;
+        // the 2000-tick time gate is kept as fallback for reward-only tasks where PE
+        // is not a reliable signal (e.g., CartPole where PE correlates with pole angle noise).
         // Recovery experiment proved: pm=2.16 (Differentiating) → 49%, pm=0.60 (Mature) → 27%.
+        // So we only gate into Mature when we're sure learning has genuinely plateaued.
+        let pe_slow = self.slow_emas.prediction_error_mean;
+        let pe_std = self.std_f32(&self.pe_history);
+        let pe_cv = if pe_slow.abs() > 0.01 { pe_std / pe_slow.abs() } else { 99.0 };
+        let rpe_converged = pe_slow < 0.15
+            && pe_cv < 0.3
+            && self.pe_history.len() >= 100
+            && self.total_updates >= 500;
         if reward_slow > 0.3
             && reward_cv < 0.15
             && reward_trend.abs() < 0.005 * slow_abs
-            && self.total_updates >= 2000
+            && (rpe_converged || self.total_updates >= 2000)
         {
             return DevelopmentalStage::Mature;
         }

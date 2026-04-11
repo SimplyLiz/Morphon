@@ -320,6 +320,21 @@ fn train_and_eval(
     n_train: usize, epochs: usize, label: &str,
     rng: &mut rand::rngs::StdRng,
 ) -> f64 {
+    train_and_eval_from(system, train_images, train_labels, test_images, test_labels,
+        n_train, epochs, label, rng, 1)
+}
+
+/// Like train_and_eval but `supervised_from` controls which epoch first gets reward/readout.
+/// Pass 0 to supervise from ep1 (recovery mode: structural growth + immediate readout signal).
+/// Pass 1 (default) for standard training where ep1 is unsupervised feature formation.
+fn train_and_eval_from(
+    system: &mut System,
+    train_images: &[Vec<f64>], train_labels: &[usize],
+    test_images: &[Vec<f64>], test_labels: &[usize],
+    n_train: usize, epochs: usize, label: &str,
+    rng: &mut rand::rngs::StdRng,
+    supervised_from: usize,
+) -> f64 {
     let start = Instant::now();
     for epoch in 0..epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
@@ -334,11 +349,15 @@ fn train_and_eval(
         let mut window_pos = 0_usize;
         let mut window_filled = 0_usize;
 
-        // Ep1 is unsupervised STDP feature formation — reward signals are withheld.
-        // Injecting reward in ep1 causes Endo to converge prematurely: the network
-        // games binary reward by collapsing to one class (reward→0.99, ng→0.24).
-        // Ep2+ get the full supervised signal once representations have diversified.
-        let supervised = epoch > 0;
+        // supervised_from controls the first epoch that receives reward/readout signal.
+        // Standard (supervised_from=1): ep1 is unsupervised STDP feature formation.
+        //   Injecting reward in ep1 causes Endo to converge prematurely: the network
+        //   games binary reward by collapsing to one class (reward→0.99, ng→0.24).
+        //   Ep2+ get the full supervised signal once representations have diversified.
+        // Recovery (supervised_from=0): ep1 immediately supervised. The network has
+        //   already formed features; withholding reward during recovery just degrades
+        //   the learned readout weights via unsupervised STDP overwrite.
+        let supervised = epoch >= supervised_from;
 
         for (bi, &idx) in indices.iter().take(n_train).enumerate() {
             present_image(system, &train_images[idx]);
@@ -444,18 +463,33 @@ fn main() {
     let use_local_kwta = kwta_override.is_none() && !no_kwta;
 
     // === LOCAL INHIBITION PARAM SWEEP (--sweep) ===
-    // Runs 4 V3 variants only — skips Baseline, V2, Damage.
-    // Sweeps istdp_rate × initial_inh_weight to fix ep1 mode collapse.
-    // Reference (from full run): istdp_rate=0.005, initial_inh_weight=-0.5 → 44%, 120s, peak 53%.
+    // Sweeps istdp_rate × initial_inh_weight on the configured profile.
+    // Quick baselines (v4.1.0): reference(0.005,-0.5)=44%, slow+soft(0.001,-0.2)=49%.
+    // Standard baseline (v4.1.0): reference(0.005,-0.5)=52%, recovery=28.5% (-20pp).
+    // Goal: find config that improves Standard accuracy beyond 52% and closes recovery gap.
     if do_sweep {
         let sweep_params: &[(f64, f64, &str)] = &[
+            // Confirmed better on quick — test on standard
             (0.001, -0.5, "slow-rate"),
             (0.002, -0.5, "med-rate"),
             (0.005, -0.2, "soft-inh"),
             (0.001, -0.2, "slow+soft"),
+            // New configs targeting the standard-profile gap
+            (0.001, -0.1, "ultra-soft"),   // minimal inhibition — does iSTDP need to fight less?
+            (0.002, -0.2, "med+soft"),     // between med-rate and slow+soft
+            (0.0005, -0.2, "very-slow"),   // test rate floor — does slower help or stall?
+            (0.001, -0.3, "mid+slow"),     // intermediate inh strength, slow rate
         ];
-        eprintln!("=== LocalInhibition param sweep — {} combinations ===", sweep_params.len());
-        eprintln!("  Reference (0.005, -0.5): 44% final, 120s, peak 53% mid ep3\n");
+        let reference_acc = match profile {
+            "standard" => 52.0,
+            _ => 44.0,
+        };
+        let reference_note = match profile {
+            "standard" => "52.0% (v4.1.0 Standard), recovery=28.5%",
+            _ => "44.0% (v4.1.0 Quick)",
+        };
+        eprintln!("=== LocalInhibition param sweep — {} configs × {} profile ===", sweep_params.len(), profile);
+        eprintln!("  Reference (0.005, -0.5): {}\n", reference_note);
         let version = env!("CARGO_PKG_VERSION");
         let mut sweep_results = Vec::new();
         for &(rate, inh_w, label) in sweep_params {
@@ -467,26 +501,35 @@ fn main() {
             let acc = train_and_eval(&mut sys, &train_images, &train_labels,
                 &test_images, &test_labels, n_train, n_epochs, label, &mut rng);
             let elapsed = t.elapsed().as_secs();
-            eprintln!("  {} → {:.1}% in {}s\n", label, acc, elapsed);
+            let delta = acc - reference_acc;
+            eprintln!("  {} → {:.1}% ({:+.1}pp vs ref) in {}s\n", label, acc, delta, elapsed);
             sweep_results.push(json!({
                 "label": label,
                 "istdp_rate": rate,
                 "initial_inh_weight": inh_w,
                 "accuracy": acc,
+                "delta_vs_ref": delta,
                 "duration_s": elapsed,
             }));
         }
-        eprintln!("╔═══════════════════════════════════════════════════╗");
-        eprintln!("║  Reference (0.005, -0.5):  44.0%   120s           ║");
-        for r in &sweep_results {
-            eprintln!("║  {:12} ({:.3}, {:4.1}):  {:>5.1}%  {:>4}s           ║",
+        // Sort results by accuracy descending for the summary table
+        let mut sorted = sweep_results.clone();
+        sorted.sort_by(|a, b| b["accuracy"].as_f64().unwrap_or(0.0)
+            .partial_cmp(&a["accuracy"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal));
+        eprintln!("╔══════════════════════════════════════════════════════════╗");
+        eprintln!("║  Reference   (0.005, -0.5):  {:.1}%  ({})  ║", reference_acc, profile);
+        eprintln!("╠══════════════════════════════════════════════════════════╣");
+        for r in &sorted {
+            eprintln!("║  {:12} ({:.4}, {:4.1}):  {:>5.1}%  {:>+5.1}pp  {:>4}s  ║",
                 r["label"].as_str().unwrap_or(""),
                 r["istdp_rate"].as_f64().unwrap_or(0.0),
-                r["inh_w"].as_f64().unwrap_or(0.0),
+                r["initial_inh_weight"].as_f64().unwrap_or(0.0),
                 r["accuracy"].as_f64().unwrap_or(0.0),
+                r["delta_vs_ref"].as_f64().unwrap_or(0.0),
                 r["duration_s"].as_u64().unwrap_or(0));
         }
-        eprintln!("╚═══════════════════════════════════════════════════╝");
+        eprintln!("╚══════════════════════════════════════════════════════════╝");
         let dir = format!("docs/benchmark_results/v{}", version);
         fs::create_dir_all(&dir).ok();
         let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -496,7 +539,12 @@ fn main() {
             "version": version,
             "profile": profile,
             "seed": seed,
-            "reference": { "istdp_rate": 0.005, "initial_inh_weight": -0.5, "accuracy": 44.0, "duration_s": 120 },
+            "reference": {
+                "istdp_rate": 0.005,
+                "initial_inh_weight": -0.5,
+                "accuracy": reference_acc,
+                "note": reference_note,
+            },
             "results": sweep_results,
         })).unwrap()).unwrap();
         eprintln!("Saved to {}", path);
@@ -659,8 +707,10 @@ fn main() {
         };
         v2.config.scheduler.slow_period = 200;
         v2.config.scheduler.glacial_period = 500;
-        let recovery_acc = train_and_eval(&mut v2, &train_images, &train_labels,
-            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v);
+        // Recovery uses supervised_from=0: features already exist, reward signal must be
+        // present from the first epoch so readout weights aren't overwritten by unsupervised STDP.
+        let recovery_acc = train_and_eval_from(&mut v2, &train_images, &train_labels,
+            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0);
         let after = v2.morphons.len();
         eprintln!("  Recovery: {:.1}% | morphons: {}\n", recovery_acc, after);
         (damaged_acc, recovery_acc, before, after, n_kill)
