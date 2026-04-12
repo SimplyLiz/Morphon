@@ -2125,6 +2125,118 @@ mod tests {
         assert!(cluster.members.len() >= 3);
     }
 
+    #[test]
+    fn fusion_proceeds_when_unverified_fraction_exceeded() {
+        // V3 Phase 1: max_unverified_fraction is a soft limit — fusion must NOT be
+        // blocked when the fraction is exceeded. This was a hard return 0 before the fix.
+        use crate::epistemic::EpistemicState;
+
+        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+        let pos = HyperbolicPoint { coords: vec![0.1, 0.0, 0.0], curvature: 1.0 };
+
+        for i in 0..3 {
+            let mut m = Morphon::new(i, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = true;
+            m.prediction_error = 0.01;
+            m.desire = 0.05;
+            for _ in 0..100 { m.activity_history.push(0.5); }
+            morphons.insert(i, m);
+        }
+        // Bystanders to satisfy size fraction check
+        for i in 10..20 {
+            let far = HyperbolicPoint { coords: vec![0.5, 0.5, 0.0], curvature: 1.0 };
+            let mut m = Morphon::new(i, far);
+            m.cell_type = CellType::Associative;
+            morphons.insert(i, m);
+        }
+
+        let mut topo = Topology::new();
+        for &id in morphons.keys() { topo.add_morphon(id); }
+        topo.add_synapse(0, 1, Synapse::new(0.5));
+        topo.add_synapse(0, 2, Synapse::new(0.3));
+
+        let mut clusters: HashMap<ClusterId, Cluster> = HashMap::new();
+        // Pre-populate with unverified clusters so fraction > 0.5 limit
+        for cid in 0..5u64 {
+            clusters.insert(cid, Cluster {
+                id: cid,
+                members: vec![],
+                shared_threshold: 0.5,
+                inhibitory_morphons: vec![],
+                shared_energy_pool: 0.0,
+                shared_homeostatic_setpoint: 0.15,
+                epistemic_state: EpistemicState::Hypothesis { formation_step: 0 },
+                epistemic_history: Default::default(),
+            });
+        }
+        // All 5 are Hypothesis → fraction = 1.0 > 0.5 limit
+
+        let mut next_cluster_id = 10u64;
+        let mut next_morphon_id = 100u64;
+        let params = MorphogenesisParams { fusion_min_size: 3, ..Default::default() };
+
+        let fused = fusion(
+            &mut morphons, &mut clusters, &mut next_cluster_id,
+            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(), &[],
+        );
+
+        // Phase 1 soft limit: fusion proceeds despite over-limit unverified fraction
+        assert_eq!(fused, 1, "V3 Phase 1: fusion must not be blocked by unverified fraction");
+    }
+
+    #[test]
+    fn fusion_processes_priority_groups_from_auto_merge() {
+        // End-to-end: confirmed auto-merge groups passed as priority_groups
+        // must be fused without requiring the standard correlation discovery path.
+        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
+        let pos = HyperbolicPoint { coords: vec![0.05, 0.0, 0.0], curvature: 1.0 };
+
+        // Three morphons that do NOT fire (fired = false) and have no synapses —
+        // the standard correlation discovery path would never find them.
+        // They should still be fused when passed as a priority group.
+        for i in 0..3u64 {
+            let mut m = Morphon::new(i, pos.clone());
+            m.cell_type = CellType::Associative;
+            m.fired = false;
+            m.prediction_error = 0.01; // low PE — passes PE gate
+            m.desire = 0.05;
+            // No activity history push — activity_history.mean() ≈ 0 (below 0.3 threshold)
+            morphons.insert(i, m);
+        }
+        // Bystanders to satisfy size fraction check
+        for i in 10..20u64 {
+            let far = HyperbolicPoint { coords: vec![0.5, 0.5, 0.0], curvature: 1.0 };
+            let mut m = Morphon::new(i, far);
+            m.cell_type = CellType::Associative;
+            morphons.insert(i, m);
+        }
+
+        let mut topo = Topology::new();
+        for &id in morphons.keys() { topo.add_morphon(id); }
+        // No synapses between 0,1,2 — standard discovery won't fire
+
+        let mut clusters = HashMap::new();
+        let mut next_cluster_id = 0u64;
+        let mut next_morphon_id = 100u64;
+        let params = MorphogenesisParams { fusion_min_size: 3, ..Default::default() };
+
+        // Inject the group as a confirmed auto-merge priority
+        let priority = vec![vec![0u64, 1u64, 2u64]];
+
+        let fused = fusion(
+            &mut morphons, &mut clusters, &mut next_cluster_id,
+            &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
+            &crate::homeostasis::CompetitionMode::default(), &priority,
+        );
+
+        assert_eq!(fused, 1, "priority group should be fused even without correlated firing");
+        assert_eq!(clusters.len(), 1);
+        let cluster = clusters.values().next().unwrap();
+        assert_eq!(cluster.members.len(), 3);
+    }
+
     // === Defusion ===
 
     #[test]

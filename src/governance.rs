@@ -150,6 +150,26 @@ mod tests {
     }
 
     #[test]
+    fn mandatory_justification_passes_when_not_in_list() {
+        // Sensory is not in the mandatory list — unjustified synapse is fine
+        assert!(check_mandatory_justification(CellType::Sensory, false, &[CellType::Motor]));
+    }
+
+    #[test]
+    fn mandatory_justification_requires_record_for_listed_type() {
+        // Motor is mandatory — unjustified synapse violates invariant
+        assert!(!check_mandatory_justification(CellType::Motor, false, &[CellType::Motor]));
+        // Motor with justification — passes
+        assert!(check_mandatory_justification(CellType::Motor, true, &[CellType::Motor]));
+    }
+
+    #[test]
+    fn mandatory_justification_empty_list_always_passes() {
+        assert!(check_mandatory_justification(CellType::Motor, false, &[]));
+        assert!(check_mandatory_justification(CellType::Sensory, false, &[]));
+    }
+
+    #[test]
     fn energy_floor_no_op_when_above() {
         let pos = HyperbolicPoint { coords: vec![0.0; 3], curvature: 1.0 };
         let mut m = Morphon::new(1, pos);
