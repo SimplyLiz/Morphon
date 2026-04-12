@@ -1,7 +1,7 @@
 \section{Biology-Informed Failure Modes}
 \label{sec:failure_modes}
 
-This is the analytical core of the paper. We document four failure modes encountered during development of MI. For each, we describe (i) the symptom, (ii) the biological parallel, (iii) the fix derived from biology, and (iv) the empirical impact of the fix.
+This is the analytical core of the paper. We document six failure modes encountered during development of MI. For each, we describe (i) the symptom, (ii) the biological parallel, (iii) the fix derived from biology, and (iv) the empirical impact of the fix.
 
 \subsection{Modulatory Explosion}
 
@@ -135,16 +135,44 @@ Hub dominance broken. Post-hoc labeling: 1 labeled class $\rightarrow$ 12 labele
 \paragraph{Diagnostic.}
 \emph{Post-hoc neuron labeling}: assign each associative morphon the class it fires most frequently. A healthy network labels all 10 digits with multiple morphons per class. Hub-dominated networks label only 1--2 classes; the remaining morphons are ghost units that respond uniformly to all inputs and contribute no discriminative signal. Run this after each training epoch: stagnation at $\leq$2 labeled classes by epoch 2 predicts that iSTDP timescale is wrong.
 
+\subsection{Novelty Gain Collapse}
+\label{sec:novelty_gain_collapse}
+
+\paragraph{Symptom.}
+During MNIST training, the novelty gain channel \texttt{ng} (acetylcholine modulation, which scales three-factor STDP weight updates) converges to $\approx$0.32 rather than remaining near 1.0. Three-factor STDP is throttled mid-training. Accuracy stagnates despite healthy Endoquilibrium stage cycling and adequate morphon activity. Observable as \texttt{ng=0.32} in the Endoquilibrium summary line printed during training, typically after 500--1000 images.
+
+\paragraph{Diagnosis.}
+Endoquilibrium Rule 7 (energy pressure) executed \texttt{ng $\times$= 0.2} whenever morphon energy utilization exceeded 0.85. During dense MNIST training, energy pressure is near-constant: morphons fire on nearly every image, exhausting metabolic reserves. The slow EMA of the suppressed value converges to $\sim$0.32 over training, occasionally refreshed above 0.85. The net effect: the ACh channel that gates STDP effectiveness is reduced to 32\% of its design value, throttling learning precisely when the system is most active.
+
+The design error is a category mismatch: energy pressure should express via \texttt{plasticity\_mult} (already done by Rule 7) not via neuromodulatory channel amplitude. Suppressing \texttt{ng} conflates two distinct mechanisms --- metabolic gating (slow timescale, reduces weight change magnitude) and attentional modulation (fast timescale, ACh responds to novel stimuli). They are not interchangeable.
+
+\paragraph{Biological parallel.}
+Acetylcholine release in the cortex \emph{increases} under metabolic stress --- heightened arousal and attention are the physiological response to an energy crisis, not suppression of the learning signal \cite{hasselmo1995neuromodulation}. Energy conservation in biology is expressed via spike-rate reduction and metabolic downregulation, not by silencing the neuromodulatory learning gate.
+
+\paragraph{Fix.}
+Remove \texttt{ng} modification from Rule 7's energy\_emergency and energy\_critical paths. Only \texttt{plasticity\_mult} is suppressed under energy pressure. The \texttt{ng} channel responds purely to novelty and stimulus salience as intended.
+
+\paragraph{Result.}
+\texttt{ng} holds at \textbf{1.60} throughout MNIST training (was: 0.32 after early epochs). CartPole standard run: \texttt{ng} = \textbf{1.40} throughout. The fix is confirmed independently on both tasks. On MNIST, the primary accuracy gain came from stateless training (Section~\ref{sec:stateless_training}); the novelty-gain fix contributes modulatory stability rather than classification accuracy (the ablation, §\ref{sec:stateless_training}, confirms the two fixes are independent).
+
+\paragraph{Diagnostic.}
+\emph{Endoquilibrium \texttt{ng} channel}: \texttt{ng} $\leq 0.5$ during active training is the signature. A healthy \texttt{ng} should fluctuate around 1.0--2.0. Persistent \texttt{ng} $\approx 0.32$ during dense training indicates energy-pressure suppression; inspect Rule 7 logic. The diagnostic is cheap: the Endo summary line prints \texttt{ng} on every medium tick.
+
+\paragraph{Implications beyond MI.}
+Any neuromodulatory architecture that combines energy-pressure homeostasis with a learning-rate modulation channel risks this failure when the two are implemented in the same regulatory path. The fix is to enforce separation: metabolic gating modifies weight-change magnitude or firing thresholds; neuromodulatory channels respond only to their designated signals. Conflating them creates a training dynamic where the system becomes less plastic exactly when it needs to learn most --- a failure mode that is silent in the loss curve (no divergence, no obvious error) and detectable only via channel-level logging.
+
 \subsection{Diagnostic Instruments: Consolidated Reference}
 \label{sec:diagnostics}
 
-Each failure mode above was discovered through a specific measurement introduced alongside it. We consolidate the four instruments here for reference.
+Each failure mode above was discovered through a specific measurement introduced alongside it. We consolidate the six instruments here for reference.
 
 \begin{description}
   \item[\textbf{Jaccard similarity of firing patterns.}] Present the same input twice with voltage reset; Jaccard similarity of fired-morphon sets measures determinism. Values $\geq 0.9$ are stable, $< 0.7$ predict readout failure. Activity stabilization (reducing per-step noise from $\pm 0.05$ to $\pm 0.02$) brought CartPole from Jaccard = 0.43 to 1.0; a prerequisite for the SOLVED result. Also flags LTD vicious cycle onset.
   \item[\textbf{Output discrimination $d_\pm$.}] $d_+ = V_1 - V_0$ for right-leaning probe; $d_-$ for left-leaning. Opposite signs with $|d| > 5$: discriminative. Same-signed: collapsed policy or motor silencing. Described in Section~\ref{sec:readout_engineering}.
-  \item[\textbf{Endoquilibrium summary line.}] \texttt{pm} at 0.6 with stage = Mature on a fresh task: premature throttling. Described in Section~\ref{sec:premature_mature}.
+  \item[\textbf{Endoquilibrium summary line.}] \texttt{pm} at 0.6 with stage = Mature on a fresh task: premature throttling (Section~\ref{sec:premature_mature}). \texttt{ng} $\leq 0.5$ during active training: novelty gain collapse (Section~\ref{sec:novelty_gain_collapse}).
   \item[\textbf{Weight standard deviation $\sigma_w$.}] $\sigma_w < 0.15$: feature collapse (modulatory explosion or LTD vicious cycle --- distinguish by firing rate direction). $\sigma_w > 1.0$: healthy diversity. Described in Sections~\ref{sec:failure_modes}.1 and \ref{sec:failure_modes}.3.
+  \item[\textbf{Post-hoc neuron labeling.}] Assign each associative morphon the class it fires most frequently on labeled test inputs. $\leq$2 labeled classes by epoch 2 predicts iSTDP timescale mismatch. All 10 classes represented with $\geq$2 morphons each is the healthy target. Described in Section~\ref{sec:istdp_timescale}.
+  \item[\textbf{Sequential vs.\ shuffled accuracy gap.}] Evaluate the same test set in natural order and in randomly shuffled order. Gap $>$5pp indicates co-adaptation to sequential context (Section~\ref{sec:stateless_training}). Healthy per-image classifier: gap $<$3pp.
 \end{description}
 
 \paragraph{Negative results worth noting.}
