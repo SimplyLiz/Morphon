@@ -34,37 +34,60 @@ All memory access is a pointer dereference; no serialization, no IPC.
 
 ### What it does
 
-The pruning heuristic previously protected synapses via two backward signals:
-`reward_correlation` (was this synapse rewarded?) and `usage_count` (how often was it used?).
-Both are backward-looking — they can prune a synapse that rarely fires but is critical for
-downstream reward.
+The pruning heuristic protects synapses via two backward signals: `reward_correlation`
+(was this synapse rewarded?) and `usage_count` (how often was it used?). Both are
+backward-looking — they could theoretically prune a synapse that is on a reward-carrying
+path but hasn't yet accumulated signal.
 
-`forward_importance` is a forward signal: it tracks how much reward-correlated credit flows
-*through* a synapse to its post-synaptic targets. A synapse with high `forward_importance`
-is on a reward-carrying path and must survive even if its weight is currently weak.
+Phase 4 adds a third protection channel: `tag_strength`. A synapse with `tag_strength ≥
+forward_importance_min` (default 0.01) is in the "Hebbian coincidence awaiting capture"
+state — pre and post fired together and the synapse is waiting for delayed reward to arrive.
+Pruning it before capture happens would destroy a credit-assignment pathway.
 
 ### Implementation
 
-**`Synapse.forward_importance: f64`** (added to `src/morphon.rs`)
-- EMA α=0.05 (faster than `reward_correlation`'s 0.01 — responds to recent reward flow)
-- Updated in `apply_weight_update()` in `src/learning.rs`:
-  ```rust
-  synapse.forward_importance =
-      synapse.forward_importance * 0.95 + synapse.eligibility.abs() * r.abs() * 0.05;
-  ```
+**`Synapse.forward_importance: f64`** (added to `src/morphon.rs`)  
+Maintained as an EMA of eligibility × modulation across all channels:
+```rust
+synapse.forward_importance =
+    synapse.forward_importance * 0.995 + synapse.eligibility.abs() * m.abs() * 0.005;
+```
+This field is available for future use; the active pruning guard uses `tag_strength`.
 
-**`LearningParams.forward_importance_min: f64`** (default `0.01`)
-- Added guard to `should_prune_with_cost()`:
-  ```rust
-  && synapse.forward_importance < params.forward_importance_min
-  ```
+**`LearningParams.forward_importance_min: f64`** (default `0.01`)  
+Guard in `should_prune_with_cost()`:
+```rust
+// Phase 4: Protect tagged synapses awaiting capture
+&& synapse.tag_strength < params.forward_importance_min
+```
 
-### Why α=0.05 not α=0.01
+### Why tag_strength, not the EMA
 
-`reward_correlation` uses α=0.01 (window ~100 medium ticks) to track lifetime
-reward history. `forward_importance` uses α=0.05 (window ~20 medium ticks) to
-track *recent* reward flow — a synapse that stopped carrying reward recently should
-lose protection, not carry it indefinitely from an early lucky correlation.
+The EMA-based `forward_importance` is structurally anti-correlated with the pruning
+conditions. For a synapse to be prunable, it needs `weight < 0.001 && usage_count < 5`.
+For `forward_importance` to be non-zero, the synapse must have `eligibility > 0` during
+reward delivery — which also increments `usage_count` and drives `weight` up. The two
+conditions cannot coexist in practice.
+
+`tag_strength` is set when `eligibility > tag_threshold (0.3)` and is NOT continuously
+decayed (it's a high-water mark). A synapse can have `tag_strength > 0.01` while being
+otherwise weak — the tag was set on Hebbian coincidence, then the synapse went silent
+before reward arrived.
+
+### Diagnostic: `fwd_saved`
+
+`src/morphogenesis.rs::pruning()` compares `should_prune_without_fwd()` vs
+`should_prune_with_cost()` and increments `saved_by_fwd` for each synapse rescued
+by the tag_strength guard. Propagated to `SystemStats.synapses_saved_fwd_recent`
+and printed as `fwd_saved=N` in epoch logs when non-zero.
+
+**Current observation:** `fwd_saved` does not appear in MNIST or CartPole runs.
+This is expected — in healthy learning dynamics, a tagged synapse (eligibility > 0.3)
+almost always also has `weight > weight_min` and `usage_count ≥ 5` because the same
+activity that produces tagging also produces weight growth and usage increments.
+The guard serves as an **alarm**: if `fwd_saved > 0` ever appears, it indicates
+unusual learning dynamics (e.g., strong inhibitory reward driving a tagged synapse
+below weight_min while the tag persists). That's worth investigating when it occurs.
 
 ---
 
@@ -94,7 +117,7 @@ protect critical-path synapses. Phase 4 must be stable first.
 
 ### Prerequisites before implementing Phase 5
 
-1. **Phase 4 validated** — `forward_importance` stable, CartPole ≥195.0, no regressions
+1. **Phase 4 deployed** — tag_strength guard and diagnostic counter in place (v4.7.0). No regressions vs CartPole ≥195.0, MNIST stateless ≥87.7%.
 2. **`SchedulerConfig` extension** — add `somnus_period: u64` and `somnus_duration: u64`
 3. **`sleep_phase` toggle wired** — `SystemHeartbeat.sleep_phase: AtomicBool` stub already
    exists in `src/ancs.rs`; needs to be read in the fast path:
@@ -147,9 +170,12 @@ but never called `self.memory.working.store()`. WM was perpetually empty.
 **Fixed:** `self.memory.working.store(ids, wm_activation)` added after `ancs.store()`.
 `wm_activation` = mean absolute membrane potential of pattern morphons, clamped [0,1].
 
-### `forward_importance` missing from `Synapse`
-Pruning could not protect synapses based on downstream reward flow — only backward
-correlation and usage count. **Fixed:** Phase 4 adds the field and EMA update.
+### Phase 4 guard missing from pruning
+Pruning had no protection for synapses in the "tagged, awaiting capture" state. A
+reward-path synapse that formed Hebbian coincidence but hadn't yet received the capture
+signal could be pruned before consolidation. **Fixed:** Phase 4 adds `tag_strength`
+guard + `forward_importance` EMA field (both in v4.7.0). See Phase 4 section for
+the detailed analysis of why `fwd_saved` doesn't fire in current task profiles.
 
 ---
 

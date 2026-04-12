@@ -777,7 +777,7 @@ mod tests {
         let fc = default_frustration_config();
 
         // Motor morphons have noise_scale = 0.0 regardless of frustration
-        let potential_before = m.potential;
+        let _potential_before = m.potential;
         m.input_accumulator = 0.0;
         m.step(1.0, 0.0, &metabolic, &fc, 0.0);
         // Motor has full leak (leak_rate=1.0), so potential = 0*(1-1) + 0 + 0 = 0

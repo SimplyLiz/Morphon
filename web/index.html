@@ -100,46 +100,21 @@
     gap: 10px;
   }
   .logo-mark {
-    position: relative;
     width: 30px; height: 30px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, var(--sensory), var(--accent) 50%, var(--associative));
     display: flex;
     align-items: center;
     justify-content: center;
-    flex-shrink: 0;
+    font-size: 13px;
+    color: #fff;
+    font-weight: 600;
+    animation: logo-breathe 4s ease-in-out infinite;
+    box-shadow: 0 0 12px rgba(80, 140, 255, 0.25);
   }
-  .logo-mark .logo-ring {
-    position: absolute;
-    border-radius: 50%;
-    border: 1px solid transparent;
-    animation: orbit linear infinite;
-  }
-  .logo-mark .logo-ring:nth-child(1) {
-    width: 100%; height: 100%;
-    border-top-color: var(--sensory);
-    border-bottom-color: rgba(0,212,255,0.12);
-    animation-duration: 2.4s;
-    filter: drop-shadow(0 0 3px rgba(0,212,255,0.5));
-  }
-  .logo-mark .logo-ring:nth-child(2) {
-    width: 66%; height: 66%;
-    border-right-color: var(--associative);
-    border-left-color: rgba(167,139,250,0.1);
-    animation-duration: 1.8s;
-    animation-direction: reverse;
-    filter: drop-shadow(0 0 2px rgba(167,139,250,0.4));
-  }
-  .logo-mark .logo-ring:nth-child(3) {
-    width: 36%; height: 36%;
-    border-top-color: var(--motor);
-    border-bottom-color: rgba(255,107,53,0.1);
-    animation-duration: 1.2s;
-    filter: drop-shadow(0 0 2px rgba(255,107,53,0.35));
-  }
-  .logo-mark .logo-core {
-    width: 4px; height: 4px;
-    border-radius: 50%;
-    background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
-    animation: pulse-core 1.5s ease-in-out infinite;
+  @keyframes logo-breathe {
+    0%, 100% { box-shadow: 0 0 12px rgba(80, 140, 255, 0.2); }
+    50% { box-shadow: 0 0 20px rgba(80, 140, 255, 0.4), 0 0 40px rgba(80, 140, 255, 0.1); }
   }
   .logo h1 {
     font-family: 'Outfit', sans-serif;
@@ -1324,12 +1299,7 @@
 <!-- HEADER -->
 <div id="header" class="overlay">
   <div class="logo">
-    <div class="logo-mark">
-      <div class="logo-ring"></div>
-      <div class="logo-ring"></div>
-      <div class="logo-ring"></div>
-      <div class="logo-core"></div>
-    </div>
+    <div class="logo-mark">M</div>
     <h1>MORPHON<span>ENGINE</span></h1>
   </div>
   <div class="header-stats">

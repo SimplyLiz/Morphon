@@ -237,11 +237,19 @@ pub fn apply_weight_update(
     synapse.reward_correlation =
         synapse.reward_correlation * 0.99 + synapse.eligibility.abs() * r.abs() * 0.01;
 
-    // Phase 4 (ANCS-Core): Forward-importance — reward-correlated credit flowing
-    // through this synapse. Faster EMA (α=0.05) than reward_correlation (α=0.01)
-    // so it tracks recent reward flow rather than lifetime history.
+    // Phase 4 (ANCS-Core): Forward-importance — full-modulation credit flowing through
+    // this synapse. Uses ALL four neuromodulatory channels (not just reward delta) and a
+    // SLOWER EMA (α=0.005, window ~200 medium ticks) than reward_correlation (α=0.01).
+    //
+    // Why slower + broader:
+    //   reward_correlation (α=0.01) tracks reward-delta × eligibility — backward signal,
+    //   decays in ~100 ticks. Using a *faster* EMA would be redundant: by the time
+    //   reward_correlation hits its threshold the faster signal is already zero.
+    //   Forward-importance must use α < reward_correlation's α to add genuine protection
+    //   for synapses with diffuse, multi-channel credit that reward_correlation misses.
+    //   Using |m| (all channels) captures novelty- and arousal-correlated activity too.
     synapse.forward_importance =
-        synapse.forward_importance * 0.95 + synapse.eligibility.abs() * r.abs() * 0.05;
+        synapse.forward_importance * 0.995 + synapse.eligibility.abs() * m.abs() * 0.005;
 
     // Standard three-factor: fast eligibility × receptor-gated modulation
     // Consolidated synapses get reduced updates (10% residual plasticity at level=1.0)
@@ -304,9 +312,14 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         // V6: Protect synapses with high forward-reference density — they carry
         // reward-correlated signal even when their weight is currently weak.
         && synapse.reward_correlation < params.reward_correlation_min
-        // Phase 4: Protect synapses with high forward-importance — reward flows
-        // through them to downstream morphons regardless of their own weight.
-        && synapse.forward_importance < params.forward_importance_min
+        // Phase 4: Protect synapses with an active synaptic tag — they formed a
+        // Hebbian coincidence and are waiting for delayed reward capture.
+        // Pruning a tagged synapse before capture happens destroys a credit-assignment
+        // pathway that has already done the hard work of forming.
+        // forward_importance is maintained but tag-based protection is the pragmatic
+        // signal: a synapse with tag_strength > threshold is explicitly in the
+        // "awaiting capture" state and must survive until capture or tag decay.
+        && synapse.tag_strength < params.forward_importance_min
 }
 
 /// Like `should_prune_with_cost` but WITHOUT the Phase 4 forward_importance guard.

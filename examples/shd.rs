@@ -204,7 +204,7 @@ fn classify(system: &mut System, sample: &[Vec<f64>]) -> usize {
     let mut out = vec![0.0f64; N_CLASSES];
     for frame in sample {
         let pooled = pool_channels(frame);
-        out = system.process_steps(&pooled, 3);
+        out = system.process_steps(&pooled, 1);
     }
     out.iter().enumerate()
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
@@ -229,7 +229,7 @@ fn train_epoch(
         let mut out = vec![0.0f64; N_CLASSES];
         for frame in sample {
             let pooled = pool_channels(frame);
-            out = system.process_steps(&pooled, 3);
+            out = system.process_steps(&pooled, 1);
         }
         let predicted = out.iter().enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
