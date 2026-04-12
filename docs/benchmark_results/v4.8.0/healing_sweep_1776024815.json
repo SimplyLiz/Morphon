@@ -1,0 +1,55 @@
+{
+  "base_seed": 42,
+  "benchmark": "mnist_healing_sweep",
+  "epochs": 3,
+  "mean_damaged_sl": 87.00000000000001,
+  "mean_delta": -1.3999999999999972,
+  "mean_recovery_sl": 85.66666666666667,
+  "mean_trained_sl": 87.06666666666668,
+  "n_seeds": 5,
+  "n_train": 5000,
+  "profile": "standard",
+  "recovery_n": 1500,
+  "seeds": [
+    {
+      "damaged_sl": 87.66666666666667,
+      "delta": -1.6666666666666714,
+      "recovery_sl": 86.0,
+      "seed": 42,
+      "trained_sl": 87.66666666666667
+    },
+    {
+      "damaged_sl": 87.33333333333333,
+      "delta": -1.6666666666666572,
+      "recovery_sl": 85.66666666666667,
+      "seed": 43,
+      "trained_sl": 87.33333333333333
+    },
+    {
+      "damaged_sl": 86.66666666666667,
+      "delta": -2.666666666666657,
+      "recovery_sl": 84.33333333333334,
+      "seed": 44,
+      "trained_sl": 87.0
+    },
+    {
+      "damaged_sl": 87.66666666666667,
+      "delta": -1.0,
+      "recovery_sl": 86.66666666666667,
+      "seed": 45,
+      "trained_sl": 87.66666666666667
+    },
+    {
+      "damaged_sl": 85.66666666666667,
+      "delta": 0.0,
+      "recovery_sl": 85.66666666666667,
+      "seed": 46,
+      "trained_sl": 85.66666666666667
+    }
+  ],
+  "std_damaged_sl": 0.760116950066091,
+  "std_delta": 0.8793937305515249,
+  "std_recovery_sl": 0.7601169500660899,
+  "std_trained_sl": 0.742368581710669,
+  "version": "4.8.0"
+}

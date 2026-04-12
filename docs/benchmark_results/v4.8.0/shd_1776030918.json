@@ -1,0 +1,39 @@
+{
+  "base_seed": 42,
+  "benchmark": "shd_synthetic",
+  "chance_level": 0.1,
+  "input_dim": 70,
+  "mean_accuracy": 0.49222222222222217,
+  "n_channels": 700,
+  "n_classes": 10,
+  "n_epochs": 7,
+  "n_seeds": 3,
+  "n_test_per_class": 30,
+  "n_train_per_class": 100,
+  "profile": "standard",
+  "seeds": [
+    {
+      "accuracy": 0.49,
+      "morphons": 264,
+      "seed": 42,
+      "synapses": 6170,
+      "wall_s": 601
+    },
+    {
+      "accuracy": 0.51,
+      "morphons": 285,
+      "seed": 43,
+      "synapses": 7263,
+      "wall_s": 669
+    },
+    {
+      "accuracy": 0.4766666666666667,
+      "morphons": 258,
+      "seed": 44,
+      "synapses": 5728,
+      "wall_s": 564
+    }
+  ],
+  "std_accuracy": 0.013698697784375501,
+  "version": "4.8.0"
+}

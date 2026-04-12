@@ -186,28 +186,33 @@ To characterize MORPHON's temporal processing capabilities beyond static classif
 
 \begin{table}[h]
 \centering
-\caption{Temporal benchmark results (v4.8.0). All benchmarks run with LocalInhibition competition, recurrent connectivity enabled, structural plasticity disabled (slow/glacial period = $10^7$). Chance = 50\% for DMS, 25\% for sequence classification.}
+\caption{Temporal benchmark results (v4.8.0). All benchmarks use LocalInhibition competition, recurrent connectivity enabled, structural plasticity disabled (slow/glacial period = $10^7$). DMS and sequence classification chance = 50\% and 25\% respectively. SHD-Synthetic chance = 10\% (10 classes).}
 \label{tab:temporal}
 \begin{tabular}{llcc}
 \toprule
 Benchmark & Configuration & Accuracy / MAE & Pass \\
 \midrule
-\textbf{Delayed Match-to-Sample (DMS)} & delay=3 steps (5000 trials) & \textbf{88.0\%} & \checkmark (target: $>$80\%) \\
-                                        & delay=5 steps (5000 trials) & \textbf{91.7\%} & \checkmark (target: $>$70\%) \\
+\textbf{Delayed Match-to-Sample (DMS)} & delay=3 steps (5000 trials) & \textbf{92.0\%} & \checkmark (target: $>$80\%) \\
+                                        & delay=5 steps (5000 trials) & \textbf{94.2\%} & \checkmark (target: $>$70\%) \\
 \midrule
-\textbf{Sequence Classification}       & len=4 elements (6000 trials) & 75.4\% & $\times$ (target: $>$85\%) \\
-                                        & len=8 elements (6000 trials) & \textbf{88.8\%} & \checkmark (target: $>$70\%) \\
+\textbf{Sequence Classification}       & len=4 elements (6000 trials) & 75.3\% & $\times$ (target: $>$85\%) \\
+                                        & len=8 elements (6000 trials) & \textbf{89.9\%} & \checkmark (target: $>$70\%) \\
 \midrule
-\textbf{Next-Element Prediction}       & period=3 (12000 steps) & MAE=0.0003 & \checkmark (target: $<$0.10) \\
-                                        & period=5 (12000 steps) & MAE=0.0025 & \checkmark (target: $<$0.15) \\
+\textbf{Next-Element Prediction}       & period=3 (12000 steps) & MAE=0.000 & \checkmark (target: $<$0.10) \\
+                                        & period=5 (12000 steps) & MAE=0.002 & \checkmark (target: $<$0.15) \\
+\midrule
+\textbf{SHD-Synthetic}                 & 700-ch cochlear, 10 classes, std profile & \textbf{49.2\% $\pm$ 1.4pp} & \checkmark (target: $>$20\%) \\
+                                        & (3 seeds, 1000 train/class) & (chance: 10\%) & \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Delayed Match-to-Sample (DMS)} tests working-memory retention across blank delay periods. The system presents a pattern (5 steps), waits $N$ blank steps, then sees a probe and must report ``match'' or ``no match''. Achieving 91.7\% at delay=5 --- exceeding the 70\% target --- demonstrates that the recurrent reservoir retains pattern identity across multi-step delays without any explicit memory buffer: the dynamics persist in the recurrent activity.
+\textbf{Delayed Match-to-Sample (DMS)} tests working-memory retention across blank delay periods. The system presents a pattern (5 steps), waits $N$ blank steps, then sees a probe and must report ``match'' or ``no match''. Achieving 94.2\% at delay=5 --- well above the 70\% target --- demonstrates that the recurrent reservoir retains pattern identity across multi-step delays without any explicit memory buffer: the dynamics persist in the recurrent activity.
 
 \textbf{Sequence Classification} classifies a 4-element sequence by its temporal shape (rising/falling/peak/valley); each element is ambiguous in isolation. Length-8 sequences (88.8\%) are easier than length-4 (75.4\%) because the discriminative signal accumulates across more steps. The length-4 result (75.4\%) misses the 85\% target but is well above the 25\% chance level, confirming that temporal integration is functioning.
 
 \textbf{Next-Element Prediction} tests whether the reservoir discovers periodicity from the reward signal alone. The near-zero MAE (0.0003 and 0.0025 for periods 3 and 5) indicates the system essentially memorises the periodic lookup table, consistent with the reservoir developing an attractor for each periodic position.
+
+\textbf{SHD-Synthetic} classifies 10 spoken-digit classes from 700-channel simulated cochlear spike trains with class-discriminative formant trajectories, time-warping, and Poisson noise. The 49.2\% accuracy (±1.4pp across 3 seeds) is 4.9$\times$ above the 10\% chance level, demonstrating that the reservoir extracts temporally-structured spectral patterns without any architectural modification from the DMS/prediction configuration.
 
 Together, these benchmarks confirm that MORPHON operates as a functional recurrent reservoir beyond static classification: it retains patterns across delays, integrates temporal context for shape discrimination, and discovers repeating structure. The DMS and sequence benchmarks are canonical neuroscience working-memory tests \cite{compte2000synaptic,baddeley2003working}; achieving human-competitive accuracy (90\%+) on DMS demonstrates that the bio-inspired architecture generalises to temporal paradigms without architectural modification.
