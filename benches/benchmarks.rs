@@ -62,11 +62,17 @@ fn bench_resonance_propagate(c: &mut Criterion) {
             }
 
             let mut engine = ResonanceEngine::new();
+            // Build hot-array equivalents for deliver(): input_current vec and id→index map.
+            let id_to_idx: HashMap<MorphonId, usize> = morphons.keys()
+                .enumerate()
+                .map(|(j, &id)| (id, j))
+                .collect();
+            let mut input_current = vec![0.0f32; n as usize];
 
             b.iter(|| {
                 engine.propagate(&morphons, &topo);
-                let mut m_clone = morphons.clone();
-                engine.deliver(&mut m_clone, 1.0);
+                input_current.fill(0.0);
+                engine.deliver(&mut input_current, &id_to_idx, 1.0);
             });
         });
     }

@@ -638,12 +638,14 @@ impl System {
         // 1. Swap fired buffers
         std::mem::swap(&mut self.hot.fired, &mut self.hot.fired_prev);
 
-        // 2. Extract input_accumulator → hot.input_current
-        //    Also increment age and handle refractory in structs
+        // 2. Add non-spike input accumulated in morphon structs since last fast tick:
+        //    DFA feedback, external injection (feed_input), homeostasis drive, curiosity.
+        //    Spike currents were already written into hot.input_current by resonance.deliver().
+        //    += not = because spikes are already there; zero the struct accumulator after.
         for j in 0..n {
             let id = self.hot.idx_to_id[j];
             if let Some(m) = self.morphons.get_mut(&id) {
-                self.hot.input_current[j] = m.input_accumulator as f32;
+                self.hot.input_current[j] += m.input_accumulator as f32;
                 m.input_accumulator = 0.0;
                 m.age += 1;
             }
@@ -719,8 +721,12 @@ impl System {
         // 1. Propagate spikes from currently firing Morphons
         self.resonance.propagate(&self.morphons, &self.topology);
 
-        // 2. Deliver spikes that have reached their targets
-        let delivered = self.resonance.deliver(&mut self.morphons, dt);
+        // 2. Deliver spikes that have reached their targets.
+        //    Spike currents land directly in hot.input_current (Vec index lookup)
+        //    instead of morphon.input_accumulator (HashMap lookup). hot.input_current
+        //    is cleared here so last tick's spike contributions don't carry over.
+        self.hot.input_current.fill(0.0);
+        let delivered = self.resonance.deliver(&mut self.hot.input_current, &self.hot.id_to_idx, dt);
 
         let spikes_delivered = delivered.len();
 

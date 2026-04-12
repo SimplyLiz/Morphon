@@ -13,6 +13,7 @@ use crate::types::*;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 
 /// A spike event traveling through the network.
@@ -107,10 +108,13 @@ impl ResonanceEngine {
     }
 
     /// Deliver spikes that have reached their target (delay expired).
-    /// Returns the list of delivered events for learning updates.
+    /// Writes spike current directly into the hot-path `input_current` array,
+    /// bypassing the per-morphon HashMap lookup that `input_accumulator` required.
+    /// Returns the list of delivered events for learning updates (pre_trace, STDP).
     pub fn deliver(
         &mut self,
-        morphons: &mut std::collections::HashMap<MorphonId, Morphon>,
+        input_current: &mut Vec<f32>,
+        id_to_idx: &HashMap<MorphonId, usize>,
         dt: f64,
     ) -> Vec<SpikeEvent> {
         let mut delivered = Vec::new();
@@ -119,9 +123,10 @@ impl ResonanceEngine {
         while let Some(mut spike) = self.pending_spikes.pop_front() {
             spike.delay -= dt;
             if spike.delay <= 0.0 {
-                // Deliver: add to target's input accumulator
-                if let Some(target) = morphons.get_mut(&spike.target) {
-                    target.input_accumulator += spike.strength;
+                // Deliver: write directly to hot input_current (Vec index, no HashMap walk).
+                // Spikes to targets that have since died (not in id_to_idx) are silently dropped.
+                if let Some(&j) = id_to_idx.get(&spike.target) {
+                    input_current[j] += spike.strength as f32;
                 }
                 delivered.push(spike);
             } else {
@@ -206,10 +211,15 @@ mod tests {
         assert_eq!(engine.pending_count(), 0);
     }
 
+    fn make_hot(targets: &[(MorphonId, usize)], size: usize) -> (Vec<f32>, HashMap<MorphonId, usize>) {
+        let input_current = vec![0.0f32; size];
+        let id_to_idx: HashMap<MorphonId, usize> = targets.iter().copied().collect();
+        (input_current, id_to_idx)
+    }
+
     #[test]
     fn deliver_respects_delay() {
-        let mut morphons = HashMap::new();
-        morphons.insert(2, make_morphon(2, false));
+        let (mut input_current, id_to_idx) = make_hot(&[(2, 0)], 1);
 
         let mut engine = ResonanceEngine::new();
         engine.pending_spikes.push_back(SpikeEvent {
@@ -222,24 +232,23 @@ mod tests {
         });
 
         // Step 1: delay 3 -> 2, not delivered
-        let delivered = engine.deliver(&mut morphons, 1.0);
+        let delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert_eq!(delivered.len(), 0);
         assert_eq!(engine.pending_count(), 1);
 
         // Step 2: delay 2 -> 1
-        let delivered = engine.deliver(&mut morphons, 1.0);
+        let delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert_eq!(delivered.len(), 0);
 
         // Step 3: delay 1 -> 0, delivered
-        let delivered = engine.deliver(&mut morphons, 1.0);
+        let delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert_eq!(delivered.len(), 1);
         assert_eq!(engine.pending_count(), 0);
     }
 
     #[test]
-    fn delivered_spike_adds_to_input_accumulator() {
-        let mut morphons = HashMap::new();
-        morphons.insert(2, make_morphon(2, false));
+    fn delivered_spike_adds_to_input_current() {
+        let (mut input_current, id_to_idx) = make_hot(&[(2, 0)], 1);
 
         let mut engine = ResonanceEngine::new();
         engine.pending_spikes.push_back(SpikeEvent {
@@ -251,17 +260,16 @@ mod tests {
             edge_idx: None,
         });
 
-        let _delivered = engine.deliver(&mut morphons, 1.0);
+        let _delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert!(
-            (morphons[&2].input_accumulator - 0.7).abs() < 1e-10,
-            "spike strength should be added to target input_accumulator"
+            (input_current[0] - 0.7f32).abs() < 1e-6,
+            "spike strength should be added to hot input_current"
         );
     }
 
     #[test]
     fn multiple_spikes_accumulate() {
-        let mut morphons = HashMap::new();
-        morphons.insert(2, make_morphon(2, false));
+        let (mut input_current, id_to_idx) = make_hot(&[(2, 0)], 1);
 
         let mut engine = ResonanceEngine::new();
         engine.pending_spikes.push_back(SpikeEvent {
@@ -281,11 +289,11 @@ mod tests {
             edge_idx: None,
         });
 
-        let delivered = engine.deliver(&mut morphons, 1.0);
+        let delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert_eq!(delivered.len(), 2);
         assert!(
-            (morphons[&2].input_accumulator - 0.7).abs() < 1e-10,
-            "multiple spikes should accumulate"
+            (input_current[0] - 0.7f32).abs() < 1e-6,
+            "multiple spikes should accumulate in hot input_current"
         );
     }
 
@@ -307,8 +315,8 @@ mod tests {
 
     #[test]
     fn spike_to_nonexistent_target_does_not_panic() {
-        let mut morphons: HashMap<MorphonId, Morphon> = HashMap::new();
-        // target 99 doesn't exist
+        // target 99 not in id_to_idx — spike should be consumed without panic
+        let (mut input_current, id_to_idx) = make_hot(&[], 0);
 
         let mut engine = ResonanceEngine::new();
         engine.pending_spikes.push_back(SpikeEvent {
@@ -320,7 +328,7 @@ mod tests {
             edge_idx: None,
         });
 
-        let delivered = engine.deliver(&mut morphons, 1.0);
+        let delivered = engine.deliver(&mut input_current, &id_to_idx, 1.0);
         assert_eq!(delivered.len(), 1); // spike is consumed even if target missing
     }
 
