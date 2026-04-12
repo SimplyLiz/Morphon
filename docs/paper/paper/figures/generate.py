@@ -90,7 +90,7 @@ def fig_self_healing():
 
     ax.set_ylabel("Test accuracy (%)")
     ax.set_ylim(0, max(values) * 1.2)
-    ax.set_title("Self-healing exceeds intact performance (MNIST)")
+    ax.set_title("MNIST across versions: self-healing as diagnostic (v3.0.0) vs. intact ceiling (v4.1.0)")
     out = FIG_DIR / "self_healing.pdf"
     fig.savefig(out)
     plt.close(fig)

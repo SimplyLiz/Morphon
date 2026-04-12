@@ -54,24 +54,9 @@ On the MNIST v2 workload (3000 images, 3 epochs, $\sim$1260 morphons), this redu
 \end{algorithm}
 
 \subsection{Output Pathways}
+\label{sec:output_pathways}
 
-MI provides two output pathways with very different characteristics. Both are biologically motivated.
-
-\paragraph{Spike-based readout.}
-The default pathway reads motor morphon potentials after spike propagation. This is the path that drives action selection in CartPole. It is the biological default --- everything happens via spikes.
-
-\paragraph{Analog readout (Purkinje-style bypass).}
-For classification tasks, MI offers an analog readout that reads associative morphon potentials \emph{directly}, bypassing spike conversion: $V_j = b_j + \sum_i w_{ji} \cdot (\sigma(p_i) - 0.5)$ where $p_i$ is the potential of associative morphon $i$, $w_{ji}$ is a learnable readout weight, and $b_j$ is a learnable per-output bias. This is biologically motivated by the Purkinje cell, which performs analog dendritic integration of climbing fiber and parallel fiber inputs to produce motor output, bypassing the spike-based intermediate computation in the cerebellar cortex.
-
-The exact form of the readout matters. Three modifications were each individually necessary to make the readout learn:
-\begin{enumerate}
-  \item \textbf{Centered sigmoid} ($\sigma(p) - 0.5$ instead of $\sigma(p)$). The resting potential is zero, so $\sigma(0) = 0.5$. With $\sim$80 associative morphons, the sum of resting sigmoids is $\sim$40, which dwarfs the small state-dependent signal ($\sim$0.005 per morphon). Centering removes this constant offset and lets the weights focus on state discrimination.
-  \item \textbf{Learnable per-output bias} $b_j$. Absorbs whatever mean output level the system needs, freeing the weights to encode only state differences. Without this the weights have to do double duty (mean + discrimination) and converge slowly.
-  \item \textbf{No L2 weight decay}. Standard delta rule training adds $-\lambda w$ to each step. With $\lambda = 0.001$ and 200 steps per CartPole episode, decay erases $\sim$18\% of the learned weight per episode --- the gradient is consumed fighting the decay. We use weight clipping to $[-5, 5]$ for stability instead.
-\end{enumerate}
-Each fix individually moved CartPole from $\sim$10 steps (random baseline) toward solving; together they produced the SOLVED result. The diagnostic that surfaces this is the \emph{output discrimination} metric $d_\pm$: the difference $V_1 - V_0$ measured separately for left-leaning and right-leaning pole probes. When $d_+$ and $d_-$ have opposite signs and $|d| > 5$, the readout has learned a usable policy. With any of the three fixes missing, $d_+$ and $d_-$ remain same-signed and the policy is stuck.
-
-The two pathways serve different purposes. Spike-based readout is closed-loop and online (suitable for control). Analog readout is open-loop and trained by a delta rule with DFA backprojection, providing exact gradients on the readout weights without requiring backpropagation through the spike network.
+MI provides two output pathways. The spike-based pathway reads motor morphon potentials after propagation and drives action selection in control tasks (CartPole). The analog readout bypasses spike conversion and reads associative morphon potentials directly: $V_j = b_j + \sum_i w_{ji} \cdot (\sigma(p_i) - 0.5)$, biologically motivated by Purkinje cell analog dendritic integration. The readout engineering and its experimental validation are described in Section~\ref{sec:readout_engineering} alongside the CartPole results where it was developed.
 
 \subsection{Inhibitory Spike-Timing-Dependent Plasticity}
 \label{sec:istdp}

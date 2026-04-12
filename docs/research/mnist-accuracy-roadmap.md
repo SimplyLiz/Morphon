@@ -14,6 +14,7 @@
 | Temporal | 6/6 pass | ✅ |
 | Self-Healing Standard | ~31% post-damage | Ehrlich dokumentiert |
 | MNIST Offline-Features | 10.5% (LogReg/MLP) | ⚠️ LSM-Verhalten — siehe unten |
+| Sensory-only Readout Ablation | 13.0% (−35.5pp vs full) | ✅ Assoc-Layer trägt 35.5pp bei |
 
 V3 LocalInhibition Parameter (Standard-Default, locked):
 - `istdp_rate = 0.001`, `initial_inh_weight = -0.5`
@@ -239,6 +240,29 @@ werden informationslos.
 Klasse 9 hat distinctive, robuste Aktivierungsmuster. Klassen 3/4/7 sind im
 Aktivierungsraum nahezu ununterscheidbar — typisch für schwache Feature-Separation,
 nicht für einen schlechten Readout-Mechanismus.
+
+### Sensory-Only Readout Ablation (April 2026)
+
+**Fragestellung:** Trägt der assoziative Layer tatsächlich zur Klassifikations-Accuracy bei, oder ist er Rauschen?
+
+**Methode:** Nach V3-Training alle Readout-Gewichte auf assoziative Morphons nullen — nur Sensory→Readout-Verbindungen aktiv lassen. Evaluation auf 1000 Test-Images (identische Prozedur).
+
+**Ergebnis (seed=42, Standard, 5ep):**
+
+| Readout-Konfiguration | Accuracy | Δ |
+|----------------------|----------|---|
+| Full (Sensory + Assoc) | 48.5% | Baseline |
+| Sensory-only | 13.0% | **−35.5pp** |
+
+**Interpretation:**
+
+- **Assoz-Layer ist kein Rauschen** — er liefert 35.5pp der Gesamtaccuracy. Ohne ihn ist das System quasi random (10% Zufall, 13% Sensory-only).
+- **Sensory→Readout direkt ist ~13%** — die 784 Input-Morphons allein können kaum zwischen Klassen trennen. Alle echte Klassifikationsstärke kommt aus den assoziativen Repräsentationen.
+- **Aber: offline nicht extrahierbar** — MLP auf frozen assoc-Aktivierungen = 10.5% (random). Die assoziativen Features sind real und stark, aber nur über die co-adaptierten Readout-Gewichte zugänglich.
+
+**Schlussfolgerung:** Das System ist ein LSM wo Assoc-Layer = Reservoir und Readout = co-adaptierter Readout. Das Reservoir liefert echte Information, aber nur im Kontext der trainierten Readout-Gewichte. Der Bottleneck ist die Co-Adaptation — nicht fehlende Repräsentationskapazität.
+
+---
 
 ### Was das bedeutet
 

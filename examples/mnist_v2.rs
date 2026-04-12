@@ -242,6 +242,48 @@ fn classify(system: &mut System, inputs: &[f64]) -> usize {
         .map(|(i, _)| i).unwrap_or(0)
 }
 
+/// Like `classify` but performs a full transient-state reset before each image.
+/// Prevents temporal context from one image bleeding into the next — gives a
+/// per-image accuracy that reflects true discriminative capacity, not sequential state.
+fn classify_stateless(system: &mut System, inputs: &[f64]) -> usize {
+    system.reset_transient_state();
+    for _ in 0..STEPS_PER_IMAGE {
+        system.feed_input(inputs);
+        system.step();
+    }
+    let outputs = system.read_output();
+    outputs.iter().enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i).unwrap_or(0)
+}
+
+fn evaluate_stateless(system: &mut System, images: &[Vec<f64>], labels: &[usize], n: usize) -> f64 {
+    let mut correct = 0;
+    let tested = images.len().min(n);
+    for i in 0..tested {
+        if classify_stateless(system, &images[i]) == labels[i] { correct += 1; }
+    }
+    correct as f64 / tested as f64 * 100.0
+}
+
+/// Evaluate with state carry-over but randomised image order.
+/// Comparing sequential vs shuffled shows whether accuracy depends on natural
+/// ordering (temporal context) or true per-image discriminative capacity.
+/// If sequential >> shuffled: the system exploits presentation order (LSM artefact).
+/// If they are close: the readout has real per-image discriminative capacity.
+fn evaluate_shuffled(system: &mut System, images: &[Vec<f64>], labels: &[usize], n: usize,
+                     rng: &mut rand::rngs::StdRng) -> f64 {
+    use rand::seq::SliceRandom;
+    let tested = images.len().min(n);
+    let mut indices: Vec<usize> = (0..images.len()).collect();
+    indices.shuffle(rng);
+    let mut correct = 0;
+    for &i in indices.iter().take(tested) {
+        if classify(system, &images[i]) == labels[i] { correct += 1; }
+    }
+    correct as f64 / tested as f64 * 100.0
+}
+
 /// Dump receptive fields of top-K associative morphons (by mean incoming weight magnitude)
 /// to a JSON file for paper figure generation. Each RF is a 28x28 grid of S→A weights.
 fn dump_receptive_fields(system: &System, k: usize) {
@@ -398,12 +440,27 @@ fn train_and_eval(
     rng: &mut rand::rngs::StdRng,
 ) -> f64 {
     train_and_eval_from(system, train_images, train_labels, test_images, test_labels,
-        n_train, epochs, label, rng, 1)
+        n_train, epochs, label, rng, 1, false)
+}
+
+/// Like `train_and_eval` but resets all transient state before each image.
+/// Breaks LSM co-adaptation: the readout trains on per-image features rather than
+/// accumulated sequential context. Expected to produce more generalisable representations.
+fn train_and_eval_stateless(
+    system: &mut System,
+    train_images: &[Vec<f64>], train_labels: &[usize],
+    test_images: &[Vec<f64>], test_labels: &[usize],
+    n_train: usize, epochs: usize, label: &str,
+    rng: &mut rand::rngs::StdRng,
+) -> f64 {
+    train_and_eval_from(system, train_images, train_labels, test_images, test_labels,
+        n_train, epochs, label, rng, 1, true)
 }
 
 /// Like train_and_eval but `supervised_from` controls which epoch first gets reward/readout.
 /// Pass 0 to supervise from ep1 (recovery mode: structural growth + immediate readout signal).
 /// Pass 1 (default) for standard training where ep1 is unsupervised feature formation.
+/// `stateless_training`: if true, resets transient network state before every image.
 fn train_and_eval_from(
     system: &mut System,
     train_images: &[Vec<f64>], train_labels: &[usize],
@@ -411,6 +468,7 @@ fn train_and_eval_from(
     n_train: usize, epochs: usize, label: &str,
     rng: &mut rand::rngs::StdRng,
     supervised_from: usize,
+    stateless_training: bool,
 ) -> f64 {
     let start = Instant::now();
     for epoch in 0..epochs {
@@ -437,6 +495,12 @@ fn train_and_eval_from(
         let supervised = epoch >= supervised_from;
 
         for (bi, &idx) in indices.iter().take(n_train).enumerate() {
+            // Stateless training: reset working memory, fire counts, and all transient
+            // context before each image so the readout trains on per-image features, not
+            // accumulated sequential history. present_image() still resets potentials.
+            if stateless_training {
+                system.reset_transient_state();
+            }
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
 
@@ -760,7 +824,7 @@ fn main() {
         v2.config.scheduler.glacial_period = 500;
         let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);
         let recovery_acc = train_and_eval_from(&mut v2, &train_images, &train_labels,
-            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0);
+            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0, false);
         eprintln!("  Recovery: {:.1}% ({:+.1}pp) | morphons: {}", recovery_acc, recovery_acc - v2_acc, v2.morphons.len());
         eprintln!("  Baseline={:.1}%  Damaged={:.1}%  Recovery={:.1}%  Δ={:+.1}pp",
             v2_acc, damaged_acc, recovery_acc, recovery_acc - v2_acc);
@@ -790,10 +854,12 @@ fn main() {
     let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);
     let v2_acc = train_and_eval(&mut v2, &train_images, &train_labels,
         &test_images, &test_labels, n_train, n_epochs, "V2  ", &mut rng_v);
+    let v2_stateless = evaluate_stateless(&mut v2, &test_images, &test_labels, n_test);
     let v2_m = v2.inspect().total_morphons;
     let v2_s = v2.inspect().total_synapses;
     let v2_duration_s = t1.elapsed().as_secs();
-    eprintln!("  V2: {:.1}% | m={} s={} ({:.0}s)\n", v2_acc, v2_m, v2_s, t1.elapsed().as_secs_f64());
+    eprintln!("  V2: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
+        v2_acc, v2_stateless, v2_m, v2_s, t1.elapsed().as_secs_f64());
 
     // Save pretrained V2 snapshot for fast recovery iteration (--recovery-only loads this).
     if save_pretrained || damage_sweep {
@@ -820,10 +886,12 @@ fn main() {
     let mut rng_v3 = rand::rngs::StdRng::seed_from_u64(seed);
     let v3_acc = train_and_eval(&mut v3, &train_images, &train_labels,
         &test_images, &test_labels, n_train, n_epochs, "V3  ", &mut rng_v3);
+    let v3_stateless = evaluate_stateless(&mut v3, &test_images, &test_labels, n_test);
     let v3_m = v3.inspect().total_morphons;
     let v3_s = v3.inspect().total_synapses;
     let v3_duration_s = t_v3.elapsed().as_secs();
-    eprintln!("  V3: {:.1}% | m={} s={} ({:.0}s)\n", v3_acc, v3_m, v3_s, v3_duration_s);
+    eprintln!("  V3: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
+        v3_acc, v3_stateless, v3_m, v3_s, v3_duration_s);
 
     // === CONFUSION MATRIX + ACTIVATION DUMP (V3) ===
     if !fast {
@@ -833,6 +901,26 @@ fn main() {
         let act_path = format!("docs/benchmark_results/v{}/v3_activations.csv", version);
         fs::create_dir_all(format!("docs/benchmark_results/v{}", version)).ok();
         dump_activations(&mut v3, &test_images, &test_labels, &act_path);
+
+        // === SENSORY-ONLY READOUT DIAGNOSTIC ===
+        // Key question: do associative features contribute anything, or does accuracy
+        // come almost entirely from the direct Sensory→Readout pathway?
+        // If sensory-only ≈ v3_acc: assoc features are noise, STDP produces nothing useful.
+        // If sensory-only << v3_acc: assoc features contribute (just not extractable offline).
+        let sensory_ids: std::collections::HashSet<MorphonId> = v3.morphons.values()
+            .filter(|m| m.cell_type == CellType::Sensory)
+            .map(|m| m.id)
+            .collect();
+        v3.filter_readout_weights(|id| sensory_ids.contains(&id));
+        let sensory_only_acc = evaluate(&mut v3, &test_images, &test_labels, n_test);
+        eprintln!("\n━━━ READOUT ABLATION ━━━");
+        eprintln!("  Full readout (Sensory + Assoc): {:.1}%", v3_acc);
+        eprintln!("  Sensory-only readout:           {:.1}%  (Δ {:+.1}pp)", sensory_only_acc, sensory_only_acc - v3_acc);
+        if (v3_acc - sensory_only_acc).abs() < 3.0 {
+            eprintln!("  → Assoc features contribute ~nothing. STDP output is noise for classification.");
+        } else {
+            eprintln!("  → Assoc features contribute {:.1}pp. Co-adapted but not offline-extractable.", v3_acc - sensory_only_acc);
+        }
     }
 
     // === RECEPTIVE FIELD DUMP ===
@@ -872,7 +960,7 @@ fn main() {
         // Recovery uses supervised_from=0: features already exist, reward signal must be
         // present from the first epoch so readout weights aren't overwritten by unsupervised STDP.
         let recovery_acc = train_and_eval_from(&mut v2, &train_images, &train_labels,
-            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0);
+            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0, false);
         let after = v2.morphons.len();
         eprintln!("  Recovery: {:.1}% | morphons: {}\n", recovery_acc, after);
         (damaged_acc, recovery_acc, before, after, n_kill)
@@ -880,21 +968,25 @@ fn main() {
 
     // === SUMMARY ===
     if fast {
-        eprintln!("╔═══════════════════════════════════════════╗");
-        eprintln!("║  V2 (GlobalKWTA):    {:>5.1}%  ({:>4}s)       ║", v2_acc, v2_duration_s);
-        eprintln!("║  V3 (LocalInhib.):   {:>5.1}%  ({:>4}s)       ║", v3_acc, v3_duration_s);
-        eprintln!("╚═══════════════════════════════════════════╝");
+        eprintln!("╔══════════════════════════════════════════════════════╗");
+        eprintln!("║  V2 (GlobalKWTA):  {:>5.1}%  stateless: {:>5.1}%  ({:>4}s) ║",
+            v2_acc, v2_stateless, v2_duration_s);
+        eprintln!("║  V3 (LocalInhib.): {:>5.1}%  stateless: {:>5.1}%  ({:>4}s) ║",
+            v3_acc, v3_stateless, v3_duration_s);
+        eprintln!("╚══════════════════════════════════════════════════════╝");
     } else {
-        eprintln!("╔═══════════════════════════════════════════╗");
-        eprintln!("║  Baseline:           {:>5.1}%                ║", base_acc);
-        eprintln!("║  V2 (GlobalKWTA):    {:>5.1}%  ({:+.1}pp vs BASE)  ║", v2_acc, v2_acc - base_acc);
-        eprintln!("║  V3 (LocalInhib.):   {:>5.1}%  ({:+.1}pp vs V2)    ║", v3_acc, v3_acc - v2_acc);
-        eprintln!("║  V2 wall: {:>4}s   V3 wall: {:>4}s            ║", v2_duration_s, v3_duration_s);
-        eprintln!("║  Post-damage:        {:>5.1}%                ║", damaged_acc);
-        eprintln!("║  Post-recovery:      {:>5.1}%  ({:+.1}pp)        ║", recovery_acc, recovery_acc - damaged_acc);
+        eprintln!("╔══════════════════════════════════════════════════════╗");
+        eprintln!("║  Baseline:                 {:>5.1}%                    ║", base_acc);
+        eprintln!("║  V2 (GlobalKWTA):          {:>5.1}%  ({:+.1}pp vs BASE)  ║", v2_acc, v2_acc - base_acc);
+        eprintln!("║  V2 stateless:             {:>5.1}%  ({:+.1}pp vs V2)    ║", v2_stateless, v2_stateless - v2_acc);
+        eprintln!("║  V3 (LocalInhib.):         {:>5.1}%  ({:+.1}pp vs V2)    ║", v3_acc, v3_acc - v2_acc);
+        eprintln!("║  V3 stateless:             {:>5.1}%  ({:+.1}pp vs V3)    ║", v3_stateless, v3_stateless - v3_acc);
+        eprintln!("║  V2 wall: {:>4}s   V3 wall: {:>4}s                  ║", v2_duration_s, v3_duration_s);
+        eprintln!("║  Post-damage:              {:>5.1}%                    ║", damaged_acc);
+        eprintln!("║  Post-recovery:            {:>5.1}%  ({:+.1}pp)          ║", recovery_acc, recovery_acc - damaged_acc);
         eprintln!("║  Morphons (V2): {} → {} → {}{}║", before, before - n_kill, after,
             " ".repeat(22 - format!("{} → {} → {}", before, before - n_kill, after).len().min(22)));
-        eprintln!("╚═══════════════════════════════════════════╝");
+        eprintln!("╚══════════════════════════════════════════════════════╝");
     }
 
     // Config summary
@@ -925,11 +1017,13 @@ fn main() {
         },
         "baseline_acc": base_acc,
         "v2_acc": v2_acc,
+        "v2_acc_stateless": v2_stateless,
         "v2_morphons": v2_m,
         "v2_synapses": v2_s,
         "v2_duration_s": v2_duration_s,
         "v2_competition_mode": "GlobalKWTA",
         "v3_acc": v3_acc,
+        "v3_acc_stateless": v3_stateless,
         "v3_morphons": v3_m,
         "v3_synapses": v3_s,
         "v3_duration_s": v3_duration_s,

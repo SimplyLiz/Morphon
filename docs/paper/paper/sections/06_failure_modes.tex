@@ -17,6 +17,9 @@ Receptor saturation via Hill function ($n=2$), receptor downregulation on sustai
 \paragraph{Result.}
 Stable modulatory dynamics. Dopamine signal retains information content; learning continues without saturation.
 
+\paragraph{Diagnostic.}
+\emph{Weight standard deviation} $\sigma_w$: within 50 ticks of onset, $\sigma_w$ collapses from $>1.0$ to $<0.15$ as all synapses are potentiated to saturation. A healthy network maintains $\sigma_w > 1.0$.
+
 \subsection{Motor Silencing from Burst Dead Zone}
 
 \paragraph{Symptom.}
@@ -31,6 +34,9 @@ Tonic baseline current injection into motor morphons (an analogue of intrinsic e
 \paragraph{Result.}
 Motor morphons maintain baseline activity. STDP remains effective across firing rate regimes. The CartPole solve depends on this fix; without it, the system stalls at $\sim$10 steps (random baseline) within 50 episodes.
 
+\paragraph{Diagnostic.}
+\emph{Output discrimination} $d_\pm$ (Section~\ref{sec:readout_engineering}): when $d_+$ and $d_-$ are same-signed and $|d| < 1$, motor morphons are silent and the policy has collapsed. A healthy network shows $d_+$ and $d_-$ with opposite signs and $|d| > 5$.
+
 \subsection{LTD Vicious Cycle}
 
 \paragraph{Symptom.}
@@ -44,6 +50,9 @@ Synaptic scaling: every $\sim$50 ticks, normalize the total incoming weight to e
 
 \paragraph{Result.}
 Weight distribution stays bounded. No more global silencing. Networks survive multi-hour training runs without entering the death spiral.
+
+\paragraph{Diagnostic.}
+\emph{Weight standard deviation} $\sigma_w < 0.15$ with falling firing rates confirms the vicious cycle. Distinct from modulatory explosion ($\sigma_w < 0.15$ but firing rates are saturated, not falling). \emph{Jaccard similarity} of firing patterns across repeated identical inputs drops below 0.7 once the network begins to silence: no two presentations produce the same response, because the stochastic noise dominates the near-zero signal.
 
 \subsection{Premature Mature: A Novel Failure Mode}
 \label{sec:premature_mature}
@@ -102,19 +111,40 @@ Two changes:
 \paragraph{The oscillation discovery.}
 A surprising secondary finding: pure high plasticity is worse than oscillating plasticity. When we tested raising both the Mature \emph{and} Consolidating gates (preventing all throttling), accuracy dropped to 25\%. The system needs the natural Differentiating$\leftrightarrow$Consolidating oscillation that biology calls the theta/sharp-wave-ripple alternation \cite{buzsaki2015hippocampal}: high-plasticity exploration phases interleaved with consolidation phases that lock in gains. The oscillation \emph{is} the feature; the bug was Mature triggering prematurely and locking the system out of the oscillation entirely.
 
+\paragraph{Diagnostic.}
+\emph{Endoquilibrium summary line}: \texttt{pm} (plasticity multiplier) at 0.6 with stage = Mature within the first 500 training samples is the unambiguous signature. The seven Endo channel values (\texttt{rg, ng, ag, hg, tb, pm, hp}) are logged each medium tick; a fresh-task Mature with \texttt{pm} below 1.0 warrants immediate inspection.
+
 \paragraph{Implications beyond MI.}
 Any biologically-inspired homeostatic system that uses raw reward (not RPE) as a maturity signal will exhibit this failure on dense-reward tasks. We expect this to be a common bug in spiking neural network training pipelines that combine RL-style modulation with supervised classification. The fix is to either (i) use sparse reward correlated with correctness, (ii) add a long history gate, or (iii) use RPE.
 
-\subsection{Diagnostic Instruments}
+\subsection{iSTDP Timescale Mismatch}
+\label{sec:istdp_timescale}
+
+\paragraph{Symptom.}
+With rate-based inhibitory STDP --- computed once per 10-tick medium period using a 100-tick activity average --- hub morphons with high in-degree accumulate 50--100 correlated spikes before any corrective inhibitory signal arrives. Inhibitory interneurons adapt to the \emph{average} activity of a hub, not to its burst behaviour. The hub entrenches: it begins responding to every input class, its synapses win the reward signal, and the readout collapses to near-random discrimination. Post-hoc neuron labeling shows only 1--2 labeled classes regardless of training duration; accuracy plateaus at 30\%.
+
+\paragraph{Biological parallel.}
+Inhibitory short-term plasticity in the cortex operates on individual spike arrivals \citep{vogels2011inhibitory}. The cortex does not buffer spikes for 100ms and then apply a running-average inhibitory update; inhibitory synapses respond to each spike with a distinct weight change. Rate-averaged inhibitory signals are a computational shortcut without a biological counterpart, and the shortcut fails exactly where biology's solution is fast: hub suppression within a burst.
+
+\paragraph{Fix.}
+Per-spike iSTDP (Vogels 2011, Section~\ref{sec:istdp}): update inhibitory weights on each delivered spike rather than on the medium-period running average. A hub morphon firing at 5$\times$ the target rate immediately recruits stronger inhibition on the very spikes that evidence its over-activity, rather than waiting for the slow average to catch up.
+
+\paragraph{Result.}
+Hub dominance broken. Post-hoc labeling: 1 labeled class $\rightarrow$ 12 labeled classes across all 10 digits. Accuracy: 8\% $\rightarrow$ 44.5\% (iSTDP fix alone); 52\% with the subsequent capture\_threshold and epoch-0 fixes. The intact ceiling absorbs the entire +18pp that v3.0.0 required damage-induced recovery to reach.
+
+\paragraph{Diagnostic.}
+\emph{Post-hoc neuron labeling}: assign each associative morphon the class it fires most frequently. A healthy network labels all 10 digits with multiple morphons per class. Hub-dominated networks label only 1--2 classes; the remaining morphons are ghost units that respond uniformly to all inputs and contribute no discriminative signal. Run this after each training epoch: stagnation at $\leq$2 labeled classes by epoch 2 predicts that iSTDP timescale is wrong.
+
+\subsection{Diagnostic Instruments: Consolidated Reference}
 \label{sec:diagnostics}
 
-Each of the four failure modes above was discovered through a specific measurement, not by reading code or guessing. We document the diagnostic instruments here because they are reusable across spiking architectures.
+Each failure mode above was discovered through a specific measurement introduced alongside it. We consolidate the four instruments here for reference.
 
 \begin{description}
-  \item[\textbf{Jaccard similarity of firing patterns.}] Present the same input twice with voltage reset; the Jaccard similarity of the two fired-morphon sets measures determinism. Values $\geq 0.9$ are stable, $< 0.7$ predict that no readout will converge. Activity stabilization fixes (reducing per-step noise from $\pm 0.05$ to $\pm 0.02$) brought CartPole from Jaccard = 0.43 to 1.0 and were a prerequisite for the SOLVED result.
-  \item[\textbf{Output discrimination $d_\pm$.}] $d_+ = V_1 - V_0$ measured for a right-leaning pole probe; $d_-$ for left-leaning. When $d_+$ and $d_-$ have \emph{opposite} signs and $|d| > 5$, the readout is discriminative; when same-signed, the policy is collapsed. This metric surfaced the readout architecture failure (Section~\ref{sec:implementation}) faster than any other diagnostic.
-  \item[\textbf{Endoquilibrium summary line.}] The seven channel values (\texttt{rg, ng, ag, hg, tb, pm, hp}) plus the detected stage are logged each medium tick. \texttt{pm} (plasticity multiplier) at 0.6 with stage = Mature on a fresh task is the signature of premature throttling.
-  \item[\textbf{Weight standard deviation.}] Synapse weight std $\sigma_w$ over the entire network. $\sigma_w < 0.15$ is feature collapse (all morphons look the same); $\sigma_w > 1.0$ is healthy diversity. Surfaces the LTD vicious cycle and the per-tick capture saturation problem.
+  \item[\textbf{Jaccard similarity of firing patterns.}] Present the same input twice with voltage reset; Jaccard similarity of fired-morphon sets measures determinism. Values $\geq 0.9$ are stable, $< 0.7$ predict readout failure. Activity stabilization (reducing per-step noise from $\pm 0.05$ to $\pm 0.02$) brought CartPole from Jaccard = 0.43 to 1.0; a prerequisite for the SOLVED result. Also flags LTD vicious cycle onset.
+  \item[\textbf{Output discrimination $d_\pm$.}] $d_+ = V_1 - V_0$ for right-leaning probe; $d_-$ for left-leaning. Opposite signs with $|d| > 5$: discriminative. Same-signed: collapsed policy or motor silencing. Described in Section~\ref{sec:readout_engineering}.
+  \item[\textbf{Endoquilibrium summary line.}] \texttt{pm} at 0.6 with stage = Mature on a fresh task: premature throttling. Described in Section~\ref{sec:premature_mature}.
+  \item[\textbf{Weight standard deviation $\sigma_w$.}] $\sigma_w < 0.15$: feature collapse (modulatory explosion or LTD vicious cycle --- distinguish by firing rate direction). $\sigma_w > 1.0$: healthy diversity. Described in Sections~\ref{sec:failure_modes}.1 and \ref{sec:failure_modes}.3.
 \end{description}
 
 \paragraph{Negative results worth noting.}

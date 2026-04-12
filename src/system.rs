@@ -2781,6 +2781,42 @@ impl System {
         self.modulation.inject_novelty(0.3);
     }
 
+    /// Reset all per-trial transient state without touching learned weights or
+    /// STDP eligibility traces.
+    ///
+    /// Use this before each evaluation image to prevent temporal bleed between
+    /// test samples — the "state-reset evaluator" described in the MNIST roadmap.
+    /// Unlike `sequence_reset()`, this does NOT zero eligibility traces and does
+    /// NOT inject novelty, so the trained network state is fully preserved.
+    pub fn reset_transient_state(&mut self) {
+        // Membrane voltages + accumulators (same as present_image, but all morphons)
+        for m in self.morphons.values_mut() {
+            m.potential = 0.0;
+            m.prev_potential = 0.0;
+            m.input_accumulator = 0.0;
+            m.fired = false;
+            m.refractory_timer = 0.0;
+        }
+        // Hot-array shadow copy
+        for j in 0..self.hot.active_count {
+            self.hot.voltage[j] = 0.0;
+            self.hot.input_current[j] = 0.0;
+            self.hot.fired[j] = false;
+            self.hot.fired_prev[j] = false;
+            self.hot.refractory[j] = 0.0;
+        }
+        // In-flight spikes
+        self.resonance.clear();
+        // Working memory context
+        self.memory.working.clear();
+        // Per-episode fire counts (used by report_episode_end)
+        self.episode_fire_counts.clear();
+        // ANCS item context
+        self.current_ancs_item = None;
+        // kWTA winner list
+        self.kwta_winners.clear();
+    }
+
     /// Inject a targeted reward at a specific output port's morphon.
     ///
     /// Two-hop credit assignment (inspired by SADP's population agreement):

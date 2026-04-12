@@ -17,9 +17,21 @@ A small linear TD-error critic external to the MI network provides the reward mo
 \begin{figure}[h]
   \centering
   \figifexists[0.85\linewidth]{cartpole_curve.pdf}{CartPole learning curve}
-  \caption{CartPole-v1 learning curve (v4.1.0 standard profile, 1000 episodes). SOLVED at episode 936, avg(100)=195.5. The solve is consistent across versions: v0.5.0 solved at ep 895 (avg=195.2); v4.1.0 solves at ep 936 (avg=195.5).}
+  \caption{CartPole-v1 learning curve. The figure displays the run captured in the benchmark JSON (version and profile as labeled in the figure title). The solve is consistent across versions: v0.5.0 solved at ep 895, avg(100)=195.2; v4.1.0 solves at ep 936, avg(100)=195.5. Both cross the 195-step solved threshold.}
   \label{fig:cartpole}
 \end{figure}
+
+\paragraph{Readout architecture.}
+\label{sec:readout_engineering}
+The CartPole solve required identifying and fixing three independent failures in the analog readout (Section~\ref{sec:output_pathways}), each of which individually prevented learning:
+
+\begin{enumerate}
+  \item \textbf{Centered sigmoid} ($\sigma(p) - 0.5$ instead of $\sigma(p)$). The resting potential is zero, so $\sigma(0) = 0.5$. With $\sim$80 associative morphons, resting sigmoids sum to $\sim$40, dwarfing the state-dependent signal ($\sim$0.005 per morphon). Centering removes this offset.
+  \item \textbf{Learnable per-output bias} $b_j$. Absorbs mean output level and frees the weights to encode only state differences.
+  \item \textbf{No L2 weight decay}. With $\lambda = 0.001$ and 200 steps per episode, decay erases $\sim$18\% of learned weight per episode. Weight clipping to $[-5, 5]$ replaces it.
+\end{enumerate}
+
+Each fix individually moved CartPole from $\sim$10 steps toward solving. The diagnostic that surfaces each failure is \emph{output discrimination} $d_\pm$: $d_+ = V_1 - V_0$ for a right-leaning pole probe, $d_-$ for left-leaning. When $d_+$ and $d_-$ have opposite signs and $|d| > 5$, the readout is discriminative. With any fix missing, $d_+$ and $d_-$ remain same-signed --- the signature of a collapsed policy. This metric surfaced the readout architecture failure faster than any other diagnostic and is reusable across spiking architectures.
 
 \paragraph{What this proves.}
 The full MI pipeline --- developmental bootstrap, three-factor learning, tag-and-capture consolidation, contrastive reward, Endoquilibrium regulation --- works end-to-end on a non-trivial control task. CartPole is the prerequisite gate for all other benchmarks: if the basic learning loop is broken, nothing else can work. The CartPole solve provides the foundation to investigate harder tasks.
@@ -89,3 +101,33 @@ The intact ceiling has risen from 30\% to 52\% (standard profile) via a single a
   \caption{Receptive fields of the top-12 associative morphons (by mean incoming weight magnitude) after MNIST training, dumped from the v3.0.0 quick-profile run. Each tile shows the morphon's S$\to$A synapse weights mapped to the 28$\times$28 pixel grid (red = positive, blue = negative). Many morphons develop spatially-localized, digit-stroke-like receptive fields without any backprop-driven gradient signal --- features emerge from STDP + k-WTA + reward-modulated three-factor learning.}
   \label{fig:receptive_fields}
 \end{figure}
+
+\subsection{Representational Regime: LSM Characterization (v4.4.0)}
+\label{sec:lsm_characterization}
+
+\paragraph{Offline feature evaluation.}
+To characterize the representational regime of the trained system, we extract morphon activation vectors from the final V3 system (seed=42, standard profile, 5 epochs) after each of 1000 test images and train scikit-learn classifiers on the resulting feature matrix (80/20 train/test split). Both logistic regression and a two-layer MLP (512$\to$256 hidden units) achieve \textbf{10.5\%} --- random chance for 10 classes. This is not a measurement artifact.
+
+\paragraph{Sensory-only readout ablation.}
+To determine whether the associative layer contributes to the online accuracy or is computationally inert, we zero all readout weights connecting associative morphons to the output and re-evaluate with only Sensory$\to$Readout connections active. Results (same trained network, seed=42):
+
+\begin{center}
+\begin{tabular}{lcc}
+\hline
+Readout configuration & Accuracy & $\Delta$ \\
+\hline
+Full (Sensory + Assoc) & 48.5\% & baseline \\
+Sensory-only (ablated) & 13.0\% & $-35.5$pp \\
+\hline
+\end{tabular}
+\end{center}
+
+The associative layer contributes \textbf{35.5pp} of the 48.5\% online accuracy. Zeroing its readout weights leaves the system at 13\% --- barely above random chance and consistent with a direct pixel-to-label linear projection with no learned intermediate representation.
+
+\paragraph{Interpretation: Liquid State Machine with co-adapted readout.}
+The combination --- 35.5pp associative contribution online, 10.5\% offline on frozen features --- is the signature of a \emph{Liquid State Machine} (LSM) \cite{maass2002real,lukosevicius2009reservoir}. The associative morphons function as a reservoir: they perform genuine computation that is discriminative for classification, but only in conjunction with the readout weights that were co-trained alongside the reservoir dynamics. An offline classifier sees static activation snapshots decoupled from the dynamical context in which those features are meaningful, and recovers no signal.
+
+This characterization has two practical consequences. First, offline evaluation of frozen morphon features is not a valid diagnostic for MORPHON-class architectures; the correct evaluation is online with the co-adapted readout in place. Second, the $\sim$50\% ceiling is not primarily a capacity or tuning problem: expanding the reservoir (tested: seed\_size=400 is a no-op as pruning converges the network to $\sim$1272 morphons regardless) and increasing training data (tested: n\_train=10K gives no improvement over 5K) do not move the ceiling. The co-adaptation boundary is the limiting factor. A non-linear readout trained jointly with reservoir dynamics is the principled next step.
+
+\paragraph{Reproducibility (v4.4.0).}
+All v4.4.0 results use a deterministic \texttt{SmallRng} seeded from \texttt{SystemConfig.rng\_seed}. Repeated runs at seed=42 (standard profile, 5 epochs) produce results within $\pm$1pp, confirming that earlier run-to-run variation was seed entropy rather than genuine instability in the learning dynamics.

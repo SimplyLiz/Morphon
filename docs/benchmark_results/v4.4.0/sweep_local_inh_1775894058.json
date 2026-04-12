@@ -1,0 +1,78 @@
+{
+  "benchmark": "local_inhibition_sweep",
+  "profile": "standard",
+  "reference": {
+    "accuracy": 52.0,
+    "initial_inh_weight": -0.5,
+    "istdp_rate": 0.005,
+    "note": "52.0% (v4.1.0 Standard), recovery=28.5%"
+  },
+  "results": [
+    {
+      "accuracy": 55.00000000000001,
+      "delta_vs_ref": 3.000000000000007,
+      "duration_s": 149,
+      "initial_inh_weight": -0.5,
+      "istdp_rate": 0.001,
+      "label": "slow-rate"
+    },
+    {
+      "accuracy": 55.00000000000001,
+      "delta_vs_ref": 3.000000000000007,
+      "duration_s": 149,
+      "initial_inh_weight": -0.5,
+      "istdp_rate": 0.002,
+      "label": "med-rate"
+    },
+    {
+      "accuracy": 53.0,
+      "delta_vs_ref": 1.0,
+      "duration_s": 139,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.005,
+      "label": "soft-inh"
+    },
+    {
+      "accuracy": 53.5,
+      "delta_vs_ref": 1.5,
+      "duration_s": 147,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.001,
+      "label": "slow+soft"
+    },
+    {
+      "accuracy": 52.0,
+      "delta_vs_ref": 0.0,
+      "duration_s": 145,
+      "initial_inh_weight": -0.1,
+      "istdp_rate": 0.001,
+      "label": "ultra-soft"
+    },
+    {
+      "accuracy": 54.0,
+      "delta_vs_ref": 2.0,
+      "duration_s": 152,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.002,
+      "label": "med+soft"
+    },
+    {
+      "accuracy": 54.0,
+      "delta_vs_ref": 2.0,
+      "duration_s": 145,
+      "initial_inh_weight": -0.2,
+      "istdp_rate": 0.0005,
+      "label": "very-slow"
+    },
+    {
+      "accuracy": 54.50000000000001,
+      "delta_vs_ref": 2.500000000000007,
+      "duration_s": 146,
+      "initial_inh_weight": -0.3,
+      "istdp_rate": 0.001,
+      "label": "mid+slow"
+    }
+  ],
+  "seed": 42,
+  "version": "4.4.0"
+}
