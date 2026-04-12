@@ -519,11 +519,13 @@ fn train_and_eval_from(
                 let acc = evaluate(system, test_images, test_labels, 100);
                 if supervised { best_acc = best_acc.max(acc); }
                 let s = system.inspect();
-                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} m={} s={} ({:.0}s) {} | rs={:.3} cv={:.3}",
+                let fwd_saved = s.synapses_saved_fwd_recent;
+                let fwd_str = if fwd_saved > 0 { format!(" fwd_saved={}", fwd_saved) } else { String::new() };
+                eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} m={} s={} ({:.0}s) {} | rs={:.3} cv={:.3}{}",
                     label, epoch + 1, bi + 1, n_train, acc, lr,
                     s.total_morphons, s.total_synapses,
                     start.elapsed().as_secs(), system.endo.summary(),
-                    system.endo.reward_slow(), system.endo.reward_cv());
+                    system.endo.reward_slow(), system.endo.reward_cv(), fwd_str);
             }
         }
     }

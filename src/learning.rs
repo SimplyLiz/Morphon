@@ -309,6 +309,18 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         && synapse.forward_importance < params.forward_importance_min
 }
 
+/// Like `should_prune_with_cost` but WITHOUT the Phase 4 forward_importance guard.
+/// Used only for the diagnostic counter in `pruning()` to measure how many synapses
+/// Phase 4 rescues each slow tick.
+pub fn should_prune_without_fwd(synapse: &Synapse, params: &LearningParams, cost_factor: f64) -> bool {
+    let effective_weight_min = params.weight_min * cost_factor.max(1.0);
+    !synapse.consolidated
+        && synapse.age > 100
+        && synapse.weight.abs() < effective_weight_min
+        && synapse.usage_count < 5
+        && synapse.reward_correlation < params.reward_correlation_min
+}
+
 /// V6: Contradiction-Driven Reconsolidation — un-consolidate synapses whose
 /// post-synaptic targets show sustained high prediction error.
 ///

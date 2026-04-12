@@ -194,6 +194,12 @@ pub struct SystemStats {
     /// Current F7 energy pressure mode (Normal / Pressure / Emergency / Critical).
     #[serde(default)]
     pub ancs_pressure: String,
+
+    // ── Phase 4 diagnostic ────────────────────────────────────────────────────
+    /// Synapses rescued by the forward_importance guard in the last slow tick.
+    /// Non-zero confirms Phase 4 is actively protecting reward-path synapses.
+    #[serde(default)]
+    pub synapses_saved_fwd_recent: u32,
 }
 
 /// The Morphogenic Intelligence System.
@@ -1532,6 +1538,7 @@ impl System {
             report.synapses_pruned = slow_report.synapses_pruned;
             report.migrations = slow_report.migrations;
             self.diag.pruning_events_recent = slow_report.synapses_pruned as u32;
+            self.diag.synapses_saved_fwd_recent = slow_report.synapses_saved_fwd as u32;
 
             // V6: Contradiction-Driven Reconsolidation — un-consolidate synapses
             // whose post-synaptic morphons show chronic high prediction error.
@@ -3441,6 +3448,7 @@ impl System {
                 .items_with_state(crate::ancs::MemoryEpistemicState::Supported)
                 .len(),
             ancs_pressure: format!("{:?}", self.ancs.pressure_mode()),
+            synapses_saved_fwd_recent: self.diag.synapses_saved_fwd_recent,
         }
     }
 

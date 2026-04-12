@@ -121,6 +121,10 @@ pub struct Diagnostics {
     pub division_events_recent: u32,
     /// Pruning events in the most recent glacial tick.
     pub pruning_events_recent: u32,
+    /// Phase 4: synapses saved by the forward_importance guard in the most recent slow tick.
+    /// Non-zero means Phase 4 is actively rescuing synapses from pruning.
+    #[serde(default)]
+    pub synapses_saved_fwd_recent: u32,
 }
 
 impl Diagnostics {

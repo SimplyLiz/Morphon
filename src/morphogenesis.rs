@@ -139,6 +139,9 @@ impl MorphogenesisParams {
 pub struct MorphogenesisReport {
     pub synapses_created: usize,
     pub synapses_pruned: usize,
+    /// Phase 4: synapses that passed all other pruning checks but were saved
+    /// specifically by the forward_importance guard. Non-zero = Phase 4 is active.
+    pub synapses_saved_fwd: usize,
     pub morphons_born: usize,
     pub morphons_died: usize,
     pub differentiations: usize,
@@ -267,12 +270,17 @@ pub fn synaptogenesis(
 /// Run pruning — remove weak, unused synapses.
 /// Uses distance-dependent cost: expensive long-distance synapses are pruned more
 /// aggressively when they carry little weight.
+/// Returns `(pruned, saved_by_fwd_importance)`.
+/// `saved_by_fwd_importance` counts synapses that passed every pruning check
+/// except the Phase 4 forward_importance guard — i.e. synapses Phase 4 rescued.
 pub fn pruning(
     topology: &mut Topology,
     learning_params: &LearningParams,
     morphons: &HashMap<MorphonId, Morphon>,
     mandatory_justification_for: &[crate::types::CellType],
-) -> usize {
+) -> (usize, usize) {
+    let mut saved_by_fwd: usize = 0;
+
     let edges_to_remove: Vec<_> = topology
         .all_edges()
         .into_iter()
@@ -303,7 +311,15 @@ pub fn pruning(
                     );
                 }
             }
-            learning::should_prune_with_cost(syn, learning_params, cost_factor)
+            // Phase 4 diagnostic: count synapses saved specifically by forward_importance.
+            // A synapse is "saved by fwd" if it would have been pruned without the guard
+            // (all other conditions met) but survives because fwd_importance is high enough.
+            let would_prune_without_fwd = learning::should_prune_without_fwd(syn, learning_params, cost_factor);
+            let prune = learning::should_prune_with_cost(syn, learning_params, cost_factor);
+            if would_prune_without_fwd && !prune {
+                saved_by_fwd += 1;
+            }
+            prune
         })
         .map(|(_, _, ei)| ei)
         .collect();
@@ -312,7 +328,7 @@ pub fn pruning(
     for ei in edges_to_remove {
         topology.remove_synapse(ei);
     }
-    count
+    (count, saved_by_fwd)
 }
 
 /// Run cell division (mitosis) — overloaded Morphons split.
@@ -1497,7 +1513,9 @@ pub fn step_slow(
     if lifecycle.synaptogenesis {
         report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
     }
-    report.synapses_pruned = pruning(topology, learning_params, morphons, mandatory_justification_for);
+    let (pruned, saved_fwd) = pruning(topology, learning_params, morphons, mandatory_justification_for);
+    report.synapses_pruned = pruned;
+    report.synapses_saved_fwd = saved_fwd;
 
     if lifecycle.migration {
         report.migrations = migration(morphons, topology, params, homeostasis_level, field);
@@ -1684,7 +1702,7 @@ mod tests {
 
         let params = LearningParams::default();
         let morphons = HashMap::new();
-        let pruned = pruning(&mut topo, &params, &morphons, &[]);
+        let (pruned, _) = pruning(&mut topo, &params, &morphons, &[]);
         assert_eq!(pruned, 1);
         assert_eq!(topo.synapse_count(), 0);
     }
@@ -1702,7 +1720,7 @@ mod tests {
 
         let params = LearningParams::default();
         let morphons = HashMap::new();
-        let pruned = pruning(&mut topo, &params, &morphons, &[]);
+        let (pruned, _) = pruning(&mut topo, &params, &morphons, &[]);
         assert_eq!(pruned, 0);
         assert_eq!(topo.synapse_count(), 1);
     }
