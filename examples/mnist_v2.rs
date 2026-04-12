@@ -772,6 +772,111 @@ fn main() {
         return;
     }
 
+    // === SELF-HEALING SWEEP (--healing-sweep) ===
+    // Trains V3-SL from scratch on N independent seeds, damages 30% of associative morphons,
+    // and recovers for one epoch. Reports mean ± std across seeds for paper error bars.
+    // Usage: cargo run --example mnist_v2 --release -- --standard --healing-sweep
+    //        cargo run --example mnist_v2 --release -- --standard --healing-sweep --n-seeds=10
+    let healing_sweep = args.iter().any(|a| a == "--healing-sweep");
+    let n_seeds: usize = args.iter()
+        .find(|a| a.starts_with("--n-seeds="))
+        .and_then(|a| a[10..].parse().ok())
+        .unwrap_or(5);
+
+    if healing_sweep {
+        eprintln!("━━━ SELF-HEALING SWEEP ({n_seeds} seeds, V3-SL + damage 30% + recovery) ━━━");
+        let base_seed = seed;
+        let mut rows: Vec<(u64, f64, f64, f64, f64)> = Vec::new(); // (seed, trained_sl, damaged, recovered, delta)
+
+        for i in 0..n_seeds {
+            let s = base_seed + i as u64;
+            eprintln!("\n  ── Seed {} ({}/{}) ──", s, i + 1, n_seeds);
+
+            let mut sys = create_v2(0.001, -0.5, s, seed_size);
+            let mut rng_s = rand::rngs::StdRng::seed_from_u64(s);
+            let trained_acc = train_and_eval_stateless(&mut sys, &train_images, &train_labels,
+                &test_images, &test_labels, n_train, n_epochs, "V3SL", &mut rng_s);
+            let trained_sl = evaluate_stateless(&mut sys, &test_images, &test_labels, n_test);
+
+            // Damage: remove 30% of associative morphons randomly
+            let assoc: Vec<MorphonId> = sys.morphons.values()
+                .filter(|m| m.cell_type == CellType::Associative).map(|m| m.id).collect();
+            let n_kill = (assoc.len() as f64 * 0.3).ceil() as usize;
+            let mut ids = assoc;
+            let mut kr = rand::rngs::StdRng::seed_from_u64(s + 999);
+            ids.shuffle(&mut kr);
+            for &id in ids.iter().take(n_kill) {
+                sys.morphons.remove(&id);
+                sys.topology.remove_morphon(id);
+            }
+            let damaged_acc = evaluate_stateless(&mut sys, &test_images, &test_labels, n_test);
+
+            // Recovery: rewiring only, supervised from step 0
+            sys.config.lifecycle = LifecycleConfig {
+                division: false, differentiation: false, fusion: false,
+                apoptosis: false, migration: true, synaptogenesis: true,
+            };
+            sys.config.scheduler.slow_period = 200;
+            sys.config.scheduler.glacial_period = 500;
+            let mut rng_r = rand::rngs::StdRng::seed_from_u64(s);
+            let recovery_acc = train_and_eval_from(&mut sys, &train_images, &train_labels,
+                &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_r, 0, false);
+            let recovery_sl = evaluate_stateless(&mut sys, &test_images, &test_labels, n_test);
+
+            eprintln!("  seed={s}: trained_sl={trained_sl:.1}%  damaged_sl={damaged_acc:.1}%  recovery_sl={recovery_sl:.1}%  Δ={:+.1}pp",
+                recovery_sl - trained_sl);
+            rows.push((s, trained_sl, damaged_acc, recovery_sl, recovery_sl - trained_sl));
+            let _ = (trained_acc, recovery_acc); // used for training only
+        }
+
+        // Compute mean ± std
+        let mean_fn = |vals: &[f64]| -> (f64, f64) {
+            let n = vals.len() as f64;
+            let mu = vals.iter().sum::<f64>() / n;
+            let sigma = (vals.iter().map(|v| (v - mu).powi(2)).sum::<f64>() / n).sqrt();
+            (mu, sigma)
+        };
+        let trained_vals: Vec<f64> = rows.iter().map(|r| r.1).collect();
+        let damaged_vals: Vec<f64> = rows.iter().map(|r| r.2).collect();
+        let recovery_vals: Vec<f64> = rows.iter().map(|r| r.3).collect();
+        let delta_vals: Vec<f64> = rows.iter().map(|r| r.4).collect();
+        let (mu_t, sd_t) = mean_fn(&trained_vals);
+        let (mu_d, sd_d) = mean_fn(&damaged_vals);
+        let (mu_r, sd_r) = mean_fn(&recovery_vals);
+        let (mu_delta, sd_delta) = mean_fn(&delta_vals);
+
+        eprintln!("\n╔══════════════════════════════════════════════════════════╗");
+        eprintln!("║  SELF-HEALING SWEEP  ({n_seeds} seeds, stateless eval)         ║");
+        eprintln!("║  Trained   (V3-SL):  {mu_t:>5.1}% ± {sd_t:.1}pp              ║");
+        eprintln!("║  Damaged   (30%):    {mu_d:>5.1}% ± {sd_d:.1}pp              ║");
+        eprintln!("║  Recovery  (1 ep):   {mu_r:>5.1}% ± {sd_r:.1}pp              ║");
+        eprintln!("║  Δ recovery:        {:>+6.1}pp ± {sd_delta:.1}pp             ║", mu_delta);
+        eprintln!("╚══════════════════════════════════════════════════════════╝");
+
+        // Save JSON
+        let version = env!("CARGO_PKG_VERSION");
+        let results = serde_json::json!({
+            "benchmark": "mnist_healing_sweep", "version": version,
+            "profile": profile, "base_seed": base_seed, "n_seeds": n_seeds,
+            "n_train": n_train, "epochs": n_epochs, "recovery_n": recovery_n,
+            "seeds": rows.iter().map(|&(s, t, d, r, delta)| serde_json::json!({
+                "seed": s, "trained_sl": t, "damaged_sl": d,
+                "recovery_sl": r, "delta": delta,
+            })).collect::<Vec<_>>(),
+            "mean_trained_sl": mu_t, "std_trained_sl": sd_t,
+            "mean_damaged_sl": mu_d, "std_damaged_sl": sd_d,
+            "mean_recovery_sl": mu_r, "std_recovery_sl": sd_r,
+            "mean_delta": mu_delta, "std_delta": sd_delta,
+        });
+        let dir = format!("docs/benchmark_results/v{version}");
+        fs::create_dir_all(&dir).ok();
+        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let path = format!("{dir}/healing_sweep_{ts}.json");
+        fs::write(&path, serde_json::to_string_pretty(&results).unwrap()).unwrap();
+        eprintln!("Saved to {path}");
+        return;
+    }
+
     // === BASELINE (skipped in fast mode or with --no-baseline) ===
     let base_acc = if !fast && !no_baseline {
         eprintln!("━━━ BASELINE ━━━");
