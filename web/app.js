@@ -64,6 +64,7 @@ const nodePeSmooth = new Map(); // id → smoothed PE value
 const DEATH_ANIM_FRAMES = 50;
 const dyingNodes = []; // { px, py, pz, color: THREE.Color, size, age }
 let prevNodeIds = new Set();
+let _prevNodeIdsWork = new Set(); // swap partner — avoids new Set() each frame
 
 const firingHistory = [];
 const morphonHistory = [];
@@ -98,9 +99,11 @@ let heatmapBinSteps = 0;     // steps accumulated in current bin
 
 // Cached stats to avoid double inspect() calls
 let cachedStats = null;
+let cachedTopo = null; // topology_json cache — refresh every 2 frames (topology only changes at slow clock)
 // Saved state for save/load
 let savedState = null;
 let systemStartTime = performance.now();
+let frameLoadEma = 0; // EMA of simulation step time as fraction of 16.67ms budget
 
 // === ARENA STATE ===
 let occupation = 'idle'; // 'idle' | 'arena'
@@ -138,6 +141,10 @@ const SPIKE_COOLDOWN = 12;       // frames between spawns per morphon
 let spikesMesh;
 const liveSpikes = [];
 const spikeCooldowns = new Map(); // morphon id → frames remaining
+// Pooled / pre-allocated objects to avoid per-frame GC pressure
+const _spikeCandidates = [];                              // reused candidate buffer per firing morphon
+const _spikeCandSortFn = (a, b) => b.aw - a.aw;          // hoisted — avoids new closure per sort
+const INHIBITORY_SPIKE_COLOR = new THREE.Color(0.85, 0.10, 0.45); // shared ref, never mutated
 
 // Raycasting
 const raycaster = new THREE.Raycaster();
@@ -168,6 +175,7 @@ function initDOMCache() {
   dom.hStep = document.getElementById('h-step');
   dom.hFired = document.getElementById('h-fired');
   dom.hUptime = document.getElementById('h-uptime');
+  dom.hLoad = document.getElementById('h-load');
   // Left panel stats
   dom.sMorphons = document.getElementById('s-morphons');
   dom.sSynapses = document.getElementById('s-synapses');
@@ -548,6 +556,38 @@ function initScene() {
   renderer.domElement.addEventListener('mousemove', onMouseMove);
   renderer.domElement.addEventListener('mousedown', (e) => { mouseDownPos.x = e.clientX; mouseDownPos.y = e.clientY; });
   renderer.domElement.addEventListener('click', onMouseClick);
+
+  // Detail float window — drag + close
+  setupDetailWindow();
+}
+
+function setupDetailWindow() {
+  const panel = document.getElementById('detail-panel');
+  const dragBar = document.getElementById('detail-drag-bar');
+  const closeBtn = document.getElementById('detail-close');
+
+  closeBtn.addEventListener('click', () => {
+    selectedNodeId = null;
+    connectedToSelected.clear();
+    updateDetailPanel();
+  });
+
+  let dragging = false, dragStartX = 0, dragStartY = 0, panelStartLeft = 0, panelStartTop = 0;
+  dragBar.addEventListener('mousedown', (e) => {
+    if (e.target === closeBtn) return;
+    dragging = true;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    panelStartLeft = parseInt(panel.style.left) || panel.getBoundingClientRect().left;
+    panelStartTop  = parseInt(panel.style.top)  || panel.getBoundingClientRect().top;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    panel.style.left = (panelStartLeft + e.clientX - dragStartX) + 'px';
+    panel.style.top  = (panelStartTop  + e.clientY - dragStartY) + 'px';
+  });
+  window.addEventListener('mouseup', () => { dragging = false; });
 }
 
 function onResize() {
@@ -578,6 +618,7 @@ function onMouseClick(e) {
   const dx = e.clientX - mouseDownPos.x, dy = e.clientY - mouseDownPos.y;
   if (dx * dx + dy * dy > 25) return; // moved more than 5px = drag
   if (hoveredNodeId !== null) {
+    const wasAlreadySelected = selectedNodeId === hoveredNodeId;
     selectedNodeId = hoveredNodeId;
     // Build set of connected node IDs for context dimming
     connectedToSelected.clear();
@@ -585,6 +626,19 @@ function onMouseClick(e) {
     for (const e of edgeData) {
       if (e.from === selectedNodeId) connectedToSelected.add(e.to);
       if (e.to === selectedNodeId) connectedToSelected.add(e.from);
+    }
+    // Position float window near click (only reposition on new selection)
+    if (!wasAlreadySelected) {
+      const panel = dom.detailPanel;
+      const margin = 16;
+      const pw = 220, ph = 300; // estimated panel size
+      let left = e.clientX + margin;
+      let top  = e.clientY - 60;
+      if (left + pw > window.innerWidth  - margin) left = e.clientX - pw - margin;
+      if (top  + ph > window.innerHeight - margin) top  = window.innerHeight - ph - margin;
+      if (top < 64) top = 64;
+      panel.style.left = left + 'px';
+      panel.style.top  = top  + 'px';
     }
     updateDetailPanel();
   } else {
@@ -695,12 +749,15 @@ const peColor = new THREE.Color();
 function updateScene() {
   if (!system) return;
 
-  const topo = JSON.parse(system.topology_json());
-  const nodes = topo.nodes;
-  const edges = topo.edges;
-
-  // Sort nodes by ID for stable frame-to-frame ordering (HashMap iteration is non-deterministic)
-  nodes.sort((a, b) => a.id - b.id);
+  // Topology only changes at the slow clock (every 100 steps). At 10 steps/frame that's
+  // every ~10 frames, so re-parsing every 2 frames wastes ~80% of those calls.
+  if (!cachedTopo || frameCount % 2 === 0) {
+    const topo = JSON.parse(system.topology_json());
+    topo.nodes.sort((a, b) => a.id - b.id);
+    cachedTopo = topo;
+  }
+  const nodes = cachedTopo.nodes;
+  const edges = cachedTopo.edges;
   nodeData = nodes;
   edgeData = edges;
   nodeMap.clear();
@@ -708,9 +765,11 @@ function updateScene() {
   const nodeCount = Math.min(nodes.length, MAX_NODES);
 
   // === DETECT DEATHS — IDs present last frame but missing now ===
-  const currentIds = new Set(nodes.map(n => n.id));
+  // Reuse two pre-allocated Sets via swap — avoids new Set() + Array from .map() each frame.
+  _prevNodeIdsWork.clear();
+  for (let i = 0; i < nodeCount; i++) _prevNodeIdsWork.add(nodes[i].id);
   for (const id of prevNodeIds) {
-    if (!currentIds.has(id)) {
+    if (!_prevNodeIdsWork.has(id)) {
       // Capture last known position + color for the fade-out
       const idx = nodeMap.get(id); // from previous frame's map
       if (idx !== undefined) {
@@ -727,7 +786,10 @@ function updateScene() {
       }
     }
   }
-  prevNodeIds = currentIds;
+  // Swap references so both Sets get reused every other frame
+  const _tmpSet = prevNodeIds;
+  prevNodeIds = _prevNodeIdsWork;
+  _prevNodeIdsWork = _tmpSet;
 
   const hasSelection = selectedNodeId !== null && connectedToSelected.size > 0;
   // Scale nodes down as population grows to prevent z-fighting from overlapping spheres
@@ -980,10 +1042,17 @@ function updateScene() {
     } else {
       // Base brightness from weight + heat boost from recent activity
       const brightness = (0.05 + w * 0.15 + heat * 0.25) * (1.0 - edgeDimFactor * 0.9);
-      r = sourceColor.r * brightness;
-      g = sourceColor.g * brightness;
-      b = sourceColor.b * brightness;
-      // Hot synapses shift toward white
+      if (e.weight < 0) {
+        // Inhibitory synapses: cool magenta-red so they're visually distinct from excitatory
+        r = 0.85 * brightness;
+        g = 0.10 * brightness;
+        b = 0.45 * brightness;
+      } else {
+        r = sourceColor.r * brightness;
+        g = sourceColor.g * brightness;
+        b = sourceColor.b * brightness;
+      }
+      // Hot synapses shift toward white regardless of sign
       if (heat > 0.15) {
         const heatWhite = heat * 0.15;
         r += heatWhite; g += heatWhite; b += heatWhite;
@@ -1014,7 +1083,12 @@ function updateScene() {
   detectReinforcementPulses();
 
   // === SPIKE SPAWNING from real engine firing data ===
-  // One representative spike per firing morphon, with cooldown to prevent stacking.
+  // Up to MAX_SPIKES_PER_MORPHON spikes per firing morphon (top edges by |weight|),
+  // with cooldown to prevent stacking. Positions are snapshotted at spawn so migration
+  // during flight doesn't warp the trajectory.
+  const MAX_SPIKES_PER_MORPHON = 3;
+  const SPIKE_WEIGHT_THRESHOLD = 0.12; // skip near-zero edges
+
   // Tick down all cooldowns
   for (const [id, cd] of spikeCooldowns) {
     if (cd <= 1) spikeCooldowns.delete(id);
@@ -1027,25 +1101,38 @@ function updateScene() {
     if (fromIdx === undefined) continue;
     const color = CELL_COLORS[nodeData[fromIdx]?.cell_type] || CELL_COLORS.Stem;
 
-    // Pick the strongest outgoing edge as the representative
-    let bestEdge = null, bestWeight = -1;
+    // Collect top N outgoing edges by |weight| — reuse pooled array, hoisted comparator
+    _spikeCandidates.length = 0;
     for (const e of edges) {
       if (e.from !== id) continue;
       const aw = Math.abs(e.weight);
-      if (aw > bestWeight) {
-        const toIdx = nodeMap.get(e.to);
-        if (toIdx !== undefined) { bestEdge = { toIdx, weight: aw }; bestWeight = aw; }
-      }
+      if (aw < SPIKE_WEIGHT_THRESHOLD) continue;
+      const toIdx = nodeMap.get(e.to);
+      if (toIdx !== undefined) _spikeCandidates.push({ toIdx, weight: e.weight, aw });
     }
-    if (bestEdge) {
+    _spikeCandidates.sort(_spikeCandSortFn);
+
+    const fi = fromIdx * 3;
+    let spawned = 0;
+    for (const cand of _spikeCandidates) {
+      if (spawned >= MAX_SPIKES_PER_MORPHON) break;
+      if (liveSpikes.length >= MAX_SPIKES * 0.7) break;
+      const ti = cand.toIdx * 3;
       liveSpikes.push({
-        fromIdx, toIdx: bestEdge.toIdx,
+        fromIdx, toIdx: cand.toIdx,
+        // Snapshot world positions at spawn — immune to migration warping mid-flight
+        fx: nodePositions[fi],   fy: nodePositions[fi+1], fz: nodePositions[fi+2],
+        tx: nodePositions[ti],   ty: nodePositions[ti+1], tz: nodePositions[ti+2],
         age: 0,
-        color: color.clone(),
-        strength: bestEdge.weight,
+        // Jitter lifetime ±8 frames so synchronized bursts don't all die at once
+        lifetime: SPIKE_VISUAL_FRAMES + Math.floor(Math.random() * 17) - 8,
+        // Shared color references — never mutated, so no clone needed
+        color: cand.weight < 0 ? INHIBITORY_SPIKE_COLOR : color,
+        strength: cand.aw,
       });
-      spikeCooldowns.set(id, SPIKE_COOLDOWN);
+      spawned++;
     }
+    if (spawned > 0) spikeCooldowns.set(id, SPIKE_COOLDOWN);
   }
 }
 
@@ -1073,6 +1160,12 @@ function updatePanels() {
 
   dom.hStep.textContent = stats.step_count;
   dom.hFired.textContent = frameFired.size;
+  // Load level
+  if (dom.hLoad) {
+    const loadPct = Math.min(Math.round(frameLoadEma * 100), 999);
+    dom.hLoad.textContent = loadPct + '%';
+    dom.hLoad.style.color = loadPct > 80 ? '#ef4444' : loadPct > 50 ? '#fbbf24' : '#34d399';
+  }
   // Uptime since last reset
   const uptimeSec = Math.floor((performance.now() - systemStartTime) / 1000);
   const m = Math.floor(uptimeSec / 60), s = uptimeSec % 60;
@@ -1097,6 +1190,9 @@ function updatePanels() {
   dom.sTransdiff.textContent = stats.total_transdifferentiations || 0;
 
   const counts = stats.differentiation_map || {};
+  // CellType::Fused is never assigned — fused morphons keep their original cell_type and
+  // only get fused_with set. Count them from topology nodeData instead.
+  counts['Fused'] = nodeData.filter(n => n.fused).length;
   for (const type of ['Stem', 'Sensory', 'Associative', 'Motor', 'Modulatory', 'Fused']) {
     const el = dom.ctMap[type];
     if (el) el.textContent = counts[type] || 0;
@@ -1974,12 +2070,12 @@ function setupControls() {
   // Maximize / restore
   document.getElementById('btn-panel-maximize')?.addEventListener('click', () => {
     const panel = document.getElementById('bottom-panel');
+    panel.classList.remove('no-transition');
     panel.classList.toggle('maximized');
     const isMax = panel.classList.contains('maximized');
     document.getElementById('btn-panel-maximize').textContent = isMax ? '\u25BD' : '\u25A1';
-    document.getElementById('left-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
-    document.getElementById('right-panel').style.bottom = isMax ? 'calc(45vh + 10px)' : '170px';
-    setTimeout(() => { onResize(); }, 260); // after CSS transition
+    if (!isMax) document.documentElement.style.setProperty('--panel-h', '160px');
+    setTimeout(() => { onResize(); }, 260);
   });
   // Clear: context-dependent (raster or log)
   document.getElementById('btn-panel-clear')?.addEventListener('click', () => {
@@ -2254,35 +2350,47 @@ const INV_BALL = 1.0 / BALL_RADIUS;
 
 // Poincaré ball geodesic interpolation (same math as Rust exp_map/log_map).
 // Operates in unit-ball coordinates (‖x‖ < 1).
+// Fully inlined — zero allocations per call (no intermediate arrays).
 
-// Möbius addition: x ⊕ y (curvature c=1)
-function mobiusAdd(x0, x1, x2, y0, y1, y2) {
-  const xdy = x0*y0 + x1*y1 + x2*y2;
-  const xsq = x0*x0 + x1*x1 + x2*x2;
-  const ysq = y0*y0 + y1*y1 + y2*y2;
-  const d = 1.0 / Math.max(1 + 2*xdy + xsq*ysq, 1e-10);
-  const a = (1 + 2*xdy + ysq) * d;
-  const b = (1 - xsq) * d;
-  return [a*x0 + b*y0, a*x1 + b*y1, a*x2 + b*y2];
-}
+const _geoOut = [0, 0, 0]; // shared output buffer — safe because caller uses result before next call
 
 // Geodesic point at parameter t between p and q in the Poincaré ball.
 // γ(t) = p ⊕ (t ⊗ ((-p) ⊕ q))
+// Writes into _geoOut and returns it.
 function geodesicPoint(p0, p1, p2, q0, q1, q2, t) {
-  // diff = (-p) ⊕ q
-  const d = mobiusAdd(-p0, -p1, -p2, q0, q1, q2);
-  // Möbius scalar: t ⊗ diff
-  const norm = Math.sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+  // Step 1: diff = (-p) ⊕ q  (Möbius addition, inlined)
+  const nx0 = -p0, nx1 = -p1, nx2 = -p2;
+  const xdy1 = nx0*q0 + nx1*q1 + nx2*q2;
+  const xsq1 = nx0*nx0 + nx1*nx1 + nx2*nx2;
+  const ysq1 = q0*q0 + q1*q1 + q2*q2;
+  const rd1 = 1.0 / Math.max(1 + 2*xdy1 + xsq1*ysq1, 1e-10);
+  const da = (1 + 2*xdy1 + ysq1) * rd1;
+  const db = (1 - xsq1) * rd1;
+  const d0 = da*nx0 + db*q0;
+  const d1 = da*nx1 + db*q1;
+  const d2 = da*nx2 + db*q2;
+
+  // Step 2: t ⊗ diff  (Möbius scalar multiplication)
+  const norm = Math.sqrt(d0*d0 + d1*d1 + d2*d2);
   let s0, s1, s2;
   if (norm < 1e-10) {
     s0 = 0; s1 = 0; s2 = 0;
   } else {
-    const atanh_n = Math.atanh(Math.min(norm, 0.999));
-    const coeff = Math.tanh(t * atanh_n) / norm;
-    s0 = d[0] * coeff; s1 = d[1] * coeff; s2 = d[2] * coeff;
+    const coeff = Math.tanh(t * Math.atanh(Math.min(norm, 0.999))) / norm;
+    s0 = d0 * coeff; s1 = d1 * coeff; s2 = d2 * coeff;
   }
-  // result = p ⊕ scaled
-  return mobiusAdd(p0, p1, p2, s0, s1, s2);
+
+  // Step 3: result = p ⊕ scaled  (Möbius addition, inlined — writes to _geoOut)
+  const xdy2 = p0*s0 + p1*s1 + p2*s2;
+  const xsq2 = p0*p0 + p1*p1 + p2*p2;
+  const ysq2 = s0*s0 + s1*s1 + s2*s2;
+  const rd2 = 1.0 / Math.max(1 + 2*xdy2 + xsq2*ysq2, 1e-10);
+  const ra = (1 + 2*xdy2 + ysq2) * rd2;
+  const rb = (1 - xsq2) * rd2;
+  _geoOut[0] = ra*p0 + rb*s0;
+  _geoOut[1] = ra*p1 + rb*s1;
+  _geoOut[2] = ra*p2 + rb*s2;
+  return _geoOut;
 }
 
 function updateSpikes() {
@@ -2291,16 +2399,22 @@ function updateSpikes() {
   for (let i = liveSpikes.length - 1; i >= 0; i--) {
     const s = liveSpikes[i];
     s.age++;
-    if (s.age > SPIKE_VISUAL_FRAMES) { liveSpikes.splice(i, 1); continue; }
+    const sLifetime = s.lifetime || SPIKE_VISUAL_FRAMES;
+    if (s.age > sLifetime) { liveSpikes.splice(i, 1); continue; }
 
-    // Linear progress — constant speed, no easing stutter
-    const t = s.age / SPIKE_VISUAL_FRAMES;
+    // Constant-speed progress along the geodesic
+    const t = s.age / sLifetime;
 
-    // Lerp position along the edge (simple, fast, no GC)
-    const fi = s.fromIdx * 3, ti = s.toIdx * 3;
-    const x = nodePositions[fi]   + (nodePositions[ti]   - nodePositions[fi])   * t;
-    const y = nodePositions[fi+1] + (nodePositions[ti+1] - nodePositions[fi+1]) * t;
-    const z = nodePositions[fi+2] + (nodePositions[ti+2] - nodePositions[fi+2]) * t;
+    // Travel the Poincaré-ball geodesic between snapshotted endpoint positions.
+    // Convert world→unit-ball (÷ BALL_RADIUS), interpolate, convert back.
+    const gp = geodesicPoint(
+      s.fx * INV_BALL, s.fy * INV_BALL, s.fz * INV_BALL,
+      s.tx * INV_BALL, s.ty * INV_BALL, s.tz * INV_BALL,
+      t
+    );
+    const x = gp[0] * BALL_RADIUS;
+    const y = gp[1] * BALL_RADIUS;
+    const z = gp[2] * BALL_RADIUS;
 
     // Tiny orb
     spikeDummy.position.set(x, y, z);
@@ -2309,8 +2423,10 @@ function updateSpikes() {
 
     if (alive < MAX_SPIKES) {
       spikesMesh.setMatrixAt(alive, spikeDummy.matrix);
-      // Bright enough to trigger bloom (threshold 0.85), fade at end
-      const fade = t < 0.8 ? 1.0 : (1.0 - t) * 5.0;
+      // Fade in (0→1 over first 15%) and fade out (1→0 over last 20%)
+      const fadeIn  = t < 0.15 ? t / 0.15 : 1.0;
+      const fadeOut = t < 0.80 ? 1.0 : (1.0 - t) * 5.0;
+      const fade = fadeIn * fadeOut;
       tempColor.copy(s.color).multiplyScalar(1.8 * fade);
       spikesMesh.setColorAt(alive, tempColor);
       alive++;
@@ -2688,6 +2804,7 @@ function animate() {
     const stepsThisFrame = Math.floor(stepAccumulator);
     stepAccumulator -= stepsThisFrame;
 
+    const stepStart = performance.now();
     for (let i = 0; i < stepsThisFrame; i++) {
       // Arena mode: train on examples instead of idle noise
       if (occupation === 'arena' && arenaTrainingSet.length > 0) {
@@ -2709,6 +2826,8 @@ function animate() {
         }
       } catch(_) {}
     }
+    const stepMs = performance.now() - stepStart;
+    frameLoadEma = frameLoadEma * 0.9 + (stepMs / 16.667) * 0.1;
 
     // Rebuild raster Y-axis if morphon count changed
     if (nodeData.length !== rasterMorphonCount) rebuildMorphonOrder();
@@ -2819,6 +2938,7 @@ function getProvenanceColor(formationCause) {
 // ============================================================
 const clusterHullMeshes = new Map(); // clusterId → { line, fill }
 const clusterHullCache = new Map();  // clusterId → memberCount (for invalidation)
+const _clusterNodes = new Map();     // reused each frame — avoids new Map() in updateClusterHulls
 
 function convexHull2D(points) {
   // Graham scan on XZ plane
@@ -2842,18 +2962,18 @@ function convexHull2D(points) {
 
 function updateClusterHulls(nodes, edges) {
   if (!scene) return;
-  // Group nodes by cluster_id
-  const clusterNodes = new Map();
+  // Group nodes by cluster_id — reuse Map to avoid allocation each frame
+  _clusterNodes.clear();
   for (const n of nodes) {
     if (n.cluster_id != null) {
-      if (!clusterNodes.has(n.cluster_id)) clusterNodes.set(n.cluster_id, []);
-      clusterNodes.get(n.cluster_id).push(n);
+      if (!_clusterNodes.has(n.cluster_id)) _clusterNodes.set(n.cluster_id, []);
+      _clusterNodes.get(n.cluster_id).push(n);
     }
   }
 
   // Remove stale hulls
   for (const [cid, meshes] of clusterHullMeshes) {
-    if (!clusterNodes.has(cid)) {
+    if (!_clusterNodes.has(cid)) {
       scene.remove(meshes.line);
       meshes.line.geometry.dispose();
       if (meshes.fill) { scene.remove(meshes.fill); meshes.fill.geometry.dispose(); }
@@ -2862,7 +2982,7 @@ function updateClusterHulls(nodes, edges) {
     }
   }
 
-  for (const [cid, members] of clusterNodes) {
+  for (const [cid, members] of _clusterNodes) {
     if (members.length < 3) continue;
 
     // Check cache — skip if unchanged
@@ -2996,7 +3116,9 @@ function detectReinforcementPulses() {
   if (!edgeData) return;
   for (let i = 0; i < edgeData.length; i++) {
     const e = edgeData[i];
-    const key = `${e.from}-${e.to}`;
+    // Numeric key avoids template string allocation per edge per frame.
+    // Safe as long as IDs stay below 65536 (MAX_NODES = 2000).
+    const key = (e.from << 17) | e.to;
     const prev = prevEdgeReinforcementCounts.get(key) || 0;
     const curr = e.reinforcement_count || 0;
     if (curr > prev && prev > 0) {
@@ -3309,4 +3431,262 @@ async function main() {
 main().catch(e => {
   console.error(e);
   document.getElementById('loading').querySelector('h2').textContent = 'ERROR: ' + e.message;
+});
+
+// ============================================================
+// OBSERVER — module-level so it works regardless of main() state
+// ============================================================
+let observerConnected = false;
+let observerAutoTimer = null;
+
+function obsTimestamp() {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+}
+
+function obsAppend(text, role = 'assistant') {
+  const log = document.getElementById('obs-log');
+  if (!log) return null;
+  const entry = document.createElement('div');
+  entry.className = 'obs-entry';
+  const ts = document.createElement('span');
+  ts.className = 'obs-ts';
+  ts.textContent = obsTimestamp();
+  const textEl = document.createElement('span');
+  textEl.className = 'obs-text' + (role === 'user' ? ' user' : role === 'sys' ? ' sys' : '');
+  textEl.textContent = text;
+  entry.appendChild(ts);
+  entry.appendChild(textEl);
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  return textEl;
+}
+
+function obsSetStatus(cls, label) {
+  const dot = document.getElementById('obs-status-dot');
+  const lbl = document.getElementById('obs-status-label');
+  if (dot) dot.className = 'observer-status-dot' + (cls ? ' ' + cls : '');
+  if (lbl) lbl.textContent = label;
+}
+
+function obsResetModelSelect(names) {
+  const sel = document.getElementById('obs-model');
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (!names || names.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '— connect first —';
+    sel.appendChild(opt);
+    sel.disabled = true;
+  } else {
+    for (const name of names) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+    sel.disabled = false;
+  }
+}
+
+function obsRestartAutoTimer() {
+  if (observerAutoTimer) { clearInterval(observerAutoTimer); observerAutoTimer = null; }
+  const secs = parseInt(document.getElementById('obs-auto-interval')?.value || '0');
+  if (secs > 0 && observerConnected) {
+    observerAutoTimer = setInterval(() => {
+      if (observerConnected && document.querySelector('#bottom-panel .tab-btn.active')?.dataset.tab === 'tab-observer') {
+        observerNarrate();
+      }
+    }, secs * 1000);
+  }
+}
+
+function buildObserverSnapshot() {
+  if (!cachedStats) return 'System not yet initialized.';
+  const s = cachedStats;
+  const m = cachedMod || {};
+  const ct = s.differentiation_map || {};
+  return [
+    `Step ${s.step_count} | Morphons: ${s.total_morphons} | Synapses: ${s.total_synapses} | Clusters: ${s.fused_clusters}`,
+    `Firing rate: ${(s.firing_rate * 100).toFixed(1)}% | Active: ${frameFired.size} | Avg energy: ${s.avg_energy.toFixed(2)}`,
+    `Pred error: ${s.avg_prediction_error.toFixed(3)} | Field PE max: ${(s.field_pe_max || 0).toFixed(3)} | Working mem: ${s.working_memory_items}`,
+    `Neuromod — reward: ${(m.reward || 0).toFixed(2)}, novelty: ${(m.novelty || 0).toFixed(2)}, arousal: ${(m.arousal || 0).toFixed(2)}, homeostasis: ${(m.homeostasis || 0).toFixed(2)}`,
+    `Cells — Sensory: ${ct.Sensory || 0}, Assoc: ${ct.Associative || 0}, Motor: ${ct.Motor || 0}, Mod: ${ct.Modulatory || 0}, Stem: ${ct.Stem || 0}, Fused: ${ct.Fused || 0}`,
+    `Born: ${s.total_born || 0} | Died: ${s.total_died || 0} | Gen max: ${s.max_generation}`,
+  ].join('\n');
+}
+
+async function observerNarrate(userQuestion = null) {
+  const url = (document.getElementById('obs-url')?.value || '').trim();
+  const model = (document.getElementById('obs-model')?.value || '').trim() || 'llama3.2:1b';
+  if (!url || !observerConnected || !model) return;
+
+  const narrateBtn = document.getElementById('obs-narrate-btn');
+  const askBtn = document.getElementById('obs-ask-btn');
+  if (narrateBtn) narrateBtn.disabled = true;
+  if (askBtn) askBtn.disabled = true;
+
+  const snapshot = buildObserverSnapshot();
+  const systemPrompt = `You are observing a live Morphogenic Intelligence neural engine — a biologically-inspired self-organizing system running in the browser. Respond in 1–2 concise sentences. Reference specific numbers. No markdown.`;
+  const userMsg = userQuestion
+    ? `State snapshot:\n${snapshot}\n\nQuestion: ${userQuestion}`
+    : `Narrate what is happening right now:\n${snapshot}`;
+
+  if (userQuestion) obsAppend(userQuestion, 'user');
+  const textEl = obsAppend('…', 'assistant');
+
+  try {
+    const resp = await fetch(`${url}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt: userMsg, system: systemPrompt, stream: false }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (textEl) textEl.textContent = (data.response || '').trim();
+    document.getElementById('obs-log').scrollTop = 999999;
+  } catch (err) {
+    if (textEl) textEl.textContent = `Error: ${err.message}`;
+    obsSetStatus('error', 'ERROR');
+    observerConnected = false;
+  } finally {
+    if (narrateBtn) narrateBtn.disabled = false;
+    if (askBtn) askBtn.disabled = false;
+  }
+}
+
+async function observerConnect(silent = false) {
+  const url = (document.getElementById('obs-url')?.value || '').trim();
+  const connectBtn = document.getElementById('obs-connect-btn');
+
+  // Disconnect path
+  if (observerConnected) {
+    observerConnected = false;
+    if (observerAutoTimer) { clearInterval(observerAutoTimer); observerAutoTimer = null; }
+    obsSetStatus('', 'DISCONNECTED');
+    if (connectBtn) connectBtn.textContent = 'CONNECT';
+    document.getElementById('obs-narrate-btn').disabled = true;
+    document.getElementById('obs-question').disabled = true;
+    document.getElementById('obs-ask-btn').disabled = true;
+    obsResetModelSelect(null);
+    return;
+  }
+
+  if (!url) return;
+
+  obsSetStatus('connecting', 'CONNECTING');
+  if (connectBtn) { connectBtn.textContent = '…'; connectBtn.disabled = true; }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
+  try {
+    const resp = await fetch(`${url}/api/tags`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    // Sort by size ascending so the lightest model is first / pre-selected
+    const sorted = (data.models || []).slice().sort((a, b) => (a.size || 0) - (b.size || 0));
+    const names = sorted.map(m => m.name);
+
+    observerConnected = true;
+    obsSetStatus('connected', 'CONNECTED');
+    if (connectBtn) { connectBtn.textContent = 'DISCONNECT'; connectBtn.disabled = false; }
+    document.getElementById('obs-narrate-btn').disabled = false;
+    document.getElementById('obs-question').disabled = false;
+    document.getElementById('obs-ask-btn').disabled = false;
+    obsResetModelSelect(names);
+    obsAppend(
+      names.length > 0
+        ? `Connected · ${names.length} model${names.length !== 1 ? 's' : ''}: ${names.join(', ')}`
+        : `Connected · no models pulled yet — run: ollama pull llama3.2`,
+      'sys'
+    );
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (connectBtn) { connectBtn.textContent = 'CONNECT'; connectBtn.disabled = false; }
+    if (silent) {
+      obsSetStatus('', 'DISCONNECTED');
+    } else {
+      const hint = err.name === 'AbortError' ? 'Timed out' : err.message;
+      obsSetStatus('error', 'FAILED');
+      obsAppend(`${hint} — is Ollama running on ${url}? For CORS: OLLAMA_ORIGINS="*" ollama serve`, 'sys');
+    }
+  }
+}
+
+// Copy / export
+window._obsCopy = () => {
+  const entries = document.querySelectorAll('#obs-log .obs-entry');
+  const lines = [...entries].map(e => {
+    const ts = e.querySelector('.obs-ts')?.textContent || '';
+    const txt = e.querySelector('.obs-text')?.textContent || '';
+    return `[${ts}] ${txt}`;
+  });
+  navigator.clipboard.writeText(lines.join('\n')).then(
+    () => obsAppend('Copied to clipboard.', 'sys'),
+    () => obsAppend('Clipboard write failed.', 'sys')
+  );
+};
+
+window._obsExport = () => {
+  const entries = document.querySelectorAll('#obs-log .obs-entry');
+  const lines = ['# Morphon Observer Log', `_Exported ${new Date().toISOString()}_`, ''];
+  for (const e of entries) {
+    const ts = e.querySelector('.obs-ts')?.textContent || '';
+    const txt = e.querySelector('.obs-text')?.textContent || '';
+    const cls = e.querySelector('.obs-text')?.className || '';
+    if (cls.includes('user')) lines.push(`**[${ts}] You:** ${txt}`);
+    else if (cls.includes('sys')) lines.push(`*[${ts}] ${txt}*`);
+    else lines.push(`**[${ts}]** ${txt}`);
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `morphon-observer-${Date.now()}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// Expose to window — onclick attributes in HTML call these directly
+window._obsConnect = () => observerConnect(false);
+window._obsNarrate = (q) => observerNarrate(q || null);
+
+// Bottom panel resize drag
+(function () {
+  const handle = document.getElementById('panel-resize-handle');
+  const panel  = document.getElementById('bottom-panel');
+  if (!handle || !panel) return;
+  const MIN_H = 80, MAX_H = window.innerHeight * 0.85;
+  let dragging = false, startY = 0, startH = 0;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startY = e.clientY;
+    startH = panel.getBoundingClientRect().height;
+    panel.classList.add('no-transition');
+    panel.classList.remove('maximized');
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const delta = startY - e.clientY;          // drag up = bigger
+    const h = Math.min(MAX_H, Math.max(MIN_H, startH + delta));
+    document.documentElement.style.setProperty('--panel-h', h + 'px');
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    panel.classList.remove('no-transition');
+    document.body.style.userSelect = '';
+  });
+})();
+
+// AUTO interval select
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('obs-auto-interval');
+  if (sel) sel.addEventListener('change', obsRestartAutoTimer);
 });
