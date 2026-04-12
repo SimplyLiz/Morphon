@@ -3397,7 +3397,7 @@ async function main() {
   setTimeout(() => {
     loading.classList.add('hidden');
     setTimeout(() => loading.remove(), 800);
-  }, 1500);
+  }, 2500);
   // Smooth camera zoom-in over ~2 seconds
   const startPos = { y: 12, z: 38 };
   const endPos = { y: 8, z: 22 };
