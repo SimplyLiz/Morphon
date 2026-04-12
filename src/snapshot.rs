@@ -141,6 +141,9 @@ impl System {
                     None => rand::rngs::SmallRng::from_rng(&mut rand::rng()),
                 }
             },
+            ancs: crate::ancs::InMemoryBackend::new(crate::ancs::AncsConfig::default()),
+            heartbeat: crate::ancs::SystemHeartbeat::default(),
+            current_ancs_item: None,
         }
     }
 

@@ -54,6 +54,11 @@ pub struct SynapticJustification {
     pub formation_step: u64,
     /// Bounded ring of recent reinforcement events.
     pub reinforcement_history: VecDeque<ReinforcementEvent>,
+    /// ANCS-Core: the memory item ID that was active when this synapse was
+    /// last significantly reinforced. Used by TruthKeeper to locate synapses
+    /// that encoded a Contested memory and route them for reconsolidation.
+    #[serde(default)]
+    pub memory_item_ref: Option<u64>,  // MemoryItemId (u64) — no circular dep
 }
 
 impl SynapticJustification {
@@ -63,6 +68,7 @@ impl SynapticJustification {
             formation_cause: cause,
             formation_step: step,
             reinforcement_history: VecDeque::with_capacity(MAX_REINFORCEMENT_HISTORY),
+            memory_item_ref: None,
         }
     }
 

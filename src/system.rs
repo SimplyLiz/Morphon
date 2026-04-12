@@ -13,6 +13,7 @@
 const ENERGY_DEGRADED_THRESHOLD: f64 = 0.1;
 const ENERGY_SURVIVAL_THRESHOLD: f64 = 0.05;
 
+use crate::ancs::{AncsConfig, InMemoryBackend, MemoryBackend, MemoryItem, SystemHeartbeat, classify_tier};
 use crate::developmental::{self, DevelopmentalConfig, TargetMorphology};
 use crate::diagnostics::Diagnostics;
 use crate::field::{FieldConfig, MorphonField};
@@ -81,6 +82,10 @@ pub struct SystemConfig {
     /// When None (default), seeded from OS entropy (non-deterministic).
     #[serde(default)]
     pub rng_seed: Option<u64>,
+
+    /// ANCS-Core memory substrate configuration.
+    #[serde(default)]
+    pub ancs: AncsConfig,
 }
 
 impl SystemConfig {
@@ -118,6 +123,7 @@ impl Default for SystemConfig {
             dream: DreamConfig::default(),
             readout_mode: ReadoutTrainingMode::default(),
             rng_seed: None,
+            ancs: AncsConfig::default(),
         }
     }
 }
@@ -174,6 +180,20 @@ pub struct SystemStats {
     /// Axonal properties: maximum base delay across all synapses (before myelination).
     #[serde(default)]
     pub max_base_delay: f64,
+
+    // ── ANCS-Core ─────────────────────────────────────────────────────────────
+    /// Total memory items across all tiers in the ANCS-Core store.
+    #[serde(default)]
+    pub ancs_items: usize,
+    /// Items currently in Contested epistemic state (pending reconsolidation).
+    #[serde(default)]
+    pub ancs_contested: usize,
+    /// Items currently in Supported epistemic state.
+    #[serde(default)]
+    pub ancs_supported: usize,
+    /// Current F7 energy pressure mode (Normal / Pressure / Emergency / Critical).
+    #[serde(default)]
+    pub ancs_pressure: String,
 }
 
 /// The Morphogenic Intelligence System.
@@ -190,6 +210,14 @@ pub struct System {
     pub clusters: HashMap<ClusterId, Cluster>,
     /// Triple memory system.
     pub memory: TripleMemory,
+    /// ANCS-Core in-process memory substrate (Phases 0–3).
+    pub ancs: InMemoryBackend,
+    /// Cache-line-sized atomic snapshot of global system state.
+    pub heartbeat: SystemHeartbeat,
+    /// ID of the most recently stored ANCS memory item.
+    /// Written on every episodic encode, read by justification records
+    /// to link synapses → the ANCS item active during their reinforcement.
+    pub(crate) current_ancs_item: Option<u64>,
 
     /// Configuration.
     pub config: SystemConfig,
@@ -374,6 +402,7 @@ impl System {
         }
 
         let endo = crate::endoquilibrium::Endoquilibrium::new(config.endoquilibrium.clone());
+        let ancs_config = config.ancs.clone();
         let mut system = System {
             morphons,
             topology,
@@ -416,6 +445,9 @@ impl System {
             auto_merge_candidates: morphogenesis::AutoMergeCandidates::default(),
             pending_merge_groups: Vec::new(),
             rng,
+            ancs: InMemoryBackend::new(ancs_config),
+            heartbeat: SystemHeartbeat::default(),
+            current_ancs_item: None,
         };
 
         // V2: Initialize bioelectric field if enabled
@@ -1396,6 +1428,10 @@ impl System {
                                                 delta_w,
                                                 self.modulation.reward,
                                             );
+                                            // Phase 2d: link synapse to active ANCS memory item
+                                            if self.current_ancs_item.is_some() {
+                                                j.memory_item_ref = self.current_ancs_item;
+                                            }
                                         }
                                     }
 
@@ -1462,6 +1498,10 @@ impl System {
                                                 delta_w_3f,
                                                 self.modulation.reward,
                                             );
+                                            // Phase 2d: link synapse to active ANCS memory item
+                                            if self.current_ancs_item.is_some() {
+                                                j.memory_item_ref = self.current_ancs_item;
+                                            }
                                         }
                                     }
                                     // L2 weight decay on all three-factor synapses
@@ -1956,6 +1996,46 @@ impl System {
                     self.modulation.inject_reward(episode.reward * 0.3);
                 }
             }
+
+            // === ANCS-Core step (every memory tick = every 100 steps) ===
+            // Compute energy usage: fraction of morphon energy budget depleted.
+            let total_energy: f64 = self.morphons.values().map(|m| m.energy).sum();
+            let max_energy = self.morphons.len() as f64;
+            let energy_usage = if max_energy > 0.0 {
+                1.0 - (total_energy / max_energy).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+
+            // Run ANCS step: recalculate importance, epistemic transitions, eviction.
+            self.ancs.step(dt, self.step_count, energy_usage);
+
+            // TruthKeeper reconsolidation: drain patterns that transitioned to Contested
+            // and re-open their consolidated synapses for re-learning.
+            let contested_patterns = self.ancs.take_reconsolidate_patterns();
+            for pattern in &contested_patterns {
+                learning::reconsolidate_pattern(
+                    &mut self.topology,
+                    pattern,
+                    &self.config.learning,
+                );
+            }
+
+            // Update SystemHeartbeat with current snapshot.
+            let contested_count = self
+                .ancs
+                .items_with_state(crate::ancs::MemoryEpistemicState::Contested)
+                .len();
+            self.heartbeat.update(
+                self.modulation.arousal,
+                self.modulation.novelty,
+                self.modulation.reward,
+                self.modulation.homeostasis,
+                1.0, // plasticity_mult — future Endoquilibrium integration point
+                energy_usage,
+                self.ancs.len(),
+                contested_count,
+            );
         }
         self.memory.working.step(dt);
 
@@ -1975,12 +2055,48 @@ impl System {
                 .collect();
 
             if !pattern.is_empty() {
+                // Legacy episodic memory (TripleMemory)
                 self.memory.episodic.encode(
+                    pattern.clone(),
+                    self.modulation.reward,
+                    self.modulation.novelty,
+                    self.step_count,
+                );
+
+                // ANCS-Core: VBC-lite tier classification + store
+                let working_overlap = {
+                    let ids: Vec<MorphonId> = pattern.iter().map(|(id, _)| *id).collect();
+                    self.memory
+                        .working
+                        .active_patterns()
+                        .iter()
+                        .map(|wp| {
+                            let intersection =
+                                ids.iter().filter(|id| wp.pattern.contains(id)).count();
+                            let union = ids.len() + wp.pattern.len() - intersection;
+                            if union > 0 {
+                                intersection as f64 / union as f64
+                            } else {
+                                0.0
+                            }
+                        })
+                        .fold(0.0f64, f64::max)
+                };
+                let tier = classify_tier(
+                    self.modulation.novelty,
+                    self.modulation.reward,
+                    working_overlap,
+                );
+                let ancs_item = MemoryItem::new(
+                    tier,
                     pattern,
                     self.modulation.reward,
                     self.modulation.novelty,
                     self.step_count,
                 );
+                self.ancs.store(ancs_item);
+                // Track the ID for justification linking (Phase 2d)
+                self.current_ancs_item = self.ancs.last_stored_id();
             }
         }
 
@@ -3192,6 +3308,23 @@ impl System {
             }
         }
 
+        // ANCS-guided dream replay: prioritize high-importance, low-consolidation items.
+        // Biologically: hippocampal replay during slow-wave sleep strengthens
+        // salient but not-yet-consolidated memories.
+        let ancs_replay: Vec<(u64, f64)> = self
+            .ancs
+            .top_items(5, None)
+            .iter()
+            .map(|item| (item.id, item.reward))
+            .collect();
+        for (id, reward) in ancs_replay {
+            if reward > 0.1 {
+                self.modulation.inject_reward(reward * 0.1);
+            }
+            self.modulation.inject_novelty(0.05);
+            self.ancs.record_replay(id);
+        }
+
         // === Phase 2: Self-Optimization — refresh stale synapses ===
         let stale_age = self.config.dream.stale_synapse_age;
         let stale_usage = self.config.dream.stale_usage_threshold;
@@ -3274,12 +3407,39 @@ impl System {
     ///
     /// Useful for pattern completion: inject the returned patterns' morphons
     /// to bias the network toward previously learned states.
+    /// Multi-index memory retrieval via Reciprocal Rank Fusion.
+    ///
+    /// Queries both the legacy TripleMemory stores (working + episodic) and the
+    /// ANCS-Core backend, then merges the results. ANCS contributes only
+    /// Supported and Hypothesis items (epistemic filter, Phase 3c).
     pub fn retrieve_memory(
         &self,
         query: &[MorphonId],
         top_k: usize,
     ) -> Vec<crate::memory::MemoryRetrievalResult> {
-        self.memory.retrieve_fused(query, top_k)
+        use crate::memory::{MemoryRetrievalResult, MemorySource};
+
+        // Legacy TripleMemory RRF (working + episodic)
+        let mut results = self.memory.retrieve_fused(query, top_k);
+
+        // ANCS-Core: epistemic-filtered query
+        let ancs_query = crate::ancs::RetrievalQuery { pattern: query.to_vec() };
+        for (item_id, score) in self.ancs.retrieve(&ancs_query, top_k) {
+            if let Some(pattern) = self.ancs.item_pattern(item_id) {
+                results.push(MemoryRetrievalResult {
+                    pattern,
+                    score,
+                    source: MemorySource::Episodic,
+                });
+            }
+        }
+
+        // Re-sort and truncate the merged list
+        results.sort_by(|a, b| {
+            b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results.truncate(top_k);
+        results
     }
 
     /// Get system inspection statistics.
@@ -3360,6 +3520,16 @@ impl System {
             avg_effective_delay: total_eff_delay / s,
             min_base_delay,
             max_base_delay,
+            ancs_items: self.ancs.len(),
+            ancs_contested: self
+                .ancs
+                .items_with_state(crate::ancs::MemoryEpistemicState::Contested)
+                .len(),
+            ancs_supported: self
+                .ancs
+                .items_with_state(crate::ancs::MemoryEpistemicState::Supported)
+                .len(),
+            ancs_pressure: format!("{:?}", self.ancs.pressure_mode()),
         }
     }
 

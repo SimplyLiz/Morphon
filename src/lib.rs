@@ -40,6 +40,7 @@
 //! ```
 
 pub mod types;
+pub mod ancs;
 pub mod hot_arrays;
 pub mod morphon;
 pub mod neuromodulation;
@@ -79,3 +80,7 @@ pub use governance::ConstitutionalConstraints;
 pub use epistemic::{EpistemicState, EpistemicHistory};
 pub use justification::{FormationCause, SynapticJustification};
 pub use endoquilibrium::{Endoquilibrium, EndoConfig, ChannelState, DevelopmentalStage};
+pub use ancs::{
+    AncsConfig, InMemoryBackend, MemoryBackend, MemoryEpistemicState, MemoryItem,
+    MemoryTier, PressureMode, SystemHeartbeat, classify_tier, compute_importance,
+};

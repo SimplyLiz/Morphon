@@ -344,6 +344,47 @@ pub fn reconsolidate(
     count
 }
 
+/// ANCS-Core TruthKeeper reconsolidation — re-open consolidated synapses
+/// for morphons that appear in a Contested memory item's pattern.
+///
+/// Called by `System::step()` on the medium path when
+/// `InMemoryBackend::take_reconsolidate_patterns()` returns non-empty.
+///
+/// Biological basis: same Nader-style labile reconsolidation as `reconsolidate()`,
+/// but triggered by *epistemic conflict* (ANCS TruthKeeper) rather than by
+/// sustained prediction error (`desire > theta`). The two paths are
+/// complementary: desire-driven handles local learning failures; TruthKeeper
+/// handles global knowledge invalidation.
+///
+/// Returns the number of synapses un-consolidated.
+pub fn reconsolidate_pattern(
+    topology: &mut Topology,
+    pattern: &[(MorphonId, f64)],
+    params: &LearningParams,
+) -> usize {
+    let mut count = 0;
+    for &(tgt_id, _) in pattern {
+        let edges: Vec<_> = topology
+            .incoming_synapses_mut(tgt_id)
+            .into_iter()
+            .map(|(_, ei)| ei)
+            .collect();
+        for ei in edges {
+            if let Some(syn) = topology.synapse_mut(ei) {
+                if syn.consolidated {
+                    syn.consolidated = false;
+                    syn.consolidation_level *= params.reconsolidate_weight_decay;
+                    syn.tag = syn.eligibility.abs().max(0.1);
+                    syn.tag_strength *= 0.5;
+                    syn.weight *= params.reconsolidate_weight_decay;
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
 /// Vogels 2011 iSTDP — pre-spike update (inhibitory neuron fires).
 ///
 /// Called per-delivered-spike when source is an InhibitoryInterneuron.
