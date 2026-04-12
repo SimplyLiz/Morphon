@@ -1,20 +1,36 @@
-# MNIST Accuracy Roadmap — v4.4.0+
+# MNIST Accuracy Roadmap — v4.6.0
 ## Analyse, Befunde, und Architektur-Diagnose
 ### Morphon-Core, April 2026
 
 ---
 
-## Aktueller Stand (v4.4.0)
+## Aktueller Stand (v4.6.0) — ZIELE ERREICHT
 
 | Benchmark | Ergebnis | Status |
 |-----------|----------|--------|
-| CartPole | 195.51 (solved) | ✅ |
-| MNIST Standard | 52% (V3 LocalInhibition) | ✅ Baseline locked |
-| MNIST Quick | ~44% | Referenz |
+| CartPole | 195.1 (solved, v4.6.0) | ✅ Reproduziert |
+| MNIST Standard stateless (V3-SL) | **87.7%** | ✅ Roadmap-Ziel übertroffen |
+| MNIST Standard online (V3) | 52.0% | ✅ Baseline |
+| MNIST Standard stateless (V3) | 81.3% | ✅ Evaluator-Fix |
+| MNIST Fast stateless (V3-SL) | 77.0% | ✅ Bestätigt |
 | Temporal | 6/6 pass | ✅ |
-| Self-Healing Standard | ~31% post-damage | Ehrlich dokumentiert |
-| MNIST Offline-Features | 10.5% (LogReg/MLP) | ⚠️ LSM-Verhalten — siehe unten |
-| Sensory-only Readout Ablation | 13.0% (−35.5pp vs full) | ✅ Assoc-Layer trägt 35.5pp bei |
+| Self-Healing Standard | ~29.5% post-recovery | Ehrlich dokumentiert |
+| ng-Stabilität | ng=1.60 (war: 0.32) | ✅ Novelty-Gain-Fix bestätigt |
+
+### Was die 87.7% bedeuten
+- V3-SL (Stateless Training) mit Standard-Profil (5k×3ep)
+- Stateless-Evaluator: State-Reset vor jedem Test-Image
+- ng-Collapse-Fix: novelty_gain stabil bei 1.60 (nicht mehr 0.32)
+- Sequential vs Shuffled: V3 +5.3pp Gap (LSM Co-Adaptation bestätigt)
+- V3-SL online nur 42% — erwartet: stateless Training macht akkumulierten State zu Noise bei Online-Eval
+
+### v4.5.0 → v4.6.0 Roadmap-Ziele
+| Ziel | Status |
+|------|--------|
+| ≥60% mit State-Reset-Evaluator | ✅ 81.3% (V3) |
+| ≥70% mit architektonischer Änderung | ✅ **87.7%** (V3-SL) |
+| CartPole ≥195 | ✅ 195.1 |
+| Reproduzierbarkeit ±1pp | ✅ seed=42 bestätigt |
 
 V3 LocalInhibition Parameter (Standard-Default, locked):
 - `istdp_rate = 0.001`, `initial_inh_weight = -0.5`
