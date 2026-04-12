@@ -147,9 +147,6 @@ const cpHistory = [];  // episode step counts for sparkline
 const migrationTrails = []; // [{x,y,z, age, maxAge, r,g,b}]
 const _prevMorphonPos = new Map(); // id → {x,y,z} — previous frame positions
 
-// === BROADCAST RINGS ===
-// Each entry: { mesh: THREE.Mesh (wireframe sphere), age: number, maxAge: number, color: THREE.Color }
-const broadcastRings = [];
 
 
 // Three.js objects
@@ -494,54 +491,6 @@ function initScene() {
     const r3 = ring.clone(); r3.rotation.y = Math.PI / 2; scene.add(r3);
   }
 
-  // === HYPERBOLIC GRID LINES ===
-  // In the Poincaré ball, equal-distance shells compress toward the boundary.
-  // We visualize this by drawing geodesic sphere shells at hyperbolic-equal-distance
-  // radii: tanh(k/4) × R for k=1..4. This gives 4 shells that are equally spaced
-  // in hyperbolic distance but get visually tighter near the boundary — showing the
-  // curvature. Each shell is a faint wireframe sphere at progressively lower opacity.
-  {
-    const hypShells = [1, 2, 3, 4].map(k => Math.tanh(k / 4) * BALL_RADIUS);
-    hypShells.forEach((shellR, idx) => {
-      const opacity = 0.028 - idx * 0.005; // outermost shells get fainter
-      const segs = 10 + idx * 2;
-      const geo = new THREE.SphereGeometry(shellR, segs, Math.floor(segs * 0.6));
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0x3a6aff,
-        wireframe: true,
-        transparent: true,
-        opacity: Math.max(opacity, 0.008),
-        depthWrite: false,
-      });
-      scene.add(new THREE.Mesh(geo, mat));
-    });
-
-    // Geodesic "spokes" — great-circle arcs through the origin in 6 diagonal directions.
-    // These look like the latitude lines of a compass rose and emphasize radial structure.
-    const spokeDirections = [
-      [1, 1, 0], [-1, 1, 0], [0, 1, 1], [0, -1, 1], [1, 0, 1], [-1, 0, 1],
-    ];
-    const spokePoints = 60;
-    for (const dir of spokeDirections) {
-      const len = Math.sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
-      const dx = dir[0]/len, dy = dir[1]/len, dz = dir[2]/len;
-      const pts = [];
-      for (let j = 0; j <= spokePoints; j++) {
-        // Parametric along diameter: euclidean t goes -R..+R
-        const t = (j / spokePoints) * 2 - 1; // -1..+1
-        // In Poincaré ball a geodesic through origin is just a straight line
-        pts.push(new THREE.Vector3(dx * t * BALL_RADIUS, dy * t * BALL_RADIUS, dz * t * BALL_RADIUS));
-      }
-      const spokeGeo = new THREE.BufferGeometry().setFromPoints(pts);
-      const spokeMat = new THREE.LineBasicMaterial({
-        color: 0x2a4aaa,
-        transparent: true, opacity: 0.06,
-        blending: THREE.AdditiveBlending, depthWrite: false,
-      });
-      scene.add(new THREE.Line(spokeGeo, spokeMat));
-    }
-  }
-
   // === NODE MESH (diffuse — 3D shading, no bloom) ===
   const nodeGeo = new THREE.IcosahedronGeometry(1, 3);
   const nodeMat = new THREE.MeshStandardMaterial({
@@ -562,11 +511,11 @@ function initScene() {
   nodesMesh.frustumCulled = false;
   scene.add(nodesMesh);
 
-  // === GLOW MESH (emissive overlay — drives bloom for active nodes) ===
+  // === GLOW MESH (subtle color halo — low opacity to avoid bubble effect) ===
   const glowMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.18,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     depthTest: false,
@@ -1021,12 +970,12 @@ function updateScene() {
   }
   nodesMesh.count = nodeCount + dyingRendered;
 
-  // === GLOW OVERLAY — additive emissive layer for active/near-active nodes ===
+  // === GLOW OVERLAY — subtle additive color halo ===
   let glowCount = 0;
   for (let i = 0; i < nodeCount; i++) {
     const n = nodes[i];
     const glow = nodeGlow.get(n.id) || 0;
-    if (glow < 0.02) continue; // skip fully resting nodes
+    if (glow < 0.05) continue;
 
     const px = nodePositions[i * 3];
     const py = nodePositions[i * 3 + 1];
@@ -1034,15 +983,13 @@ function updateScene() {
     const energy = Math.max(0, Math.min(2, isFinite(n.energy) ? n.energy : 0));
     const baseSize = (NODE_BASE_SIZE + energy * 0.2) * popScale;
 
-    // Glow sphere: slightly larger than the node, intensity = glow level
     dummy.position.set(px, py, pz);
-    dummy.scale.setScalar(baseSize * (1.0 + glow * 0.4)); // swell slightly when glowing
+    dummy.scale.setScalar(baseSize * (1.0 + glow * 0.2));
     dummy.updateMatrix();
     glowMesh.setMatrixAt(glowCount, dummy.matrix);
 
     let glowColor;
     if (colorMode === 'pe') {
-      // Use the already-smoothed PE value
       const pe = nodePeSmooth.get(n.id) ?? 0;
       peColor.setRGB(0.30 + pe * 0.65, 0.45 - pe * 0.15, 0.75 - pe * 0.40);
       glowColor = peColor;
@@ -1051,25 +998,8 @@ function updateScene() {
     } else {
       glowColor = CELL_COLORS[n.cell_type] || CELL_COLORS.Stem;
     }
-    // Softer glow multiplier in heatmap modes
-    const glowMul = (colorMode !== 'celltype') ? glow * 0.8 : glow * 1.5;
+    const glowMul = (colorMode !== 'celltype') ? glow * 0.5 : glow * 0.9;
     tempColor.copy(glowColor).multiplyScalar(glowMul);
-    glowMesh.setColorAt(glowCount, tempColor);
-    glowCount++;
-  }
-  // Dying nodes get a strong bloom flash during early animation
-  for (const d of dyingNodes) {
-    const t = d.age / DEATH_ANIM_FRAMES;
-    if (t > 0.4 || glowCount >= MAX_NODES) continue;
-    const bloomIntensity = t < 0.15 ? 2.5 * (1 - t / 0.15) : (0.4 - t) * 2;
-    if (bloomIntensity <= 0) continue;
-    const scale = t < 0.2 ? d.size * (1 + t * 2) : d.size * Math.max(0, 1 - (t - 0.2) * 1.25);
-    dummy.position.set(d.px, d.py, d.pz);
-    dummy.scale.setScalar(scale * popScale * 1.5);
-    dummy.updateMatrix();
-    glowMesh.setMatrixAt(glowCount, dummy.matrix);
-    tempColor.copy(d.color).multiplyScalar(bloomIntensity);
-    tempColor.lerp(WHITE, 0.5);
     glowMesh.setColorAt(glowCount, tempColor);
     glowCount++;
   }
@@ -2469,14 +2399,12 @@ function switchOccupation(newOcc) {
   timelineSnapshots.length = 0; timelineLastStep = 0; timelineScrubbing = false;
   prevEdgeReinforcementCounts.clear(); learningPulses.length = 0;
   lastEpistemicKey = null;
-  for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); if (m.fill) scene.remove(m.fill); }
   clusterHullMeshes.clear(); clusterHullCache.clear();
   for (const k in graphData) graphData[k].length = 0;
   lastBorn = 0; lastDied = 0; lastMorphonCount = 0; lastSynapseCount = 0;
   liveSpikes.length = 0; spikeCooldowns.clear();
   migrationTrails.length = 0; _prevMorphonPos.clear();
-  for (const r of broadcastRings) { scene?.remove(r.mesh); r.mesh.geometry.dispose(); r.mesh.material.dispose(); }
-  broadcastRings.length = 0;
+
   updateScene(); updatePanels();
 }
 
@@ -2548,7 +2476,6 @@ function setupControls() {
     timelineSnapshots.length = 0; timelineLastStep = 0; timelineScrubbing = false;
     prevEdgeReinforcementCounts.clear(); learningPulses.length = 0;
     lastEpistemicKey = null;
-    for (const [_, m] of clusterHullMeshes) { scene.remove(m.line); if (m.fill) scene.remove(m.fill); }
     clusterHullMeshes.clear(); clusterHullCache.clear();
     // Reset graph
     for (const k in graphData) graphData[k].length = 0;
@@ -2569,13 +2496,13 @@ function setupControls() {
   });
 
   document.getElementById('btn-reward').addEventListener('click', () => {
-    if (system) { system.inject_reward(0.8); triggerBroadcastRing('reward'); addEvent('', 'Reward injected (0.8)', 'event-birth'); }
+    if (system) { system.inject_reward(0.8); addEvent('', 'Reward injected (0.8)', 'event-birth'); }
   });
   document.getElementById('btn-novelty').addEventListener('click', () => {
-    if (system) { system.inject_novelty(0.6); triggerBroadcastRing('novelty'); addEvent('', 'Novelty injected (0.6)', 'event-synapse'); }
+    if (system) { system.inject_novelty(0.6); addEvent('', 'Novelty injected (0.6)', 'event-synapse'); }
   });
   document.getElementById('btn-arousal').addEventListener('click', () => {
-    if (system) { system.inject_arousal(0.9); triggerBroadcastRing('arousal'); addEvent('', 'Arousal injected (0.9)', 'event-death'); }
+    if (system) { system.inject_arousal(0.9); addEvent('', 'Arousal injected (0.9)', 'event-death'); }
   });
 
   document.getElementById('btn-dream').addEventListener('click', () => {
@@ -3478,8 +3405,6 @@ function animate() {
 
   updateSpikes();
   updateLearningPulses(); // V3: gold learning pulse particles
-  updateBroadcastRings();
-
   // Subtle ball rotation
   if (diskMesh) {
     diskMesh.rotation.y = elapsed * 0.02;
@@ -3656,30 +3581,8 @@ function updateClusterHulls(nodes, edges) {
       const dz = n.z * BALL_RADIUS - cz;
       maxR = Math.max(maxR, Math.sqrt(dx*dx + dy*dy + dz*dz));
     }
-    const radius = Math.max(maxR * 1.35, 0.8); // expand 35% beyond members, min 0.8
-
-    // Fill: low-poly inner sphere with additive blending
-    const fillGeo = new THREE.SphereGeometry(radius, 10, 7);
-    const fillMat = new THREE.MeshBasicMaterial({
-      color: epColor, transparent: true, opacity: 0.04,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide,
-    });
-    const fill = new THREE.Mesh(fillGeo, fillMat);
-    fill.position.set(cx, cy, cz);
-    scene.add(fill);
-
-    // Wireframe ring: outer shell outline
-    const wireGeo = new THREE.SphereGeometry(radius, 10, 7);
-    const wireMat = new THREE.MeshBasicMaterial({
-      color: epColor, transparent: true, opacity: 0.10,
-      blending: THREE.AdditiveBlending, depthWrite: false, wireframe: true,
-    });
-    const wire = new THREE.Mesh(wireGeo, wireMat);
-    wire.position.set(cx, cy, cz);
-    scene.add(wire);
-
     const centroid = { x: cx, y: cy, z: cz };
-    clusterHullMeshes.set(cid, { line: wire, fill, _centroid: centroid });
+    clusterHullMeshes.set(cid, { line: null, fill: null, _centroid: centroid });
   }
 }
 
@@ -3817,72 +3720,6 @@ function updateLearningPulses() {
       spikesMesh.setColorAt(count, _pulseColor);
       spikesMesh.count = count + 1;
     }
-  }
-}
-
-// ============================================================
-// BROADCAST RINGS — expanding sphere shells on neuromod injection
-// ============================================================
-const RING_COLORS = {
-  reward:  new THREE.Color(1.0,  0.78, 0.08), // gold
-  novelty: new THREE.Color(0.08, 0.85, 0.95), // cyan
-  arousal: new THREE.Color(0.75, 0.20, 0.95), // violet
-};
-const RING_MAX_AGE = 55; // frames to expand from center to ball edge
-
-function triggerBroadcastRing(type) {
-  if (!scene) return;
-  const color = RING_COLORS[type] || new THREE.Color(1, 1, 1);
-  // Two concentric rings with a slight phase offset for a "ripple" look
-  for (const phaseOffset of [0, 8]) {
-    const geo = new THREE.SphereGeometry(0.1, 12, 8);
-    const mat = new THREE.MeshBasicMaterial({
-      color: color.clone(),
-      wireframe: true,
-      transparent: true,
-      opacity: 0.0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    scene.add(mesh);
-    broadcastRings.push({ mesh, age: -phaseOffset, maxAge: RING_MAX_AGE, color: color.clone() });
-  }
-}
-
-function updateBroadcastRings() {
-  for (let i = broadcastRings.length - 1; i >= 0; i--) {
-    const r = broadcastRings[i];
-    r.age++;
-    if (r.age < 0) continue; // phase delay — not started yet
-
-    const t = r.age / r.maxAge; // 0 → 1
-    if (t > 1.0) {
-      scene.remove(r.mesh);
-      r.mesh.geometry.dispose();
-      r.mesh.material.dispose();
-      broadcastRings.splice(i, 1);
-      continue;
-    }
-
-    // Radius expands from near-zero to slightly beyond BALL_RADIUS
-    const radius = t * BALL_RADIUS * 1.05;
-    r.mesh.scale.setScalar(radius / 0.1); // geometry was made at r=0.1
-
-    // Opacity: ramp up in first 20%, then fade out for last 40%
-    let opacity;
-    if (t < 0.2) {
-      opacity = t / 0.2;
-    } else if (t < 0.6) {
-      opacity = 1.0;
-    } else {
-      opacity = (1.0 - t) / 0.4;
-    }
-    // Also boost emissive punch by multiplying the color
-    const boost = 1.5 + (1.0 - t) * 2.0;
-    r.mesh.material.opacity = opacity * 0.28;
-    r.mesh.material.color.copy(r.color).multiplyScalar(boost);
-    r.mesh.material.needsUpdate = true;
   }
 }
 
