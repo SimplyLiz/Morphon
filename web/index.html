@@ -100,21 +100,46 @@
     gap: 10px;
   }
   .logo-mark {
+    position: relative;
     width: 30px; height: 30px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, var(--sensory), var(--accent) 50%, var(--associative));
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 13px;
-    color: #fff;
-    font-weight: 600;
-    animation: logo-breathe 4s ease-in-out infinite;
-    box-shadow: 0 0 12px rgba(80, 140, 255, 0.25);
+    flex-shrink: 0;
   }
-  @keyframes logo-breathe {
-    0%, 100% { box-shadow: 0 0 12px rgba(80, 140, 255, 0.2); }
-    50% { box-shadow: 0 0 20px rgba(80, 140, 255, 0.4), 0 0 40px rgba(80, 140, 255, 0.1); }
+  .logo-mark .logo-ring {
+    position: absolute;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    animation: orbit linear infinite;
+  }
+  .logo-mark .logo-ring:nth-child(1) {
+    width: 100%; height: 100%;
+    border-top-color: var(--sensory);
+    border-bottom-color: rgba(0,212,255,0.12);
+    animation-duration: 2.4s;
+    filter: drop-shadow(0 0 3px rgba(0,212,255,0.5));
+  }
+  .logo-mark .logo-ring:nth-child(2) {
+    width: 66%; height: 66%;
+    border-right-color: var(--associative);
+    border-left-color: rgba(167,139,250,0.1);
+    animation-duration: 1.8s;
+    animation-direction: reverse;
+    filter: drop-shadow(0 0 2px rgba(167,139,250,0.4));
+  }
+  .logo-mark .logo-ring:nth-child(3) {
+    width: 36%; height: 36%;
+    border-top-color: var(--motor);
+    border-bottom-color: rgba(255,107,53,0.1);
+    animation-duration: 1.2s;
+    filter: drop-shadow(0 0 2px rgba(255,107,53,0.35));
+  }
+  .logo-mark .logo-core {
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--accent) 0%, transparent 70%);
+    animation: pulse-core 1.5s ease-in-out infinite;
   }
   .logo h1 {
     font-family: 'Outfit', sans-serif;
@@ -1299,7 +1324,12 @@
 <!-- HEADER -->
 <div id="header" class="overlay">
   <div class="logo">
-    <div class="logo-mark">M</div>
+    <div class="logo-mark">
+      <div class="logo-ring"></div>
+      <div class="logo-ring"></div>
+      <div class="logo-ring"></div>
+      <div class="logo-core"></div>
+    </div>
     <h1>MORPHON<span>ENGINE</span></h1>
   </div>
   <div class="header-stats">
@@ -1453,6 +1483,17 @@
   </div>
 
   <div class="panel">
+    <div class="section-title">Homeostasis</div>
+    <div class="endo-channel-row" style="margin-bottom:4px;">
+      <span class="label">Mode</span>
+      <span class="value" id="homeo-mode" style="font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--accent);">—</span>
+    </div>
+    <div class="endo-channel-row"><span class="label">Avg PE</span><span class="value" id="homeo-pe">—</span></div>
+    <div class="endo-channel-row"><span class="label">On Cooldown</span><span class="value" id="homeo-cooldown">—</span></div>
+    <div class="endo-channel-row"><span class="label">Rollback PE</span><span class="value" id="homeo-rollback">—</span></div>
+  </div>
+
+  <div class="panel">
     <div class="section-title">Motor Output</div>
     <div class="motor-bars" id="motor-output"></div>
   </div>
@@ -1498,6 +1539,9 @@
       <div class="detail-row"><span class="label">Differentiation</span><div style="display:flex;align-items:center"><span class="value" id="d-diff">0</span><div class="mini-bar"><div class="fill" id="d-diff-bar"></div></div></div></div>
       <div class="detail-row"><span class="label">Pred Error</span><span class="value" id="d-error">0</span></div>
       <div class="detail-row"><span class="label">Desire</span><span class="value" id="d-desire">0</span></div>
+      <div class="detail-row"><span class="label">Autonomy</span><div style="display:flex;align-items:center"><span class="value" id="d-autonomy">0</span><div class="mini-bar"><div class="fill" id="d-autonomy-bar" style="background:#a78bfa"></div></div></div></div>
+      <div class="detail-row"><span class="label">Div Pressure</span><div style="display:flex;align-items:center"><span class="value" id="d-divpressure">0</span><div class="mini-bar"><div class="fill" id="d-divpressure-bar" style="background:#f472b6"></div></div></div></div>
+      <div class="detail-row" id="d-cluster-row" style="display:none"><span class="label">Cluster</span><span class="value" id="d-cluster" style="color:var(--text-dim)">—</span></div>
       <div class="detail-row"><span class="label">Connections</span><span class="value" id="d-conns">0</span></div>
       <div class="detail-row"><span class="label">Fired</span><span class="value" id="d-fired">-</span></div>
       <div class="detail-row" id="d-epistemic-row" style="display:none"><span class="label">Epistemic</span><span class="value" id="d-epistemic" style="color:#eab308">-</span></div>
@@ -1516,6 +1560,8 @@
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
     <button class="tab-btn" data-tab="tab-learning">LEARNING</button>
+    <button class="tab-btn" data-tab="tab-fields">FIELDS</button>
+    <button class="tab-btn" data-tab="tab-memory">MEMORY</button>
     <button class="tab-btn" data-tab="tab-arena" id="tab-btn-arena" style="display:none">ARENA</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
@@ -1672,6 +1718,73 @@
     </div>
   </div>
 </div>
+
+  <!-- TAB: FIELDS -->
+  <div id="tab-fields" class="tab-content">
+    <div style="display:flex; height:100%; gap:12px; padding:6px 12px; overflow:hidden;">
+      <!-- Controls column -->
+      <div style="display:flex; flex-direction:column; gap:8px; flex-shrink:0; width:140px; justify-content:flex-start; padding-top:2px;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px;">Layer</div>
+        <select id="field-layer-select">
+          <option value="PredictionError">Prediction Error</option>
+          <option value="Energy">Energy</option>
+          <option value="Novelty">Novelty</option>
+          <option value="Stress">Stress</option>
+          <option value="Identity">Identity</option>
+        </select>
+        <!-- Legend -->
+        <div style="margin-top:8px;">
+          <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">Intensity</div>
+          <div id="field-legend-bar" style="height:8px; border-radius:4px; background:linear-gradient(to right,#0a1628,#1d4ed8,#16a34a,#ca8a04,#ef4444); margin-bottom:3px;"></div>
+          <div style="display:flex; justify-content:space-between; font-family:'JetBrains Mono',monospace; font-size:9px; color:var(--text-dim);">
+            <span id="field-legend-min">0.000</span>
+            <span id="field-legend-max">1.000</span>
+          </div>
+        </div>
+        <div style="margin-top:4px;">
+          <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Resolution</div>
+          <span id="field-meta-res" style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-bright);">—</span>
+        </div>
+        <div>
+          <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Diffusion</div>
+          <span id="field-meta-diff" style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--text-bright);">—</span>
+        </div>
+      </div>
+      <!-- Canvas -->
+      <div style="flex:1; display:flex; align-items:center; justify-content:center; min-width:0;">
+        <canvas id="field-canvas" style="max-width:100%; max-height:100%; image-rendering:pixelated; border-radius:4px;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: MEMORY -->
+  <div id="tab-memory" class="tab-content">
+    <div style="display:flex; height:100%; gap:12px; padding:6px 12px; overflow:hidden;">
+      <!-- Working Memory -->
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
+          Working <span id="mem-working-count" style="color:var(--sensory); font-family:'JetBrains Mono',monospace;">0</span>
+        </div>
+        <div id="mem-working-list" style="flex:1; overflow-y:auto; font-family:'JetBrains Mono',monospace; font-size:10px; display:flex; flex-direction:column; gap:3px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.1) transparent;"></div>
+      </div>
+      <div style="width:1px; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Episodic Memory -->
+      <div style="flex:1.4; display:flex; flex-direction:column; min-width:0;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
+          Episodic <span id="mem-episodic-count" style="color:var(--associative); font-family:'JetBrains Mono',monospace;">0</span>
+        </div>
+        <div id="mem-episodic-list" style="flex:1; overflow-y:auto; font-family:'JetBrains Mono',monospace; font-size:10px; display:flex; flex-direction:column; gap:3px; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,0.1) transparent;"></div>
+      </div>
+      <div style="width:1px; background:var(--panel-border); flex-shrink:0;"></div>
+      <!-- Procedural Memory -->
+      <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+        <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
+          Procedural <span id="mem-procedural-count" style="color:var(--modulatory); font-family:'JetBrains Mono',monospace;">0</span>
+        </div>
+        <canvas id="mem-procedural-canvas" style="width:100%; flex:1;"></canvas>
+      </div>
+    </div>
+  </div>
 
 <!-- HELP OVERLAY -->
 <div id="help-overlay">
