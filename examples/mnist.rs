@@ -121,25 +121,13 @@ fn present_image(system: &mut System, rates: &[f64], steps: usize, rng: &mut imp
     spike_counts
 }
 
-fn create_system(local_inh: bool) -> System {
-    let competition_mode = if local_inh {
-        // LocalInhibition: real inhibitory interneurons provide biological lateral
-        // inhibition. Winners fire first, activate interneurons, which suppress
-        // the rest via negative-weight synapses. This naturally generates the
-        // anti-Hebbian LTD signal that non-winners need to specialize.
-        morphon_core::homeostasis::CompetitionMode::LocalInhibition {
-            interneuron_ratio: 0.10,     // 10% of associative budget → ~36 interneurons
-            istdp_rate: 0.005,           // Vogels et al. — slow adaptation
-            initial_inh_weight: -0.5,    // strong initial inhibition for MNIST competition
-            inhibition_radius: 0.0,      // 0.0 = global groups (all-to-all inhibition)
-            target_rate: Some(0.05),     // match k-WTA fraction — ~5% firing rate target
-        }
-    } else {
-        morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-            fraction: 0.05,
-            local_radius: 0.0,
-            local_k: 3,
-        }
+fn create_system() -> System {
+    let competition_mode = morphon_core::homeostasis::CompetitionMode::LocalInhibition {
+        interneuron_ratio: 0.10,     // 10% of associative budget → ~36 interneurons
+        istdp_rate: 0.005,           // Vogels et al. — slow adaptation
+        initial_inh_weight: -0.5,    // strong initial inhibition for MNIST competition
+        inhibition_radius: 0.0,      // 0.0 = global groups (all-to-all inhibition)
+        target_rate: Some(0.05),     // match k-WTA fraction — ~5% firing rate target
     };
 
     let config = SystemConfig {
@@ -236,10 +224,6 @@ fn parse_profile() -> &'static str {
     else { "quick" }
 }
 
-fn use_local_inhibition() -> bool {
-    std::env::args().any(|a| a == "--local-inh")
-}
-
 fn main() {
     let profile = parse_profile();
     // phase3_samples: how many training images per Phase 3 epoch.
@@ -251,9 +235,7 @@ fn main() {
         _          => (3, 1000, 2, 1000,  2_000, 5, 200),
     };
 
-    let local_inh = use_local_inhibition();
-    let competition = if local_inh { "LocalInhibition" } else { "GlobalKWTA" };
-    println!("=== MORPHON MNIST Benchmark — Two-Phase Learning [{}, {}] ===\n", profile, competition);
+    println!("=== MORPHON MNIST Benchmark — Two-Phase Learning [{}, LocalInhibition] ===\n", profile);
     println!("Loading MNIST from ./data/ ...");
 
     let mnist = MnistBuilder::new()
@@ -275,7 +257,7 @@ fn main() {
 
     println!("Train: {}, Test: {}\n", train_images.len(), test_images.len());
 
-    let mut system = create_system(local_inh);
+    let mut system = create_system();
 
     // Align homeostatic setpoint with k-WTA fraction (0.05 = 5% winners).
     // Default setpoint is 0.15 (15%), which causes synaptic_scaling to inflate
@@ -602,7 +584,7 @@ fn main() {
     let results = json!({
         "benchmark": "mnist",
         "profile": profile,
-        "method": format!("two-phase (unsupervised STDP + {})", competition),
+        "method": "two-phase (unsupervised STDP + LocalInhibition)",
         "version": version,
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs(),

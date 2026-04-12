@@ -412,12 +412,11 @@ fn create_local_inhibitory_interneurons(
     competition_mode: &crate::homeostasis::CompetitionMode,
     _rng: &mut impl Rng,
 ) {
-    let (interneuron_ratio, initial_inh_weight, inhibition_radius) = match competition_mode {
-        crate::homeostasis::CompetitionMode::LocalInhibition {
-            interneuron_ratio, initial_inh_weight, inhibition_radius, ..
-        } => (*interneuron_ratio, *initial_inh_weight, *inhibition_radius),
-        _ => return, // Only activate for LocalInhibition mode
-    };
+    let crate::homeostasis::CompetitionMode::LocalInhibition {
+        interneuron_ratio, initial_inh_weight, inhibition_radius, ..
+    } = competition_mode;
+    let (interneuron_ratio, initial_inh_weight, inhibition_radius) =
+        (*interneuron_ratio, *initial_inh_weight, *inhibition_radius);
 
     // Collect Associative morphon IDs and positions
     let assoc_data: Vec<(MorphonId, HyperbolicPoint)> = morphons.values()
@@ -482,11 +481,11 @@ fn create_local_inhibitory_interneurons(
             }
 
             // Excitatory: Assoc → Interneuron (drives the interneuron)
-            let exc_syn = Synapse::new(0.3).with_delay(0.5);
+            let exc_syn = Synapse::new(0.3).with_delay(0.1);
             topology.add_synapse(*assoc_id, inh_id, exc_syn);
 
             // Inhibitory: Interneuron → Assoc (competition)
-            let inh_syn = Synapse::new(initial_inh_weight).with_delay(0.5);
+            let inh_syn = Synapse::new(initial_inh_weight).with_delay(0.1);
             topology.add_synapse(inh_id, *assoc_id, inh_syn);
         }
 

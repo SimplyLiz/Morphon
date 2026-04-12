@@ -393,12 +393,8 @@ pub fn wire_to_nearby_interneurons(
     competition_mode: &crate::homeostasis::CompetitionMode,
     new_morphon_ids: &[MorphonId],
 ) {
-    let initial_inh_weight = match competition_mode {
-        crate::homeostasis::CompetitionMode::LocalInhibition { initial_inh_weight, .. } => {
-            *initial_inh_weight
-        }
-        _ => return,
-    };
+    let crate::homeostasis::CompetitionMode::LocalInhibition { initial_inh_weight, .. } = competition_mode;
+    let initial_inh_weight = *initial_inh_weight;
 
     let interneurons: Vec<(MorphonId, crate::types::HyperbolicPoint)> = morphons.values()
         .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
@@ -841,19 +837,18 @@ pub fn fusion(
             // Only in LocalInhibition mode. These interneurons receive excitation from
             // all cluster members and send inhibition back, implementing local WTA
             // competition that is self-tuned by iSTDP rather than a global sort.
-            if let crate::homeostasis::CompetitionMode::LocalInhibition {
+            let crate::homeostasis::CompetitionMode::LocalInhibition {
                 interneuron_ratio, initial_inh_weight, ..
-            } = competition_mode {
-                create_local_inhibitory_interneurons(
-                    &members,
-                    morphons,
-                    topology,
-                    next_morphon_id,
-                    effective_max_morphons,
-                    *initial_inh_weight,
-                    *interneuron_ratio,
-                );
-            }
+            } = competition_mode;
+            create_local_inhibitory_interneurons(
+                &members,
+                morphons,
+                topology,
+                next_morphon_id,
+                effective_max_morphons,
+                *initial_inh_weight,
+                *interneuron_ratio,
+            );
 
             clusters.insert(
                 cluster_id,
@@ -2910,59 +2905,7 @@ mod tests {
             "LocalInhibition fusion should create at least 1 interneuron, got {}", inh_count);
     }
 
-    #[test]
-    fn fusion_no_interneurons_in_global_kwta_mode() {
-        let (mut morphons, mut topo, params, mut cluster_id, mut next_id) = setup_fusion_test();
-
-        for m in morphons.values_mut() {
-            for _ in 0..50 { m.activity_history.push(1.0); }
-            m.fired = true;
-            m.prediction_error = 0.01;
-            m.desire = 0.1;
-            m.energy = 0.9;
-        }
-
-        let mut clusters = HashMap::new();
-        fusion(
-            &mut morphons, &mut clusters, &mut cluster_id, &mut next_id,
-            &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
-            &crate::homeostasis::CompetitionMode::default(), &[],
-        );
-
-        let inh_count = morphons.values()
-            .filter(|m| m.cell_type == CellType::InhibitoryInterneuron)
-            .count();
-        assert_eq!(inh_count, 0,
-            "GlobalKWTA mode should not create InhibitoryInterneurons");
-    }
-
     // === wire_to_nearby_interneurons ===
-
-    #[test]
-    fn wire_to_nearby_noop_in_global_kwta_mode() {
-        let pos = HyperbolicPoint::origin(3);
-        let mut morphons = HashMap::new();
-        let mut topo = Topology::new();
-
-        let mut assoc = make_morphon(1, CellType::Associative);
-        assoc.position = pos.clone();
-        morphons.insert(1, assoc);
-        topo.add_morphon(1);
-
-        let mut inh = make_morphon(2, CellType::InhibitoryInterneuron);
-        inh.position = pos.clone();
-        morphons.insert(2, inh);
-        topo.add_morphon(2);
-
-        wire_to_nearby_interneurons(
-            &morphons, &mut topo,
-            &crate::homeostasis::CompetitionMode::default(), // GlobalKWTA
-            &[1],
-        );
-
-        assert!(topo.synapse_between(1, 2).is_none(), "GlobalKWTA: no wiring");
-        assert!(topo.synapse_between(2, 1).is_none(), "GlobalKWTA: no wiring");
-    }
 
     #[test]
     fn wire_to_nearby_connects_to_closest_interneuron() {

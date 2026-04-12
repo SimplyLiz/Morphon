@@ -18,24 +18,9 @@ use std::collections::HashMap;
 // ─── Competition Mode ────────────────────────────────────────────────
 
 /// How lateral inhibition / winner selection is implemented.
-/// Default: GlobalKWTA for backward compatibility.
+/// Uses biologically local iSTDP interneurons (Vogels et al. 2011).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CompetitionMode {
-    /// Global k-WTA: top-k fraction wins, rest get zeroed.
-    /// Optionally uses spatial neighborhoods in Poincare ball.
-    GlobalKWTA {
-        /// Fraction of associative morphons that win each step.
-        /// CartPole: 0.15, MNIST: 0.02-0.05.
-        fraction: f64,
-        /// Hyperbolic distance radius for local neighborhoods.
-        /// When > 0, each morphon competes only within this radius.
-        /// 0.0 = global competition (all associative morphons ranked together).
-        #[serde(default)]
-        local_radius: f64,
-        /// Winners per local neighborhood (only used when local_radius > 0).
-        #[serde(default = "default_local_k")]
-        local_k: usize,
-    },
     /// Biologically local inhibition via iSTDP interneurons (Vogels et al. 2011).
     /// Inhibitory interneurons are created during developmental bootstrap and
     /// self-tune their synapse weights to maintain a target firing rate.
@@ -56,11 +41,15 @@ pub enum CompetitionMode {
     },
 }
 
-fn default_local_k() -> usize { 3 }
-
 impl Default for CompetitionMode {
     fn default() -> Self {
-        CompetitionMode::GlobalKWTA { fraction: 0.15, local_radius: 0.0, local_k: 3 }
+        CompetitionMode::LocalInhibition {
+            interneuron_ratio: 0.1,
+            istdp_rate: 0.005,
+            initial_inh_weight: -0.3,
+            inhibition_radius: 0.0,
+            target_rate: None,
+        }
     }
 }
 
@@ -85,8 +74,7 @@ pub struct HomeostasisParams {
     #[serde(default)]
     pub competition_mode: CompetitionMode,
     /// Base threshold boost applied after firing (Diehl & Cook 2015).
-    /// In GlobalKWTA mode: applied only to k-WTA winners.
-    /// In LocalInhibition mode: applied to any fired Associative/Stem morphon.
+    /// Applied to any fired Associative/Stem morphon.
     /// Extracted from hardcoded 0.02 for Endo V2 modulation.
     #[serde(default = "default_winner_boost")]
     pub winner_boost: f64,
@@ -710,9 +698,9 @@ mod tests {
     // === CompetitionMode tests ===
 
     #[test]
-    fn test_competition_mode_default_is_global_kwta() {
+    fn test_competition_mode_default_is_local_inhibition() {
         let params = HomeostasisParams::default();
-        assert!(matches!(params.competition_mode, CompetitionMode::GlobalKWTA { fraction, .. } if (fraction - 0.15).abs() < 1e-6));
+        assert!(matches!(params.competition_mode, CompetitionMode::LocalInhibition { .. }));
     }
 
     #[test]
