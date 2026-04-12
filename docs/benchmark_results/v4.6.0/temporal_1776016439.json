@@ -1,0 +1,42 @@
+{
+  "benchmark": "temporal",
+  "results": {
+    "dms_delay3": {
+      "accuracy": 0.88,
+      "delay": 3,
+      "n_trials": 5000,
+      "pass": true
+    },
+    "dms_delay5": {
+      "accuracy": 0.917,
+      "delay": 5,
+      "n_trials": 5000,
+      "pass": true
+    },
+    "pred_period3": {
+      "mae": 0.000292790684751953,
+      "n_steps": 12000,
+      "pass": true,
+      "period": 3
+    },
+    "pred_period5": {
+      "mae": 0.002475097395275782,
+      "n_steps": 12000,
+      "pass": true,
+      "period": 5
+    },
+    "seq_len4": {
+      "accuracy": 0.7541666666666667,
+      "n_trials": 6000,
+      "pass": false,
+      "seq_len": 4
+    },
+    "seq_len8": {
+      "accuracy": 0.8875,
+      "n_trials": 6000,
+      "pass": true,
+      "seq_len": 8
+    }
+  },
+  "version": "4.6.0"
+}

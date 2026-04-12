@@ -1,6 +1,33 @@
-# MNIST Accuracy Roadmap — v4.6.0
+# MNIST Accuracy Roadmap — v4.7.0 (in progress)
 ## Analyse, Befunde, und Architektur-Diagnose
 ### Morphon-Core, April 2026
+
+---
+
+## v4.7.0 — Laufende Arbeit (April 2026)
+
+### ng-Fix Ablation (neu)
+Isoliert die individuellen Beiträge von ng-Collapse-Fix vs. Stateless Training.
+
+**Flag:** `--ng-ablation` in `mnist_v2.rs`
+**Variante:** V3-SL-ABL = Stateless Training + suppress_novelty_on_energy=true (pre-v4.6.0 Rule 7)
+**Benchmark läuft** — Ergebnisse werden hier eingetragen sobald verfügbar.
+
+| Variante | Online % | Stateless % | Δ vs V3-SL |
+|----------|----------|-------------|------------|
+| V3-SL (beide Fixes) | 45.0% | 87.0% | — |
+| V3-SL-ABL (nur Stateless, ng-Fix revertiert) | 44.5% | **88.0%** | −0.5pp / +1.0pp |
+
+**Befund:** Stateless Training macht die Arbeit alleine. Der ng-Collapse-Fix ist kein Beitrag
+zur MNIST-Genauigkeit — die 1.0pp sind Seed-Varianz. Der ng-Fix ist ein Stabilitätsbeitrag
+(ng=1.60 stabil, CartPole), kein Klassifikationsbeitrag.
+
+### Working Memory Population Fix (neu)
+`System::step()` berechnete `working_overlap` aus dem WM-Buffer, befüllte ihn aber nie.
+Fix: `self.memory.working.store(ids, wm_activation)` nach `ancs.store()`.
+
+Neue API: `System::feed_working_memory_feedback(strength: f64)` — injiziert kleinen
+Exzitationsimpuls in Top-WM-Muster-Morphone, primed nächsten step() Zyklus.
 
 ---
 

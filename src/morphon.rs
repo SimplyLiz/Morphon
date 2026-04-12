@@ -70,6 +70,16 @@ pub struct Synapse {
     /// EMA α=0.01 (slow decay, window ~100 medium ticks).
     #[serde(default)]
     pub reward_correlation: f64,
+
+    /// Phase 4 (ANCS-Core): Forward-importance EMA — tracks how much reward-correlated
+    /// credit flows *through* this synapse to downstream morphons.
+    /// Complements `reward_correlation` (backward: was this synapse rewarded?) with a
+    /// forward signal: does reward flow through this synapse to its targets?
+    /// EMA α=0.05 (faster decay than reward_correlation — responds to recent reward flow).
+    /// Synapses with high forward_importance are protected from pruning even when
+    /// their weight is weak or usage_count is low.
+    #[serde(default)]
+    pub forward_importance: f64,
 }
 
 impl Synapse {
@@ -91,6 +101,7 @@ impl Synapse {
             justification: None,
             last_update_step: 0,
             reward_correlation: 0.0,
+            forward_importance: 0.0,
         }
     }
 

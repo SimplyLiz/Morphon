@@ -57,6 +57,11 @@ pub struct EndoConfig {
     /// below this floor. Default 0.0 (no floor). Set to ~1.5 for supervised learning
     /// tasks where premature Mature detection must not suppress plasticity.
     pub plasticity_floor: f32,
+    /// Ablation flag: restore pre-v4.6.0 behaviour where Rule 7 energy_emergency/critical
+    /// suppresses novelty_gain (ng *= 0.2 / ng = 0.0). Default false (fixed behaviour).
+    /// Set true only for ablation studies isolating the ng-collapse fix contribution.
+    #[serde(default)]
+    pub suppress_novelty_on_energy: bool,
 }
 
 impl Default for EndoConfig {
@@ -86,6 +91,7 @@ impl Default for EndoConfig {
             tag_capture_reward_boost: 1.5,
             tag_capture_stale_ticks: 500,
             plasticity_floor: 0.0,
+            suppress_novelty_on_energy: false,
         }
     }
 }
@@ -1080,14 +1086,18 @@ impl Endoquilibrium {
             // it cuts the very signal that drives STDP and three-factor learning.
             // Under metabolic stress, heightened novelty is biologically appropriate
             // (increased alertness). Energy pressure is already expressed via plasticity.
+            // suppress_novelty_on_energy=true restores pre-v4.6.0 behaviour for ablations.
             ch.plasticity_mult = 0.0;
             ch.homeostasis_gain = 2.0;
+            if self.config.suppress_novelty_on_energy {
+                ch.novelty_gain = 0.0;
+            }
             interventions.push(Intervention {
                 rule: "energy_critical".into(),
                 vital: "energy_utilization".into(),
                 actual: energy,
                 setpoint: 0.70,
-                lever: "plasticity/homeostasis".into(),
+                lever: if self.config.suppress_novelty_on_energy { "plasticity/homeostasis/novelty" } else { "plasticity/homeostasis" }.into(),
                 adjustment: energy - 0.95,
             });
         } else if energy > 0.85 {
@@ -1095,13 +1105,17 @@ impl Endoquilibrium {
             // Prior behaviour (novelty_gain *= 0.2) was the root cause of ng-collapse
             // during MNIST training: depleted morphon energy repeatedly drove the EMA
             // toward 0.2, throttling STDP and suppressing learning mid-run.
+            // suppress_novelty_on_energy=true restores old behaviour for ablations.
             ch.plasticity_mult *= 0.3;
+            if self.config.suppress_novelty_on_energy {
+                ch.novelty_gain *= 0.2;
+            }
             interventions.push(Intervention {
                 rule: "energy_emergency".into(),
                 vital: "energy_utilization".into(),
                 actual: energy,
                 setpoint: 0.70,
-                lever: "plasticity_mult".into(),
+                lever: if self.config.suppress_novelty_on_energy { "plasticity/novelty" } else { "plasticity_mult" }.into(),
                 adjustment: energy - 0.85,
             });
         } else if energy > 0.70 {

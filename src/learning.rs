@@ -63,6 +63,12 @@ pub struct LearningParams {
     #[serde(default = "default_reward_correlation_min")]
     pub reward_correlation_min: f64,
 
+    /// Phase 4 (ANCS-Core): Minimum forward_importance to protect a synapse from pruning.
+    /// Synapses with forward_importance ≥ this survive even if weight is weak or usage is low —
+    /// they carry reward credit forward to downstream morphons.
+    #[serde(default = "default_forward_importance_min")]
+    pub forward_importance_min: f64,
+
     /// V6: Morphon desire (EMA of prediction error) threshold that triggers reconsolidation.
     /// When a morphon's desire exceeds this, its consolidated incoming synapses are
     /// un-consolidated so they can re-learn. Prevents early bad weights from being frozen.
@@ -77,6 +83,7 @@ pub struct LearningParams {
 }
 
 fn default_reward_correlation_min() -> f64 { 0.002 }
+fn default_forward_importance_min() -> f64 { 0.01 }
 fn default_theta_reconsolidate() -> f64 { 0.6 }
 fn default_reconsolidate_weight_decay() -> f64 { 0.8 }
 
@@ -101,6 +108,7 @@ impl Default for LearningParams {
             heterosynaptic_depression: 0.002, // slight depression on all inputs when post fires
             tag_accumulation_rate: 0.3,       // moderate — between instant (1.0) and v2.0.0's sluggish (0.05)
             reward_correlation_min: default_reward_correlation_min(),
+            forward_importance_min: default_forward_importance_min(),
             theta_reconsolidate: default_theta_reconsolidate(),
             reconsolidate_weight_decay: default_reconsolidate_weight_decay(),
         }
@@ -229,6 +237,12 @@ pub fn apply_weight_update(
     synapse.reward_correlation =
         synapse.reward_correlation * 0.99 + synapse.eligibility.abs() * r.abs() * 0.01;
 
+    // Phase 4 (ANCS-Core): Forward-importance — reward-correlated credit flowing
+    // through this synapse. Faster EMA (α=0.05) than reward_correlation (α=0.01)
+    // so it tracks recent reward flow rather than lifetime history.
+    synapse.forward_importance =
+        synapse.forward_importance * 0.95 + synapse.eligibility.abs() * r.abs() * 0.05;
+
     // Standard three-factor: fast eligibility × receptor-gated modulation
     // Consolidated synapses get reduced updates (10% residual plasticity at level=1.0)
     let consolidation_scale = 1.0 - synapse.consolidation_level * 0.9;
@@ -290,6 +304,9 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         // V6: Protect synapses with high forward-reference density — they carry
         // reward-correlated signal even when their weight is currently weak.
         && synapse.reward_correlation < params.reward_correlation_min
+        // Phase 4: Protect synapses with high forward-importance — reward flows
+        // through them to downstream morphons regardless of their own weight.
+        && synapse.forward_importance < params.forward_importance_min
 }
 
 /// V6: Contradiction-Driven Reconsolidation — un-consolidate synapses whose

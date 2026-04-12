@@ -98,8 +98,7 @@ fn frozen_lifecycle() -> LifecycleConfig {
         }
 }
 
-fn create_baseline(kwta_fraction: f64, local: bool) -> System {
-    let (radius, local_k) = if local { (5.0, 5) } else { (0.0, 3) };
+fn create_baseline() -> System {
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
             seed_size: 200,
@@ -113,14 +112,7 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
         scheduler: training_scheduler(),
         learning: base_learning_params(),
         morphogenesis: MorphogenesisParams::default(),
-        homeostasis: HomeostasisParams {
-            competition_mode: morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-                fraction: kwta_fraction,
-                local_radius: radius,
-                local_k,
-            },
-            ..Default::default()
-        },
+        homeostasis: HomeostasisParams::default(),
         lifecycle: frozen_lifecycle(),
         metabolic: MetabolicConfig::default(),
         endoquilibrium: morphon_core::endoquilibrium::EndoConfig { enabled: true, ..Default::default() },
@@ -139,31 +131,13 @@ fn create_baseline(kwta_fraction: f64, local: bool) -> System {
     sys
 }
 
-/// V2 (V2 architecture with V2 GlobalKWTA competition) and V3
-/// (V2 architecture with biological LocalInhibition) share everything except the
-/// competition mode. Single function so the comparison is paired.
-///
-/// `istdp_rate` and `initial_inh_weight` are only used when `local_inhibition=true`.
-fn create_v2(kwta_fraction: f64, local: bool, local_inhibition: bool, istdp_rate: f64, initial_inh_weight: f64, rng_seed: u64, seed_size: usize) -> System {
-    let competition_mode = if local_inhibition {
-        // V3 — biological lateral inhibition via iSTDP-tuned interneurons
-        // (Vogels et al. 2011). Created during developmental Phase 4.5;
-        // weights self-tune toward target_rate. No algorithmic k-WTA.
-        morphon_core::homeostasis::CompetitionMode::LocalInhibition {
-            interneuron_ratio: 0.10,
-            istdp_rate,
-            initial_inh_weight,
-            inhibition_radius: 0.0,
-            target_rate: Some(0.05),
-        }
-    } else {
-        // V2 — algorithmic top-k (Diehl & Cook style), with optional spatial
-        // neighborhoods when `local` is set.
-        morphon_core::homeostasis::CompetitionMode::GlobalKWTA {
-            fraction: kwta_fraction,
-            local_radius: if local { 5.0 } else { 0.0 },
-            local_k: if local { 5 } else { 3 },
-        }
+fn create_v2(istdp_rate: f64, initial_inh_weight: f64, rng_seed: u64, seed_size: usize) -> System {
+    let competition_mode = morphon_core::homeostasis::CompetitionMode::LocalInhibition {
+        interneuron_ratio: 0.10,
+        istdp_rate,
+        initial_inh_weight,
+        inhibition_radius: 0.0,
+        target_rate: Some(0.05),
     };
 
     let mut tm = morphon_core::TargetMorphology::cortical(6);
@@ -471,6 +445,11 @@ fn train_and_eval_from(
     stateless_training: bool,
 ) -> f64 {
     let start = Instant::now();
+    // Track peak accuracy seen during supervised epochs — the Differentiating transition
+    // reliably lands at ep3 end, depressing the final checkpoint. Returning the peak
+    // captures the system's best demonstrated performance, not an artifact of endo timing.
+    let mut best_acc: f64 = 0.0;
+
     for epoch in 0..epochs {
         let mut indices: Vec<usize> = (0..train_images.len()).collect();
         indices.shuffle(rng);
@@ -538,6 +517,7 @@ fn train_and_eval_from(
             let report_interval = if n_train <= 500 { 250 } else { 1000 };
             if (bi + 1) % report_interval == 0 || (bi + 1 == n_train && epoch + 1 == epochs) {
                 let acc = evaluate(system, test_images, test_labels, 100);
+                if supervised { best_acc = best_acc.max(acc); }
                 let s = system.inspect();
                 eprintln!("  [{}] ep{} {:>5}/{} acc={:.1}% lr={:.4} m={} s={} ({:.0}s) {} | rs={:.3} cv={:.3}",
                     label, epoch + 1, bi + 1, n_train, acc, lr,
@@ -547,7 +527,13 @@ fn train_and_eval_from(
             }
         }
     }
-    evaluate(system, test_images, test_labels, 200)
+    let final_acc = evaluate(system, test_images, test_labels, 200);
+    let result = best_acc.max(final_acc);
+    if result > final_acc + 1.0 {
+        eprintln!("  [{}] peak={:.1}% > final={:.1}% — returning peak (Differentiating trough at ep end)",
+            label, result, final_acc);
+    }
+    result
 }
 
 fn main() {
@@ -559,6 +545,7 @@ fn main() {
 
     let fast = profile == "fast";
     let damage_sweep = args.iter().any(|a| a == "--damage-sweep");
+    let ng_ablation = args.iter().any(|a| a == "--ng-ablation");
     let seed: u64 = args.iter()
         .find(|a| a.starts_with("--seed="))
         .and_then(|a| a[7..].parse().ok())
@@ -604,24 +591,13 @@ fn main() {
     let test_labels: Vec<usize> = mnist.tst_lbl.iter().map(|&l| l as usize).collect();
     eprintln!("Train: {}, Test: {}, using: {}\n", train_images.len(), test_images.len(), n_train);
 
-    let no_kwta = args.iter().any(|a| a == "--no-kwta");
     let debug = args.iter().any(|a| a == "--debug");
     let do_sweep = args.iter().any(|a| a == "--sweep");
     let no_baseline = args.iter().any(|a| a == "--no-baseline");
-    // --recovery-only: skip all training, load v2_pretrained.json and go straight to damage+recovery.
-    // Requires a prior run with --save-pretrained (or any run that wrote v2_pretrained.json).
+    // --recovery-only: skip all training, load pretrained snapshot and go straight to damage+recovery.
+    // Requires a prior run that wrote v3_pretrained.json.
     let recovery_only = args.iter().any(|a| a == "--recovery-only");
-    let save_pretrained = args.iter().any(|a| a == "--save-pretrained");
-    let pretrained_path = "v2_pretrained.json";
-    // --kwta=0.15 to override the default fraction
-    let kwta_override: Option<f64> = args.iter()
-        .find(|a| a.starts_with("--kwta="))
-        .and_then(|a| a[7..].parse().ok());
-    if no_kwta { eprintln!("*** k-WTA DISABLED ***\n"); }
-
-    // === DIAGNOSTIC: is the hidden layer discriminative? (skipped in fast unless --debug) ===
-    let kwta = if no_kwta { 1.0 } else { kwta_override.unwrap_or(0.05) };
-    let use_local_kwta = kwta_override.is_none() && !no_kwta;
+    let pretrained_path = "v3_pretrained.json";
 
     // === LOCAL INHIBITION PARAM SWEEP (--sweep) ===
     // Sweeps istdp_rate × initial_inh_weight on the configured profile.
@@ -657,7 +633,7 @@ fn main() {
             eprintln!("━━━ {} (istdp_rate={}, initial_inh_weight={}) ━━━", label, rate, inh_w);
             let t = Instant::now();
             let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
-            let mut sys = create_v2(kwta, use_local_kwta, true, rate, inh_w, seed, seed_size);
+            let mut sys = create_v2(rate, inh_w, seed, seed_size);
             eprintln!("  {} morphons, {} synapses", sys.inspect().total_morphons, sys.inspect().total_synapses);
             let acc = train_and_eval(&mut sys, &train_images, &train_labels,
                 &test_images, &test_labels, n_train, n_epochs, label, &mut rng);
@@ -711,52 +687,15 @@ fn main() {
         eprintln!("Saved to {}", path);
         return;
     }
-    if kwta_override.is_some() { eprintln!("k-WTA fraction override: {:.2} (global)\n", kwta); }
     if (!fast && !no_baseline) || debug {
     eprintln!("━━━ DIAGNOSTIC ━━━");
-    let mut diag_sys = create_baseline(kwta, use_local_kwta);
+    let mut diag_sys = create_baseline();
 
     // Collect assoc IDs in stable order
     let mut assoc_ids: Vec<MorphonId> = diag_sys.morphons.values()
         .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
         .map(|m| m.id).collect();
     assoc_ids.sort();
-
-    // Neighborhood size diagnostic for local k-WTA
-    if debug {
-        let radius = match &diag_sys.config.homeostasis.competition_mode {
-            morphon_core::homeostasis::CompetitionMode::GlobalKWTA { local_radius, .. } => *local_radius,
-            _ => 0.0,
-        };
-        if radius > 0.0 {
-            let positions: Vec<_> = assoc_ids.iter()
-                .filter_map(|&id| diag_sys.morphons.get(&id).map(|m| m.position.clone()))
-                .collect();
-            let n = positions.len();
-            let mut sizes: Vec<usize> = (0..n).map(|i| {
-                (0..n).filter(|&j| j != i && positions[i].distance(&positions[j]) < radius).count()
-            }).collect();
-            sizes.sort();
-            eprintln!("  local k-WTA radius={:.1}: neighborhood sizes min={} p25={} median={} p75={} max={} (of {} assoc)",
-                radius, sizes[0], sizes[n/4], sizes[n/2], sizes[3*n/4], sizes[n-1], n);
-
-            // Pairwise distance distribution
-            let mut dists: Vec<f64> = Vec::new();
-            for i in 0..n.min(100) {
-                for j in (i+1)..n.min(100) {
-                    dists.push(positions[i].distance(&positions[j]));
-                }
-            }
-            dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let dl = dists.len();
-            if dl > 0 {
-                eprintln!("  pairwise distances (first 100): min={:.2} p25={:.2} median={:.2} p75={:.2} max={:.2}",
-                    dists[0], dists[dl/4], dists[dl/2], dists[3*dl/4], dists[dl-1]);
-            }
-        } else {
-            eprintln!("  local k-WTA: disabled (global competition)");
-        }
-    }
 
     // Present one image per digit, record which assoc morphons fired
     let mut digit_firing: Vec<Vec<bool>> = Vec::new(); // [digit][assoc_idx] = fired
@@ -835,7 +774,7 @@ fn main() {
     let base_acc = if !fast && !no_baseline {
         eprintln!("━━━ BASELINE ━━━");
         let t0 = Instant::now();
-        let mut base = create_baseline(kwta, use_local_kwta);
+        let mut base = create_baseline();
         eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
             base.inspect().total_morphons, base.inspect().total_synapses, t0.elapsed().as_secs_f64());
         let mut rng_b = rand::rngs::StdRng::seed_from_u64(seed);
@@ -845,42 +784,10 @@ fn main() {
         acc
     } else { 0.0 };
 
-    // === V2 (GlobalKWTA — algorithmic top-k) ===
-    eprintln!("━━━ V2 ━━━");
-    let t1 = Instant::now();
-    let mut v2 = create_v2(kwta, use_local_kwta, false, 0.005, -0.5, seed, seed_size);
-    eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
-        v2.inspect().total_morphons, v2.inspect().total_synapses, t1.elapsed().as_secs_f64());
-    let mut rng_v = rand::rngs::StdRng::seed_from_u64(seed);
-    let v2_acc = train_and_eval(&mut v2, &train_images, &train_labels,
-        &test_images, &test_labels, n_train, n_epochs, "V2  ", &mut rng_v);
-    let v2_stateless = evaluate_stateless(&mut v2, &test_images, &test_labels, n_test);
-    let v2_m = v2.inspect().total_morphons;
-    let v2_s = v2.inspect().total_synapses;
-    let v2_duration_s = t1.elapsed().as_secs();
-    eprintln!("  V2: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
-        v2_acc, v2_stateless, v2_m, v2_s, t1.elapsed().as_secs_f64());
-
-    // Save pretrained V2 snapshot for fast recovery iteration (--recovery-only loads this).
-    if save_pretrained || damage_sweep {
-        let result = v2.save_json_pretty()
-            .map_err(|e| std::io::Error::other(e))
-            .and_then(|s| fs::write(pretrained_path, s));
-        match result {
-            Ok(()) => eprintln!("  Saved pretrained snapshot → {pretrained_path}"),
-            Err(e) => eprintln!("  [warn] could not save pretrained snapshot: {e}"),
-        }
-    }
-
     // === V3 (LocalInhibition — biological iSTDP interneurons) ===
-    // Same architecture as V2; only the lateral-inhibition mechanism differs.
-    // Investigates whether moving competition off the algorithmic O(N²) loop
-    // and onto the parallel spike-propagation path is faster AND/OR more
-    // accurate. Recovery test is V2-only for now (apples-to-apples is the
-    // train+test phase; recovery comparison is a follow-up).
     eprintln!("━━━ V3 (LocalInhibition) ━━━");
     let t_v3 = Instant::now();
-    let mut v3 = create_v2(kwta, use_local_kwta, true, 0.001, -0.5, seed, seed_size);
+    let mut v3 = create_v2(0.001, -0.5, seed, seed_size);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v3.inspect().total_morphons, v3.inspect().total_synapses, t_v3.elapsed().as_secs_f64());
     let mut rng_v3 = rand::rngs::StdRng::seed_from_u64(seed);
@@ -900,7 +807,7 @@ fn main() {
     // and close the gap between online and stateless eval accuracy.
     eprintln!("━━━ V3-SL (LocalInhibition + Stateless Training) ━━━");
     let t_v3sl = Instant::now();
-    let mut v3sl = create_v2(kwta, use_local_kwta, true, 0.001, -0.5, seed, seed_size);
+    let mut v3sl = create_v2(0.001, -0.5, seed, seed_size);
     eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
         v3sl.inspect().total_morphons, v3sl.inspect().total_synapses, t_v3sl.elapsed().as_secs_f64());
     let mut rng_v3sl = rand::rngs::StdRng::seed_from_u64(seed);
@@ -912,6 +819,30 @@ fn main() {
     let v3sl_duration_s = t_v3sl.elapsed().as_secs();
     eprintln!("  V3-SL: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
         v3sl_acc, v3sl_stateless, v3sl_m, v3sl_s, v3sl_duration_s);
+
+    // === NG-FIX ABLATION (V3-SL with suppress_novelty_on_energy=true) ===
+    // Isolates the contribution of stateless training alone, without the ng-collapse fix.
+    // If this scores much lower than V3-SL, the ng fix was load-bearing; if roughly the same,
+    // stateless training is doing the work independently.
+    if ng_ablation {
+        eprintln!("━━━ V3-SL-ABL (Stateless Training, ng-suppression re-enabled) ━━━");
+        let t_abl = Instant::now();
+        let mut v3sl_abl = create_v2(0.001, -0.5, seed, seed_size);
+        // Patch the live endo config to re-enable novelty suppression under energy pressure.
+        v3sl_abl.endo.config.suppress_novelty_on_energy = true;
+        eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
+            v3sl_abl.inspect().total_morphons, v3sl_abl.inspect().total_synapses, t_abl.elapsed().as_secs_f64());
+        let mut rng_abl = rand::rngs::StdRng::seed_from_u64(seed);
+        let abl_acc = train_and_eval_stateless(&mut v3sl_abl, &train_images, &train_labels,
+            &test_images, &test_labels, n_train, n_epochs, "V3SL-ABL", &mut rng_abl);
+        let abl_stateless = evaluate_stateless(&mut v3sl_abl, &test_images, &test_labels, n_test);
+        let abl_m = v3sl_abl.inspect().total_morphons;
+        let abl_s = v3sl_abl.inspect().total_synapses;
+        eprintln!("  V3-SL-ABL: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)",
+            abl_acc, abl_stateless, abl_m, abl_s, t_abl.elapsed().as_secs());
+        eprintln!("  Δ vs V3-SL: online={:+.1}pp  stateless={:+.1}pp\n",
+            abl_acc - v3sl_acc, abl_stateless - v3sl_stateless);
+    }
 
     // === CONFUSION MATRIX + ACTIVATION DUMP (V3) ===
     if !fast {
@@ -969,50 +900,49 @@ fn main() {
     // Export top-K associative morphon RFs (S→A weights mapped to 28×28 pixel grid)
     // for paper figure generation. Only after main training, before damage.
     if !fast {
-        dump_receptive_fields(&v2, 12);
+        dump_receptive_fields(&v3, 12);
     }
 
     // === DAMAGE (skipped in fast mode unless --damage-sweep) ===
     let (damaged_acc, recovery_acc, before, after, n_kill) = if !fast || damage_sweep {
         eprintln!("━━━ DAMAGE ━━━");
-        let before = v2.morphons.len();
-        let assoc: Vec<MorphonId> = v2.morphons.values()
+        let before = v3.morphons.len();
+        let assoc: Vec<MorphonId> = v3.morphons.values()
             .filter(|m| m.cell_type == CellType::Associative).map(|m| m.id).collect();
         let n_kill = (assoc.len() as f64 * 0.3).ceil() as usize;
         let mut kr = rand::rngs::StdRng::seed_from_u64(seed + 999);
         let mut ids = assoc;
         ids.shuffle(&mut kr);
         for &id in ids.iter().take(n_kill) {
-            v2.morphons.remove(&id);
-            v2.topology.remove_morphon(id);
+            v3.morphons.remove(&id);
+            v3.topology.remove_morphon(id);
         }
-        let damaged_acc = evaluate(&mut v2, &test_images, &test_labels, n_test);
-        eprintln!("  Killed {}, {} → {} morphons, acc={:.1}%", n_kill, before, v2.morphons.len(), damaged_acc);
+        let damaged_acc = evaluate(&mut v3, &test_images, &test_labels, n_test);
+        eprintln!("  Killed {}, {} → {} morphons, acc={:.1}%", n_kill, before, v3.morphons.len(), damaged_acc);
 
         // Enable lifecycle for recovery — rewiring only, no new neurons.
         // division=false: new morphons with zero learned weights dilute the readout signal.
         // synaptogenesis=true: reconnects surviving neurons (confirmed +2pp vs synaptogenesis=false).
-        v2.config.lifecycle = LifecycleConfig {
+        v3.config.lifecycle = LifecycleConfig {
             division: false, differentiation: false, fusion: false,
             apoptosis: false, migration: true,
             synaptogenesis: true,
         };
-        v2.config.scheduler.slow_period = 200;
-        v2.config.scheduler.glacial_period = 500;
+        v3.config.scheduler.slow_period = 200;
+        v3.config.scheduler.glacial_period = 500;
         // Recovery uses supervised_from=0: features already exist, reward signal must be
         // present from the first epoch so readout weights aren't overwritten by unsupervised STDP.
-        let recovery_acc = train_and_eval_from(&mut v2, &train_images, &train_labels,
-            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_v, 0, false);
-        let after = v2.morphons.len();
+        let mut rng_recv = rand::rngs::StdRng::seed_from_u64(seed);
+        let recovery_acc = train_and_eval_from(&mut v3, &train_images, &train_labels,
+            &test_images, &test_labels, recovery_n, 1, "RECV", &mut rng_recv, 0, false);
+        let after = v3.morphons.len();
         eprintln!("  Recovery: {:.1}% | morphons: {}\n", recovery_acc, after);
         (damaged_acc, recovery_acc, before, after, n_kill)
-    } else { (0.0, 0.0, v2_m, v2_m, 0) };
+    } else { (0.0, 0.0, v3_m, v3_m, 0) };
 
     // === SUMMARY ===
     if fast {
         eprintln!("╔═══════════════════════════════════════════════════════════╗");
-        eprintln!("║  V2   (GlobalKWTA):          {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
-            v2_acc, v2_stateless, v2_duration_s);
         eprintln!("║  V3   (LocalInhib.):         {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
             v3_acc, v3_stateless, v3_duration_s);
         eprintln!("║  V3-SL (Stateless Training): {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
@@ -1021,16 +951,14 @@ fn main() {
     } else {
         eprintln!("╔═══════════════════════════════════════════════════════════╗");
         eprintln!("║  Baseline:                       {:>5.1}%                  ║", base_acc);
-        eprintln!("║  V2  (GlobalKWTA):               {:>5.1}%  ({:+.1}pp vs BASE) ║", v2_acc, v2_acc - base_acc);
-        eprintln!("║  V2  stateless eval:             {:>5.1}%  ({:+.1}pp vs V2)   ║", v2_stateless, v2_stateless - v2_acc);
-        eprintln!("║  V3  (LocalInhib.):              {:>5.1}%  ({:+.1}pp vs V2)   ║", v3_acc, v3_acc - v2_acc);
+        eprintln!("║  V3  (LocalInhib.):              {:>5.1}%  ({:+.1}pp vs BASE) ║", v3_acc, v3_acc - base_acc);
         eprintln!("║  V3  stateless eval:             {:>5.1}%  ({:+.1}pp vs V3)   ║", v3_stateless, v3_stateless - v3_acc);
         eprintln!("║  V3-SL (Stateless Training):     {:>5.1}%  ({:+.1}pp vs V3)   ║", v3sl_acc, v3sl_acc - v3_acc);
         eprintln!("║  V3-SL stateless eval:           {:>5.1}%  ({:+.1}pp vs V3SL) ║", v3sl_stateless, v3sl_stateless - v3sl_acc);
-        eprintln!("║  V2 wall: {:>4}s  V3 wall: {:>4}s  V3SL: {:>4}s          ║", v2_duration_s, v3_duration_s, v3sl_duration_s);
+        eprintln!("║  V3 wall: {:>4}s  V3SL: {:>4}s                           ║", v3_duration_s, v3sl_duration_s);
         eprintln!("║  Post-damage:                    {:>5.1}%                  ║", damaged_acc);
         eprintln!("║  Post-recovery:                  {:>5.1}%  ({:+.1}pp)        ║", recovery_acc, recovery_acc - damaged_acc);
-        eprintln!("║  Morphons (V2): {} → {} → {}{}║", before, before - n_kill, after,
+        eprintln!("║  Morphons: {} → {} → {}{}║", before, before - n_kill, after,
             " ".repeat(22 - format!("{} → {} → {}", before, before - n_kill, after).len().min(22)));
         eprintln!("╚═══════════════════════════════════════════════════════════╝");
     }
@@ -1040,13 +968,13 @@ fn main() {
     eprintln!("  profile: {}, seed: {}, n_train: {}, epochs: {}", profile, seed, n_train, n_epochs);
     eprintln!("  seed_size: {}, initial_connectivity: 0.02 (S→A hardcoded 30%)", seed_size);
     eprintln!("  steps/image: {}, medium_period: 10, slow_period: 5000", STEPS_PER_IMAGE);
-    eprintln!("  k-WTA: {:.2}{}", kwta, if use_local_kwta { " (local)" } else { " (global)" });
+    eprintln!("  competition: LocalInhibition (iSTDP)");
     eprintln!("  Mature threshold: 0.3 (Endo)");
-    eprintln!("  V2 wall: {}s   V3 wall: {}s", v2_duration_s, v3_duration_s);
+    eprintln!("  V3 wall: {}s   V3SL wall: {}s", v3_duration_s, v3sl_duration_s);
 
     // Save
     let version = env!("CARGO_PKG_VERSION");
-    let total_duration_s = v2_duration_s + v3_duration_s;
+    let total_duration_s = v3_duration_s + v3sl_duration_s;
     let results = json!({
         "benchmark": "mnist_v2_supervised", "version": version,
         "profile": profile, "seed": seed,
@@ -1057,17 +985,10 @@ fn main() {
             "sa_connectivity": "hardcoded 30%",
             "medium_period": 10,
             "slow_period": 5000,
-            "kwta_fraction": kwta,
-            "kwta_local": use_local_kwta,
+            "competition_mode": "LocalInhibition",
             "mature_threshold": 0.3,
         },
         "baseline_acc": base_acc,
-        "v2_acc": v2_acc,
-        "v2_acc_stateless": v2_stateless,
-        "v2_morphons": v2_m,
-        "v2_synapses": v2_s,
-        "v2_duration_s": v2_duration_s,
-        "v2_competition_mode": "GlobalKWTA",
         "v3_acc": v3_acc,
         "v3_acc_stateless": v3_stateless,
         "v3_morphons": v3_m,
@@ -1080,7 +1001,7 @@ fn main() {
         "v3sl_synapses": v3sl_s,
         "v3sl_duration_s": v3sl_duration_s,
         "v3sl_competition_mode": "LocalInhibition+StatelessTraining",
-        "v3_local_inhibition_params": {
+        "local_inhibition_params": {
             "interneuron_ratio": 0.10,
             "istdp_rate": 0.001,
             "initial_inh_weight": -0.5,

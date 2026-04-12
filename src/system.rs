@@ -268,8 +268,6 @@ pub struct System {
     pub(crate) total_born: usize,
     /// Cumulative morphon death count.
     pub(crate) total_died: usize,
-    /// k-WTA winners from current step (for post-step threshold boost).
-    pub(crate) kwta_winners: Vec<MorphonId>,
     /// Per-morphon firing counts for winner diversity entropy. Reset per episode.
     pub(crate) episode_fire_counts: HashMap<MorphonId, u64>,
     /// Cumulative transdifferentiation count.
@@ -429,7 +427,6 @@ impl System {
             diag: Diagnostics::default(),
             total_born: 0,
             total_died: 0,
-            kwta_winners: Vec::new(),
             episode_fire_counts: HashMap::new(),
             total_transdifferentiations: 0,
             recent_performance: 0.0,
@@ -722,155 +719,8 @@ impl System {
         let spikes_delivered = delivered.len();
 
         // 3. Lateral inhibition BEFORE firing decision.
-        //    In GlobalKWTA mode: sort and suppress non-winners.
-        //    In LocalInhibition mode: inhibitory interneurons handle this via
-        //    spike propagation (negative-weight synapses already delivered in step 2).
-        {
-            use crate::homeostasis::CompetitionMode;
-            match &self.config.homeostasis.competition_mode {
-                CompetitionMode::LocalInhibition { .. } => {
-                    // No algorithmic k-WTA. Inhibitory interneurons suppress
-                    // neighbors through normal spike delivery (step 2).
-                    // iSTDP tunes their weights on the medium path.
-                    self.kwta_winners.clear();
-                }
-                CompetitionMode::GlobalKWTA {
-                    fraction,
-                    local_radius,
-                    local_k,
-                } => {
-                    let kwta_fraction = *fraction;
-                    let local_radius = *local_radius;
-                    let local_k = *local_k;
-
-                    // Collect associative/stem morphons with degree-normalized input.
-                    let mut assoc_data: Vec<(MorphonId, f64)> = self
-                        .morphons
-                        .values()
-                        .filter(|m| {
-                            m.cell_type == CellType::Associative || m.cell_type == CellType::Stem
-                        })
-                        .map(|m| {
-                            let in_degree = self.topology.degree(m.id).max(1);
-                            (m.id, m.input_accumulator / in_degree as f64)
-                        })
-                        .collect();
-
-                    if !assoc_data.is_empty() {
-                        let winners = if local_radius > 0.0 {
-                            // === LOCAL k-WTA: spatial neighborhoods in Poincare ball ===
-                            let local_k = local_k;
-                            let mut global_winners: std::collections::HashSet<MorphonId> =
-                                std::collections::HashSet::new();
-
-                            // Cache positions to avoid repeated borrow
-                            let positions: Vec<(MorphonId, f64, crate::types::HyperbolicPoint)> =
-                                assoc_data
-                                    .iter()
-                                    .filter_map(|&(id, input)| {
-                                        self.morphons
-                                            .get(&id)
-                                            .map(|m| (id, input, m.position.clone()))
-                                    })
-                                    .collect();
-
-                            // Hoisted neighborhood buffer — reused across all i to
-                                // eliminate the per-iteration `.collect()` allocation
-                                // (was the #1 hot site post edge-cache fix, ~600 samples).
-                            let mut neighborhood: Vec<(MorphonId, f64)> =
-                                Vec::with_capacity(positions.len());
-                            for i in 0..positions.len() {
-                                let (_center_id, _, ref center_pos) = positions[i];
-
-                                // Find neighbors within radius (including self)
-                                neighborhood.clear();
-                                for &(id, input, ref pos) in &positions {
-                                    if center_pos.distance(pos) < local_radius {
-                                        neighborhood.push((id, input));
-                                    }
-                                }
-
-                                if neighborhood.len() <= local_k {
-                                    // Everyone wins in tiny neighborhoods
-                                    for &(id, _) in &neighborhood {
-                                        global_winners.insert(id);
-                                    }
-                                    continue;
-                                }
-
-                                // Top-k by input via partial selection (O(N) instead
-                                // of O(N log N) for full sort — we only need the
-                                // unordered top-k for the winner set).
-                                let k = local_k.min(neighborhood.len());
-                                neighborhood.select_nth_unstable_by(k - 1, |a, b| {
-                                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                                for &(id, _) in &neighborhood[..k] {
-                                    global_winners.insert(id);
-                                }
-                            }
-
-                            // Suppress non-winners + anti-Hebbian LTD signal
-                            for &(id, _) in &assoc_data {
-                                if !global_winners.contains(&id) {
-                                    if let Some(m) = self.morphons.get_mut(&id) {
-                                        m.input_accumulator = 0.0;
-                                    }
-                                    let incoming = self.topology.incoming_synapses_mut(id);
-                                    for (_, edge_idx) in incoming {
-                                        if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                                            syn.post_trace = (syn.post_trace + 0.3).min(1.0);
-                                        }
-                                    }
-                                }
-                            }
-
-                            global_winners.into_iter().collect::<Vec<_>>()
-                        } else {
-                            // === GLOBAL k-WTA (legacy) ===
-                            let k = (assoc_data.len() as f64 * kwta_fraction).ceil() as usize;
-                            let k = k.max(3).min(20).min(assoc_data.len());
-
-                            // Use select_nth_unstable for O(N) partitioning instead of O(N log N) sort.
-                            // We only need top-k, not full ordering.
-                            if k < assoc_data.len() {
-                                assoc_data.select_nth_unstable_by(k, |a, b| {
-                                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-                                });
-                            }
-
-                            // Suppress non-winners AND inject anti-Hebbian LTD signal.
-                            // Biology: lateral inhibition hyperpolarizes losers, driving LTD
-                            // on their active incoming synapses. Without this, non-winners
-                            // get zero learning signal and never specialize away from shared
-                            // initial weight patterns → mode collapse on classification tasks.
-                            let suppressed_ids: Vec<MorphonId> =
-                                assoc_data[k..].iter().map(|(id, _)| *id).collect();
-                            for &id in &suppressed_ids {
-                                if let Some(m) = self.morphons.get_mut(&id) {
-                                    m.input_accumulator = 0.0;
-                                }
-                            }
-                            // Inject post_trace on suppressed neurons' incoming synapses so
-                            // that pre-fired sensory neurons drive LTD (a_minus × post_trace).
-                            // This teaches suppressed neurons "this input is not yours."
-                            for &id in &suppressed_ids {
-                                let incoming = self.topology.incoming_synapses_mut(id);
-                                for (_, edge_idx) in incoming {
-                                    if let Some(syn) = self.topology.synapse_mut(edge_idx) {
-                                        syn.post_trace = (syn.post_trace + 0.3).min(1.0);
-                                    }
-                                }
-                            }
-
-                            assoc_data[..k].iter().map(|(id, _)| *id).collect()
-                        };
-
-                        self.kwta_winners = winners;
-                    }
-                } // end GlobalKWTA
-            } // end match competition_mode
-        }
+        //    Inhibitory interneurons suppress neighbors through spike delivery (step 2).
+        //    iSTDP tunes their synapse weights on the medium path to maintain target firing rate.
 
         // 4. Update all Morphon states (integrate input, fire/not-fire).
         let metabolic = &self.config.metabolic;
@@ -915,24 +765,21 @@ impl System {
 
         // Extract iSTDP params once — used in both the post-spike loop below
         // and the pre-spike loop inside the spike-delivery section further down.
-        let istdp_params: Option<(f64, f64)> = {
+        let istdp_params: (f64, f64) = {
             use crate::homeostasis::CompetitionMode;
-            if let CompetitionMode::LocalInhibition { istdp_rate, target_rate, .. } =
-                &self.config.homeostasis.competition_mode
-            {
-                let eta = *istdp_rate;
-                let rho0 = target_rate.unwrap_or_else(|| self.endo.target_assoc_firing_rate());
-                let tau = self.config.learning.tau_trace;
-                Some((eta, 2.0 * rho0 * tau))
-            } else {
-                None
-            }
+            let CompetitionMode::LocalInhibition { istdp_rate, target_rate, .. } =
+                &self.config.homeostasis.competition_mode;
+            let eta = *istdp_rate;
+            let rho0 = target_rate.unwrap_or_else(|| self.endo.target_assoc_firing_rate());
+            let tau = self.config.learning.tau_trace;
+            (eta, 2.0 * rho0 * tau)
         };
 
         // iSTDP post-spike (Vogels 2011): for each fired excitatory morphon, nudge
         // its incoming inhibitory synapses. Δw = -η × (pre_trace - α).
         // Runs per fast tick — O(fired_exc × avg_inh_in) ≈ very small.
-        if let Some((eta, alpha)) = istdp_params {
+        {
+            let (eta, alpha) = istdp_params;
             let fired_exc_ids: Vec<MorphonId> = self
                 .morphons
                 .values()
@@ -1078,30 +925,17 @@ impl System {
         }
 
         // 5. Adaptive threshold boost (Diehl & Cook).
-        //    In GlobalKWTA mode: boost only k-WTA winners (backward compatible).
-        //    In LocalInhibition mode: boost any fired Associative/Stem morphon.
+        //    Boost any fired Associative/Stem morphon (LocalInhibition determines who fired).
         {
             let boost = self.config.homeostasis.winner_boost
                 * self.endo.channels.winner_adaptation_mult as f64;
             if boost > 0.0 {
-                use crate::homeostasis::CompetitionMode;
-                match &self.config.homeostasis.competition_mode {
-                    CompetitionMode::LocalInhibition { .. } => {
-                        for m in self.morphons.values_mut() {
-                            if m.fired
-                                && (m.cell_type == CellType::Associative
-                                    || m.cell_type == CellType::Stem)
-                            {
-                                m.threshold += boost;
-                            }
-                        }
-                    }
-                    _ => {
-                        for &id in &self.kwta_winners {
-                            if let Some(m) = self.morphons.get_mut(&id) {
-                                m.threshold += boost;
-                            }
-                        }
+                for m in self.morphons.values_mut() {
+                    if m.fired
+                        && (m.cell_type == CellType::Associative
+                            || m.cell_type == CellType::Stem)
+                    {
+                        m.threshold += boost;
                     }
                 }
             }
@@ -1132,20 +966,18 @@ impl System {
                         "stale edge_idx {raw}: target mismatch (got {tgt:?}, want {:?})", spike.target);
                 }
                 // iSTDP pre-spike: check source cell type before mutating topology.
-                let src_is_inh = istdp_params.is_some()
-                    && self
-                        .morphons
-                        .get(&spike.source)
-                        .map(|m| m.cell_type == CellType::InhibitoryInterneuron)
-                        .unwrap_or(false);
+                let src_is_inh = self
+                    .morphons
+                    .get(&spike.source)
+                    .map(|m| m.cell_type == CellType::InhibitoryInterneuron)
+                    .unwrap_or(false);
                 if let Some(synapse) = self.topology.synapse_mut(ei) {
                     synapse.pre_trace += 1.0;
                     // iSTDP pre (Vogels 2011): Δw = -η × post_trace.
                     // Strengthens inhibition when inhibitory pre fires and post was recently active.
                     if src_is_inh {
-                        if let Some((eta, _)) = istdp_params {
-                            crate::learning::istdp_pre(synapse, eta);
-                        }
+                        let (eta, _) = istdp_params;
+                        crate::learning::istdp_pre(synapse, eta);
                     }
                 }
             }
@@ -1244,7 +1076,7 @@ impl System {
         // - Critic morphons: TD-LTP — Δw = lr × δ × pre_trace (direct value learning)
         // - Actor morphons: Three-factor STDP — Δw = eligibility × M(t) × plasticity
         // This breaks the circular dependency where critic and actor share learning rules.
-        let mut captures_this_step = 0_u64;
+        let captures_this_step = 0_u64;
         if tick.medium {
             // Apply Endo's tau_eligibility_mult (reactive, capture-speed) and
             // slow_trace_leak (stage-dependent baseline) to learning params.
@@ -2064,24 +1896,22 @@ impl System {
                 );
 
                 // ANCS-Core: VBC-lite tier classification + store
-                let working_overlap = {
-                    let ids: Vec<MorphonId> = pattern.iter().map(|(id, _)| *id).collect();
-                    self.memory
-                        .working
-                        .active_patterns()
-                        .iter()
-                        .map(|wp| {
-                            let intersection =
-                                ids.iter().filter(|id| wp.pattern.contains(id)).count();
-                            let union = ids.len() + wp.pattern.len() - intersection;
-                            if union > 0 {
-                                intersection as f64 / union as f64
-                            } else {
-                                0.0
-                            }
-                        })
-                        .fold(0.0f64, f64::max)
-                };
+                let ids: Vec<MorphonId> = pattern.iter().map(|(id, _)| *id).collect();
+                let working_overlap = self.memory
+                    .working
+                    .active_patterns()
+                    .iter()
+                    .map(|wp| {
+                        let intersection =
+                            ids.iter().filter(|id| wp.pattern.contains(id)).count();
+                        let union = ids.len() + wp.pattern.len() - intersection;
+                        if union > 0 {
+                            intersection as f64 / union as f64
+                        } else {
+                            0.0
+                        }
+                    })
+                    .fold(0.0f64, f64::max);
                 let tier = classify_tier(
                     self.modulation.novelty,
                     self.modulation.reward,
@@ -2097,6 +1927,18 @@ impl System {
                 self.ancs.store(ancs_item);
                 // Track the ID for justification linking (Phase 2d)
                 self.current_ancs_item = self.ancs.last_stored_id();
+                // Populate working memory with the current episodic activation pattern.
+                // activation = mean absolute membrane potential across pattern morphons,
+                // clamped to [0,1] so it serves as a salience weight.
+                let wm_activation = {
+                    let n = ids.len().max(1);
+                    let sum: f64 = ids.iter()
+                        .filter_map(|id| self.morphons.get(id))
+                        .map(|m| m.potential.abs())
+                        .sum();
+                    (sum / n as f64).clamp(0.0, 1.0)
+                };
+                self.memory.working.store(ids, wm_activation);
             }
         }
 
@@ -2813,8 +2655,40 @@ impl System {
         self.episode_fire_counts.clear();
         // ANCS item context
         self.current_ancs_item = None;
-        // kWTA winner list
-        self.kwta_winners.clear();
+    }
+
+    /// Inject a small excitatory boost to morphons that belong to the top working-memory
+    /// pattern. Call this at the start of a new timestep (before `step()`) to let the
+    /// most-recently-active pattern bias the next processing cycle — a lightweight form of
+    /// top-down attentional priming that does not require a separate recurrent pathway.
+    ///
+    /// `strength` is the potential delta injected per morphon (typical range 0.01–0.1).
+    /// Zero or negative `strength` is a no-op.
+    pub fn feed_working_memory_feedback(&mut self, strength: f64) {
+        if strength <= 0.0 {
+            return;
+        }
+        // Take the pattern with the highest activation weight from working memory.
+        let top_pattern: Option<Vec<crate::MorphonId>> = self
+            .memory
+            .working
+            .active_patterns()
+            .iter()
+            .max_by(|a, b| a.activation.partial_cmp(&b.activation).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|wp| wp.pattern.clone());
+
+        if let Some(pattern) = top_pattern {
+            let delta = strength as f32;
+            for id in &pattern {
+                if let Some(m) = self.morphons.get_mut(id) {
+                    m.potential += strength;
+                    // Mirror into hot-array if this morphon is hot-mapped
+                    if let Some(&j) = self.hot.id_to_idx.get(id) {
+                        self.hot.voltage[j] = (self.hot.voltage[j] + delta).min(5.0);
+                    }
+                }
+            }
+        }
     }
 
     /// Inject a targeted reward at a specific output port's morphon.
@@ -3002,7 +2876,7 @@ impl System {
         // This is the supervised signal — what the output SHOULD be.
         let target_correct: f64 = 1.0;
         let target_incorrect: f64 = 0.0;
-        let n_incorrect = (self.output_ports.len() - 1).max(1) as f64;
+        let _n_incorrect = (self.output_ports.len() - 1).max(1) as f64;
 
         let assoc_ids: Vec<MorphonId> = self
             .morphons
@@ -3487,7 +3361,8 @@ impl System {
         let mut firing_count = 0;
 
         for m in self.morphons.values() {
-            *differentiation_map.entry(m.cell_type).or_insert(0usize) += 1;
+            let effective_type = if m.fused_with.is_some() { CellType::Fused } else { m.cell_type };
+            *differentiation_map.entry(effective_type).or_insert(0usize) += 1;
             max_gen = max_gen.max(m.generation);
             total_energy += m.energy;
             total_pe += m.prediction_error;

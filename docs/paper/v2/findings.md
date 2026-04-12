@@ -13,14 +13,16 @@ MORPHON operates in the Liquid State Machine regime. Offline classifiers on froz
 ### The root cause (new, v4.6.0)
 Sequential training co-adapts the readout to **inter-image temporal context** rather than per-image discriminative structure. The network accumulates transient state across images during training; the readout learns to exploit that state. When evaluated on fresh inputs (or in shuffled order), accuracy collapses because the exploited state patterns no longer hold.
 
-**Diagnostic: sequential vs shuffled evaluation (new)**
+**Diagnostic: sequential vs shuffled evaluation**
 
 | Variant | Sequential | Shuffled | Δ |
 |---------|-----------|---------|---|
-| V3 (standard) | 52.0% | 46.7% | +5.3pp |
-| V3-SL (standard) | 42.0% | 34.7% | +7.3pp |
+| V3 (run 1) | 52.0% | 46.7% | +5.3pp |
+| V3-SL (run 1) | 42.0% | 34.7% | +7.3pp |
+| V3 (ablation run) | 54.0% | 45.7% | **+8.3pp** |
+| V3-SL (ablation run) | 45.0% | 32.3% | **+12.7pp** |
 
-V3's +5.3pp advantage in sequential order directly quantifies the co-adaptation artefact.
+The gap is consistent across runs and directionally stable. V3's sequential advantage (+8.3pp) directly quantifies the co-adaptation artefact. V3-SL's larger gap (+12.7pp) confirms the plan interpretation: a system trained statelessly treats accumulated sequential state as pure noise at eval time, so it's *more* penalised by carry-over, not less.
 
 ### The fix: stateless training (V3-SL)
 Reset all transient network state (`reset_transient_state()`) before each training image. The network can no longer exploit inter-image context; the readout must learn per-image discriminative representations.
@@ -119,14 +121,90 @@ The gap for V3-SL is *larger* than for V3: a system trained statelessly is even 
 | Benchmark | Result | Notes |
 |-----------|--------|-------|
 | CartPole avg(100) | **195.1** | Solved at ep949, standard profile, seed=42 |
-| MNIST stateless (V3-SL) | **87.7%** | Standard profile, seed=42 |
-| MNIST stateless (V3) | 81.3% | Same architecture, correct evaluator |
-| MNIST online (V3) | 52.0% | Sequential eval, contaminated by temporal bleed |
+| MNIST stateless (V3-SL) | **87.7%** | Standard profile, seed=42 (prior run) |
+| MNIST stateless (V3-SL) | 87.0% | Ablation run, seed=42 — within ±1pp variance |
+| MNIST stateless (V3-SL-ABL) | 88.0% | Stateless training only, ng fix reverted — not worse |
+| MNIST stateless (V3) | 82.0% | Same architecture, correct evaluator |
+| MNIST online (V3) | 54.0% | Sequential eval, contaminated by temporal bleed |
 | ng stability | 1.60 (MNIST), 1.40 (CartPole) | Was: collapsing to 0.32 |
 
 ---
 
-## 6. What the v2 Paper Should Cover
+## 6. Ablation Study: Isolating ng-Fix vs Stateless Training Contributions
+
+### Motivation
+V3-SL's 87.7% stateless accuracy is the product of two simultaneous changes: the ng-collapse fix (Rule 7 no longer suppresses novelty_gain under energy pressure) and stateless training (reset_transient_state() before each training image). To understand how much each fix contributes independently, we need an ablation that re-enables ng suppression while keeping stateless training.
+
+### Design
+`EndoConfig.suppress_novelty_on_energy: bool` (default `false`). When `true`, restores pre-v4.6.0 behaviour: ng *= 0.2 on energy_emergency, ng = 0.0 on energy_critical.
+
+**Run with:** `cargo run --example mnist_v2 --release -- --standard --ng-ablation`
+
+The V3-SL-ABL variant runs stateless training with ng suppression re-enabled. Comparing to V3-SL:
+- If V3-SL-ABL ≈ V3-SL: stateless training does all the work; ng fix is redundant
+- If V3-SL-ABL << V3-SL: ng fix is load-bearing; the two fixes interact
+- If V3-SL-ABL ≈ V3 (sequential): stateless training alone is insufficient
+
+### Results (standard profile, seed=42, 5k×3ep)
+
+| Variant | Online | Stateless | Wall time |
+|---------|--------|-----------|-----------|
+| V2 (GlobalKWTA) | 52.0% | 81.7% | 1394s |
+| V3 (LocalInhibition) | 54.0% | 82.0% | 248s |
+| V3-SL (both fixes) | 45.0% | **87.0%** | 144s |
+| V3-SL-ABL (stateless only, ng suppression re-enabled) | 44.5% | **88.0%** | 171s |
+| Δ ABL vs V3-SL | −0.5pp | +1.0pp | — |
+
+### Interpretation
+
+**Stateless training is doing all the work.** Re-enabling ng suppression (reverting the ng-collapse fix) while keeping stateless training produces 88.0% stateless — +1.0pp *above* the full V3-SL result. The difference is within expected seed variance (~±1pp across runs), but it is clearly not negative.
+
+**The ng-fix and stateless training are independent contributions:**
+- The ng-collapse fix improves neuromodulatory stability (ng=1.60 vs 0.32) and matters for CartPole convergence and system health
+- It does *not* contribute to MNIST stateless classification accuracy, because the stateless evaluator resets state before each test image regardless of ng history
+- Stateless training resolves LSM co-adaptation; the ng-fix resolves modulatory collapse — they address different failure modes
+
+**For the v2 paper:** These should be presented as two separate contributions with separate claims. Do not claim they synergize on MNIST accuracy — the ablation shows they don't. The ng-fix is primarily a stability contribution (neuromodulation health, CartPole), and stateless training is the classification contribution.
+
+### Does stateless training stay?
+
+Yes, permanently. Removing it (reverting to sequential V3) drops stateless accuracy from ~87% to ~82% — a 5pp regression. Stateless training is not a workaround; it is the correct training protocol for a per-image classifier on a stateful substrate. The v2 paper argument: *sequential training of a stateless classifier is a category error*. `reset_transient_state()` before each training image is now the default for classification tasks.
+
+The ng-fix also stays — it solves a separate problem (modulatory collapse under energy pressure) that is real and observable independently of MNIST accuracy. Both fixes ship. Neither is removed.
+
+---
+
+## 7. Working Memory Population Fix
+
+### The problem
+`System::step()` computed `working_overlap` (used for ANCS tier classification) from the working memory contents, but never actually stored anything into working memory. The buffer was perpetually empty. `System::reset_transient_state()` cleared it correctly — but there was nothing to clear.
+
+### Fix (system.rs)
+After `self.ancs.store(ancs_item)`, add:
+```rust
+let wm_activation = ids.iter()
+    .filter_map(|id| self.morphons.get(id))
+    .map(|m| m.potential.abs())
+    .sum::<f64>() / ids.len().max(1) as f64;
+self.memory.working.store(ids, wm_activation.clamp(0.0, 1.0));
+```
+`ids` was already computed for the working_overlap Jaccard calculation; extracted to outer scope for reuse.
+
+Activation weight = mean absolute membrane potential of the pattern's morphons, clamped to [0,1]. This represents salience at encoding time.
+
+### New API: `System::feed_working_memory_feedback(strength: f64)`
+Injects a small excitatory delta to morphons belonging to the top WM pattern (by activation weight). Call before `step()` to prime the next cycle with the most recently active representation — lightweight attentional bias without a dedicated recurrent pathway.
+
+```rust
+system.feed_working_memory_feedback(0.05);
+system.step(...);
+```
+
+Mirrors into hot-arrays (`id_to_idx`) so the boost is visible to the fast integration path.
+
+---
+
+## 8. What the v2 Paper Should Cover
 
 ### New sections / major revisions needed
 1. **§ Stateless Training** — full experimental comparison V2/V3/V3-SL, sequential vs shuffled diagnostic, the category-error argument, fast vs standard profile scaling
