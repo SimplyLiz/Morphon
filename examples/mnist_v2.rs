@@ -893,6 +893,26 @@ fn main() {
     eprintln!("  V3: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
         v3_acc, v3_stateless, v3_m, v3_s, v3_duration_s);
 
+    // === V3-SL (LocalInhibition + stateless training) ===
+    // Same architecture as V3 but transient state is reset before each training image.
+    // Breaks LSM co-adaptation: the readout must learn per-image discriminative features
+    // rather than exploiting sequential temporal context. Expected to improve generalisation
+    // and close the gap between online and stateless eval accuracy.
+    eprintln!("━━━ V3-SL (LocalInhibition + Stateless Training) ━━━");
+    let t_v3sl = Instant::now();
+    let mut v3sl = create_v2(kwta, use_local_kwta, true, 0.001, -0.5, seed, seed_size);
+    eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
+        v3sl.inspect().total_morphons, v3sl.inspect().total_synapses, t_v3sl.elapsed().as_secs_f64());
+    let mut rng_v3sl = rand::rngs::StdRng::seed_from_u64(seed);
+    let v3sl_acc = train_and_eval_stateless(&mut v3sl, &train_images, &train_labels,
+        &test_images, &test_labels, n_train, n_epochs, "V3SL", &mut rng_v3sl);
+    let v3sl_stateless = evaluate_stateless(&mut v3sl, &test_images, &test_labels, n_test);
+    let v3sl_m = v3sl.inspect().total_morphons;
+    let v3sl_s = v3sl.inspect().total_synapses;
+    let v3sl_duration_s = t_v3sl.elapsed().as_secs();
+    eprintln!("  V3-SL: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
+        v3sl_acc, v3sl_stateless, v3sl_m, v3sl_s, v3sl_duration_s);
+
     // === CONFUSION MATRIX + ACTIVATION DUMP (V3) ===
     if !fast {
         let (_, confusion) = evaluate_with_confusion(&mut v3, &test_images, &test_labels, n_test);
@@ -901,6 +921,28 @@ fn main() {
         let act_path = format!("docs/benchmark_results/v{}/v3_activations.csv", version);
         fs::create_dir_all(format!("docs/benchmark_results/v{}", version)).ok();
         dump_activations(&mut v3, &test_images, &test_labels, &act_path);
+
+        // === SEQUENTIAL vs SHUFFLED EVAL DIAGNOSTIC ===
+        // Compares V3 accuracy when the test set is evaluated in natural order (carry-over
+        // state) vs a randomly shuffled order. If sequential >> shuffled, the system is
+        // exploiting sequential temporal context rather than per-image features.
+        // This directly tests the LSM co-adaptation hypothesis.
+        let mut rng_shuf = rand::rngs::StdRng::seed_from_u64(seed + 1234);
+        let v3_shuffled = evaluate_shuffled(&mut v3, &test_images, &test_labels, n_test, &mut rng_shuf);
+        let mut rng_shuf_sl = rand::rngs::StdRng::seed_from_u64(seed + 1234);
+        let v3sl_shuffled = evaluate_shuffled(&mut v3sl, &test_images, &test_labels, n_test, &mut rng_shuf_sl);
+        eprintln!("\n━━━ SEQUENTIAL vs SHUFFLED EVAL (temporal context diagnostic) ━━━");
+        eprintln!("  V3  sequential:  {:.1}%   shuffled: {:.1}%   Δ {:+.1}pp", v3_acc, v3_shuffled, v3_acc - v3_shuffled);
+        eprintln!("  V3-SL sequential:{:.1}%   shuffled: {:.1}%   Δ {:+.1}pp", v3sl_acc, v3sl_shuffled, v3sl_acc - v3sl_shuffled);
+        if v3_acc - v3_shuffled > 5.0 {
+            eprintln!("  → V3 exploits sequential order ({:+.1}pp gap). LSM co-adaptation confirmed.", v3_acc - v3_shuffled);
+        } else {
+            eprintln!("  → V3 order-independent (<5pp gap). Sequential context not a major factor.");
+        }
+        let gap_closed = (v3_acc - v3_shuffled) - (v3sl_acc - v3sl_shuffled);
+        if gap_closed > 2.0 {
+            eprintln!("  → Stateless training closed {:.1}pp of the sequential gap.", gap_closed);
+        }
 
         // === SENSORY-ONLY READOUT DIAGNOSTIC ===
         // Key question: do associative features contribute anything, or does accuracy
@@ -968,25 +1010,29 @@ fn main() {
 
     // === SUMMARY ===
     if fast {
-        eprintln!("╔══════════════════════════════════════════════════════╗");
-        eprintln!("║  V2 (GlobalKWTA):  {:>5.1}%  stateless: {:>5.1}%  ({:>4}s) ║",
+        eprintln!("╔═══════════════════════════════════════════════════════════╗");
+        eprintln!("║  V2   (GlobalKWTA):          {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
             v2_acc, v2_stateless, v2_duration_s);
-        eprintln!("║  V3 (LocalInhib.): {:>5.1}%  stateless: {:>5.1}%  ({:>4}s) ║",
+        eprintln!("║  V3   (LocalInhib.):         {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
             v3_acc, v3_stateless, v3_duration_s);
-        eprintln!("╚══════════════════════════════════════════════════════╝");
+        eprintln!("║  V3-SL (Stateless Training): {:>5.1}%  sl: {:>5.1}%  ({:>4}s) ║",
+            v3sl_acc, v3sl_stateless, v3sl_duration_s);
+        eprintln!("╚═══════════════════════════════════════════════════════════╝");
     } else {
-        eprintln!("╔══════════════════════════════════════════════════════╗");
-        eprintln!("║  Baseline:                 {:>5.1}%                    ║", base_acc);
-        eprintln!("║  V2 (GlobalKWTA):          {:>5.1}%  ({:+.1}pp vs BASE)  ║", v2_acc, v2_acc - base_acc);
-        eprintln!("║  V2 stateless:             {:>5.1}%  ({:+.1}pp vs V2)    ║", v2_stateless, v2_stateless - v2_acc);
-        eprintln!("║  V3 (LocalInhib.):         {:>5.1}%  ({:+.1}pp vs V2)    ║", v3_acc, v3_acc - v2_acc);
-        eprintln!("║  V3 stateless:             {:>5.1}%  ({:+.1}pp vs V3)    ║", v3_stateless, v3_stateless - v3_acc);
-        eprintln!("║  V2 wall: {:>4}s   V3 wall: {:>4}s                  ║", v2_duration_s, v3_duration_s);
-        eprintln!("║  Post-damage:              {:>5.1}%                    ║", damaged_acc);
-        eprintln!("║  Post-recovery:            {:>5.1}%  ({:+.1}pp)          ║", recovery_acc, recovery_acc - damaged_acc);
+        eprintln!("╔═══════════════════════════════════════════════════════════╗");
+        eprintln!("║  Baseline:                       {:>5.1}%                  ║", base_acc);
+        eprintln!("║  V2  (GlobalKWTA):               {:>5.1}%  ({:+.1}pp vs BASE) ║", v2_acc, v2_acc - base_acc);
+        eprintln!("║  V2  stateless eval:             {:>5.1}%  ({:+.1}pp vs V2)   ║", v2_stateless, v2_stateless - v2_acc);
+        eprintln!("║  V3  (LocalInhib.):              {:>5.1}%  ({:+.1}pp vs V2)   ║", v3_acc, v3_acc - v2_acc);
+        eprintln!("║  V3  stateless eval:             {:>5.1}%  ({:+.1}pp vs V3)   ║", v3_stateless, v3_stateless - v3_acc);
+        eprintln!("║  V3-SL (Stateless Training):     {:>5.1}%  ({:+.1}pp vs V3)   ║", v3sl_acc, v3sl_acc - v3_acc);
+        eprintln!("║  V3-SL stateless eval:           {:>5.1}%  ({:+.1}pp vs V3SL) ║", v3sl_stateless, v3sl_stateless - v3sl_acc);
+        eprintln!("║  V2 wall: {:>4}s  V3 wall: {:>4}s  V3SL: {:>4}s          ║", v2_duration_s, v3_duration_s, v3sl_duration_s);
+        eprintln!("║  Post-damage:                    {:>5.1}%                  ║", damaged_acc);
+        eprintln!("║  Post-recovery:                  {:>5.1}%  ({:+.1}pp)        ║", recovery_acc, recovery_acc - damaged_acc);
         eprintln!("║  Morphons (V2): {} → {} → {}{}║", before, before - n_kill, after,
             " ".repeat(22 - format!("{} → {} → {}", before, before - n_kill, after).len().min(22)));
-        eprintln!("╚══════════════════════════════════════════════════════╝");
+        eprintln!("╚═══════════════════════════════════════════════════════════╝");
     }
 
     // Config summary
@@ -1028,6 +1074,12 @@ fn main() {
         "v3_synapses": v3_s,
         "v3_duration_s": v3_duration_s,
         "v3_competition_mode": "LocalInhibition",
+        "v3sl_acc": v3sl_acc,
+        "v3sl_acc_stateless": v3sl_stateless,
+        "v3sl_morphons": v3sl_m,
+        "v3sl_synapses": v3sl_s,
+        "v3sl_duration_s": v3sl_duration_s,
+        "v3sl_competition_mode": "LocalInhibition+StatelessTraining",
         "v3_local_inhibition_params": {
             "interneuron_ratio": 0.10,
             "istdp_rate": 0.001,

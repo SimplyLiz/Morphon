@@ -1075,28 +1075,33 @@ impl Endoquilibrium {
 
         // ── Rule 7: Energy Pressure ──
         if energy > 0.95 {
-            // Critical: safe mode
+            // Critical: safe mode — suppress plasticity and consolidation but NOT
+            // novelty_gain. Novelty (ACh) is a salience/detection signal; suppressing
+            // it cuts the very signal that drives STDP and three-factor learning.
+            // Under metabolic stress, heightened novelty is biologically appropriate
+            // (increased alertness). Energy pressure is already expressed via plasticity.
             ch.plasticity_mult = 0.0;
-            ch.novelty_gain = 0.0;
             ch.homeostasis_gain = 2.0;
             interventions.push(Intervention {
                 rule: "energy_critical".into(),
                 vital: "energy_utilization".into(),
                 actual: energy,
                 setpoint: 0.70,
-                lever: "plasticity/novelty/homeostasis".into(),
+                lever: "plasticity/homeostasis".into(),
                 adjustment: energy - 0.95,
             });
         } else if energy > 0.85 {
-            // Emergency
+            // Emergency — reduce plasticity but preserve novelty signal.
+            // Prior behaviour (novelty_gain *= 0.2) was the root cause of ng-collapse
+            // during MNIST training: depleted morphon energy repeatedly drove the EMA
+            // toward 0.2, throttling STDP and suppressing learning mid-run.
             ch.plasticity_mult *= 0.3;
-            ch.novelty_gain *= 0.2;
             interventions.push(Intervention {
                 rule: "energy_emergency".into(),
                 vital: "energy_utilization".into(),
                 actual: energy,
                 setpoint: 0.70,
-                lever: "plasticity/novelty".into(),
+                lever: "plasticity_mult".into(),
                 adjustment: energy - 0.85,
             });
         } else if energy > 0.70 {
