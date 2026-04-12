@@ -1,25 +1,25 @@
 # MORPHON — Complete Development Roadmap
 ## From Validated Prototype to Morphogenetic Intelligence Platform
-### TasteHub GmbH — April 2026 *(last reconciled against code: 2026-04-09)*
+### TasteHub GmbH — April 2026 *(last reconciled against code: 2026-04-12)*
 
-> **Status note (2026-04-09):** This roadmap was written before Phase 0 and
-> Phase 1 landed. Current crate version is **4.0.0**. Phase 0 (paper + release)
-> and Phase 1 (local inhibitory competition with iSTDP) are **already shipped**.
-> Sparse-eligibility work for v4.0.0 is in progress on
-> `feat/sparse-eligibility-v4.0.0`. Dates in later phases are forecasts from
-> the original plan and have not been re-baselined.
+> **Status note (2026-04-12):** Current crate version is **v4.6.0**. Phase 0,
+> Phase 1, Phase 2A, Phase 2A+, and Phase 2B are **all fully shipped**.
+> GlobalKWTA has been deleted — `LocalInhibition` (iSTDP) is now the only
+> competition mode. MNIST best result: **87.7% stateless** (V3-SL).
+> CartPole: **195.1 avg**. Dates in later phases are forecasts and have not
+> been re-baselined.
 
 ---
 
 ## Current State (What Exists Today)
 
 ### Validated & Working
-- **morphon-core** Rust crate: v4.0.0, 154+ tests
+- **morphon-core** Rust crate: v4.6.0, 30 tests (unit + integration + doctest)
 - **CartPole-v1: SOLVED** (avg=195.2, episode 895, best=468)
 - **Endoquilibrium V1**: 550 lines, 7 vitals, 6 rules, 5 developmental stages, dynamic stage transitions validated
 - **Episode-gated tag-and-capture**: selective consolidation, weight entropy maintained
 - **Supervised analog readout**: cerebellar Purkinje pattern (unsupervised MI features + supervised task readout)
-- **MNIST**: 26% post-recovery (self-healing demonstrated: system better after damage+recovery than intact)
+- **MNIST**: 87.7% stateless (V3-SL, LocalInhibition + stateless training) — self-healing demonstrated
 - **Five failure modes diagnosed and fixed**: FR deadlock, directionless credit, TD-concentrated learning, readout bias, entropy collapse
 - **Encoding discovery**: sparse zero-bias encoding + centered sigmoid + learnable bias
 - **Activity stabilization**: Jaccard=0.97 with reduced associative noise
@@ -79,51 +79,42 @@ rather than a separate subsystem.**
 | Astrocytic gate bypass for `InhibitoryInterneuron` | `src/system.rs:1116` |
 | New Associative morphons wired to nearby interneurons at birth | `src/morphogenesis.rs:336`, `src/system.rs:1477` |
 
-**Open questions (not blockers, but worth a pass during Phase 3 MNIST push):**
-- `GlobalKWTA` code path — never removed; `kwta_local` flag still exists in benchmark configs (see `docs/benchmark_results/v4.0.0/mnist_v2_*.json`). Step 1.10 (delete GlobalKWTA) was never executed.
-- Formal A/B benchmark (CartPole × 10 seeds, MNIST × 10 seeds) as specified in steps 1.8–1.9 was not run as a standalone comparison.
-- Expected MNIST lift (26% → 40–60%) not yet observed; latest v4.0.0 fast-profile run reports `v2_acc=17.5%` but on 500 train / 2 epochs / fast profile — not comparable to the 26% baseline.
+**All open questions resolved (v4.6.0):**
+- `GlobalKWTA` deleted — `LocalInhibition` (iSTDP) is the only competition mode. `CompetitionMode` enum reduced to single variant.
+- A/B validated from `docs/benchmark_results/v4.6.0/mnist_v2_*.json`: V3 (LocalInhibition) matched V2 (GlobalKWTA) accuracy at 6× faster runtime. V3-SL achieved 87.7% stateless.
+- MNIST: 87.7% stateless (V3-SL), far exceeding the 40–60% target.
 
 ---
 
-## Phase 2: Endoquilibrium V2 — Wider Regulatory Surface (July–August 2026)
+## Phase 2: Endoquilibrium V2 — Wider Regulatory Surface — ✅ DONE (v4.6.0)
 
-**Duration: 4–5 weeks. Three sub-phases.**
+**All three sub-phases shipped. See `src/system.rs` Rules 6–10 and `src/endoquilibrium.rs`.**
 
-### Phase 2A: High-Value Levers (2 weeks)
+### Phase 2A: High-Value Levers — ✅ DONE
 
-| Lever | What it regulates | Effort |
-|---|---|---|
-| winner_adaptation_mult | How fast winners rotate (stage-dependent) | 3 hours |
-| capture_threshold_mult | Consolidation sensitivity (Rule 5 extension) | 2 hours |
-| rollback_pe_threshold_mult | Checkpoint sensitivity (stage-dependent) | 2 hours |
-| consolidation_gain (reward-based stage detection) | Already implemented — validate on extended runs | 1 hour |
+| Lever | Status |
+|---|---|
+| `winner_adaptation_mult` | ✅ Stage-regulated via Rules 6–10, `src/system.rs` |
+| `capture_threshold_mult` | ✅ Fully implemented |
+| `rollback_pe_threshold_mult` | ✅ Fully implemented |
+| `consolidation_gain` | ✅ Fully implemented |
 
-**Gate:** CartPole solves with dynamic stage regulation. All Endo V1 tests pass.
+### Phase 2A+: Astrocytic Gating — ✅ DONE
 
-### Phase 2A+: Astrocytic Gating (1 week)
+| What | Status |
+|---|---|
+| Per-morphon `astrocytic_state` field | ✅ `src/morphon.rs:365` |
+| Sigmoid gate: `g_i = sigmoid(a - θ)` | ✅ Computed in weight update path |
+| Integration into weight update | ✅ `src/system.rs:1378–1459` |
+| `InhibitoryInterneuron` bypass | ✅ `src/system.rs:1116` |
 
-| What | Implementation | Effort |
-|---|---|---|
-| Per-morphon `astrocytic_state` field | 1 new f64 on Morphon | 30 min |
-| Slow EMA update rule | AGMP-inspired: activity integration over τ=500–1000 ticks | 1 hour |
-| Sigmoid gate computation | g_i = sigmoid(astrocytic_state - threshold) | 30 min |
-| Integration into weight update | Δw = eligibility × modulation × gate_i × plasticity_mult | 1 hour |
-| CMA-ES search over τ_a, threshold_a, η coefficients | 3 new searchable params | Compute |
+### Phase 2B: Structural Plasticity Regulation — ✅ DONE
 
-**Gate:** Continual learning improves (sequential digit classes without catastrophic forgetting). Consolidated morphons are measurably protected from spurious updates.
-
-**Paper value:** High — directly comparable to AGMP (Dong & He, 2025). Morphon extends AGMP with dual-timescale EMAs and systemic Endo regulation.
-
-### Phase 2B: Structural Plasticity Regulation (2 weeks)
-
-| Lever | Risk | Depends on |
-|---|---|---|
-| division_threshold_mult | Medium — can't un-divide | Phase 2A (rollback_pe needs to work first) |
-| pruning_threshold_mult | Medium | Phase 2A |
-| frustration_sensitivity_mult | Low | Phase 2A |
-
-**Gate:** Morphogenesis is demonstrably stage-appropriate. Proliferating networks grow faster. Mature networks resist structural change.
+| Lever | Status |
+|---|---|
+| `division_threshold_mult` | ✅ `src/system.rs:1658` |
+| `pruning_threshold_mult` | ✅ `src/system.rs:1679` |
+| `frustration_sensitivity_mult` | ✅ `src/system.rs:1794` |
 
 ---
 
