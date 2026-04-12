@@ -250,8 +250,10 @@ pub fn synaptogenesis(
             // distant ones get slower propagation (up to ~2.0). Myelination can
             // reduce effective delay later for consolidated pathways.
             let delay = 0.5 + distance * 0.75;
+            // Cause is HebbianCoincidence: pairs are selected by activity correlation,
+            // with distance controlling probability and delay — not pure proximity.
             let justification = crate::justification::SynapticJustification::new(
-                crate::justification::FormationCause::ProximityFormation { distance },
+                crate::justification::FormationCause::HebbianCoincidence { step: step_count },
                 step_count,
             );
             topology.add_synapse(from.id, to.id, Synapse::new_justified(weight, justification).with_delay(delay));
@@ -269,6 +271,7 @@ pub fn pruning(
     topology: &mut Topology,
     learning_params: &LearningParams,
     morphons: &HashMap<MorphonId, Morphon>,
+    mandatory_justification_for: &[crate::types::CellType],
 ) -> usize {
     let edges_to_remove: Vec<_> = topology
         .all_edges()
@@ -285,6 +288,21 @@ pub fn pruning(
                 }
                 _ => 1.0,
             };
+            // V3: Log anomaly if a mandatory-type synapse lacks justification.
+            // All synapses created by synaptogenesis carry justification, so this
+            // fires only for bootstrap synapses that predate the V3 governance layer.
+            if let Some(tgt) = morphons.get(tgt_id) {
+                if !crate::governance::check_mandatory_justification(
+                    tgt.cell_type,
+                    syn.justification.is_some(),
+                    mandatory_justification_for,
+                ) {
+                    eprintln!(
+                        "[V3 governance] pruning unjustified synapse targeting {:?} morphon {:?} — anomaly",
+                        tgt.cell_type, tgt_id,
+                    );
+                }
+            }
             learning::should_prune_with_cost(syn, learning_params, cost_factor)
         })
         .map(|(_, _, ei)| ei)
@@ -659,22 +677,47 @@ pub fn fusion(
     max_cluster_size_fraction: f64,
     max_unverified_fraction: f64,
     competition_mode: &crate::homeostasis::CompetitionMode,
+    priority_groups: &[Vec<MorphonId>],
 ) -> usize {
-    // V3 Governor: block new fusion when too many clusters are unverified.
-    // Prevents unbounded cluster creation before existing ones are validated.
+    // V3 Governor: warn when too many clusters are unverified.
+    // Phase 1 soft limit — logged but not enforced until Phase 2.
     if !clusters.is_empty() {
         let unverified = clusters.values()
             .filter(|c| matches!(c.epistemic_state, crate::epistemic::EpistemicState::Hypothesis { .. }))
             .count();
-        if unverified as f64 / clusters.len() as f64 > max_unverified_fraction {
-            return 0;
+        let unverified_fraction = unverified as f64 / clusters.len() as f64;
+        if unverified_fraction > max_unverified_fraction {
+            // Phase 1: log diagnostic only — Phase 2 will enforce a hard block.
+            eprintln!(
+                "[V3 governance] unverified cluster fraction {:.2} exceeds limit {:.2} \
+                 — proceeding (Phase 2 will enforce hard block)",
+                unverified_fraction, max_unverified_fraction,
+            );
         }
     }
 
-    // Find groups of tightly connected, correlated morphons
-    // Simple heuristic: look at groups of neighbors that all fire together
+    // Collect all fusion candidate groups:
+    //   1. V6 auto-merge priority groups — spatially co-activating, two-step confirmed,
+    //      already-unfused morphons. Skip correlation discovery.
+    //   2. Standard correlation-discovered groups via neighbor firing coincidence.
+    // All candidates go through the same PE gate + size check + cluster creation.
     let mut fused = 0;
 
+    let mut all_candidates: Vec<Vec<MorphonId>> = Vec::new();
+
+    // 1. Priority groups from auto-merge (V6)
+    for group in priority_groups {
+        let members: Vec<MorphonId> = group
+            .iter()
+            .copied()
+            .filter(|id| morphons.get(id).map_or(false, |m| m.fused_with.is_none()))
+            .collect();
+        if members.len() >= params.fusion_min_size {
+            all_candidates.push(members);
+        }
+    }
+
+    // 2. Standard correlation discovery
     let ids: Vec<MorphonId> = morphons
         .values()
         .filter(|m| m.fused_with.is_none() && m.activity_history.mean() > 0.3)
@@ -682,7 +725,6 @@ pub fn fusion(
         .collect();
 
     for &id in &ids {
-        // Skip if this morphon was already fused by an earlier iteration
         if morphons.get(&id).map_or(true, |m| m.fused_with.is_some()) {
             continue;
         }
@@ -705,8 +747,21 @@ pub fn fusion(
         if correlated.len() + 1 >= params.fusion_min_size {
             let mut members = vec![id];
             members.extend(correlated.iter());
+            all_candidates.push(members);
+        }
+    }
 
-            // === Prediction error gate (section 3.7B) ===
+    for members in all_candidates {
+        // Re-check: members may have been fused by an earlier candidate in this pass
+        let members: Vec<MorphonId> = members
+            .into_iter()
+            .filter(|id| morphons.get(id).map_or(false, |m| m.fused_with.is_none()))
+            .collect();
+        if members.len() < params.fusion_min_size {
+            continue;
+        }
+
+        // === Prediction error gate (section 3.7B) ===
             // Fusion is only allowed if the candidate group shows prediction error
             // reduction — i.e. their mean prediction error is below their mean desire
             // (long-term PE average). Correlated firing alone is not sufficient.
@@ -815,8 +870,7 @@ pub fn fusion(
                     epistemic_history: Default::default(),
                 },
             );
-            fused += 1;
-        }
+        fused += 1;
     }
 
     fused
@@ -1441,13 +1495,14 @@ pub fn step_slow(
     field: Option<&crate::field::MorphonField>,
     max_connectivity: usize,
     step_count: u64,
+    mandatory_justification_for: &[crate::types::CellType],
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
     if lifecycle.synaptogenesis {
         report.synapses_created = synaptogenesis(morphons, topology, params, rng, max_connectivity, step_count);
     }
-    report.synapses_pruned = pruning(topology, learning_params, morphons);
+    report.synapses_pruned = pruning(topology, learning_params, morphons, mandatory_justification_for);
 
     if lifecycle.migration {
         report.migrations = migration(morphons, topology, params, homeostasis_level, field);
@@ -1473,6 +1528,7 @@ pub fn step_glacial(
     target: Option<&crate::developmental::TargetMorphology>,
     step_count: u64,
     competition_mode: &crate::homeostasis::CompetitionMode,
+    priority_groups: &[Vec<MorphonId>],
 ) -> MorphogenesisReport {
     let mut report = MorphogenesisReport::default();
 
@@ -1487,7 +1543,7 @@ pub fn step_glacial(
     }
 
     if lifecycle.fusion {
-        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction, competition_mode);
+        report.fusions = fusion(morphons, clusters, next_cluster_id, next_morphon_id, topology, params, effective_max_morphons, max_cluster_size_fraction, max_unverified_fraction, competition_mode, priority_groups);
         report.defusions = defusion(morphons, clusters, topology);
     }
 
@@ -1633,7 +1689,7 @@ mod tests {
 
         let params = LearningParams::default();
         let morphons = HashMap::new();
-        let pruned = pruning(&mut topo, &params, &morphons);
+        let pruned = pruning(&mut topo, &params, &morphons, &[]);
         assert_eq!(pruned, 1);
         assert_eq!(topo.synapse_count(), 0);
     }
@@ -1651,7 +1707,7 @@ mod tests {
 
         let params = LearningParams::default();
         let morphons = HashMap::new();
-        let pruned = pruning(&mut topo, &params, &morphons);
+        let pruned = pruning(&mut topo, &params, &morphons, &[]);
         assert_eq!(pruned, 0);
         assert_eq!(topo.synapse_count(), 1);
     }
@@ -2060,7 +2116,7 @@ mod tests {
         let fused = fusion(
             &mut morphons, &mut clusters, &mut next_cluster_id,
             &mut next_morphon_id, &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
-            &crate::homeostasis::CompetitionMode::default(),
+            &crate::homeostasis::CompetitionMode::default(), &[],
         );
 
         assert_eq!(fused, 1, "should form one cluster");
@@ -2243,7 +2299,7 @@ mod tests {
         let lp = LearningParams::default();
         let lifecycle = LifecycleConfig::default();
 
-        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50, 0);
+        let report = step_slow(&mut morphons, &mut topo, &params, &lp, 0.5, &lifecycle, &mut rng, None, 50, 0, &[]);
         // Just verify it runs and returns a valid report
         // Report is valid (fields are populated)
         let _ = report.synapses_created;
@@ -2271,7 +2327,7 @@ mod tests {
         let report = step_glacial(
             &mut morphons, &mut topo, &mut clusters,
             &mut next_mid, &mut next_cid, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, 0.0, &lifecycle, &mut rng, None, 0,
-            &crate::homeostasis::CompetitionMode::default(),
+            &crate::homeostasis::CompetitionMode::default(), &[],
         );
         assert_eq!(report.morphons_born, 0);
     }
@@ -2386,7 +2442,7 @@ mod tests {
         let fused = fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
             &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
-            &crate::homeostasis::CompetitionMode::default(),
+            &crate::homeostasis::CompetitionMode::default(), &[],
         );
 
         if fused > 0 {
@@ -2419,7 +2475,7 @@ mod tests {
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut morphon_id,
             &mut topology, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
-            &crate::homeostasis::CompetitionMode::default(),
+            &crate::homeostasis::CompetitionMode::default(), &[],
         );
 
         if !clusters.is_empty() {
@@ -2730,7 +2786,7 @@ mod tests {
 
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut next_id,
-            &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, &mode,
+            &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5, &mode, &[],
         );
 
         if clusters.is_empty() { return; } // fusion didn't trigger — skip
@@ -2758,7 +2814,7 @@ mod tests {
         fusion(
             &mut morphons, &mut clusters, &mut cluster_id, &mut next_id,
             &mut topo, &params, DEFAULT_MAX_MORPHONS, 0.3, 0.5,
-            &crate::homeostasis::CompetitionMode::default(),
+            &crate::homeostasis::CompetitionMode::default(), &[],
         );
 
         let inh_count = morphons.values()

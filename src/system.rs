@@ -283,6 +283,10 @@ pub struct System {
     /// V6: Auto-Merge candidate buffer — tracks co-activating proximate morphon groups.
     pub(crate) auto_merge_candidates: morphogenesis::AutoMergeCandidates,
 
+    /// V6: Confirmed auto-merge groups waiting to be processed by the next glacial fusion pass.
+    /// Populated on slow ticks, drained on glacial ticks.
+    pub(crate) pending_merge_groups: Vec<Vec<crate::types::MorphonId>>,
+
     /// Seeded RNG for deterministic runs. Initialized from config.rng_seed if set,
     /// otherwise from OS entropy. All rand calls in System use this — never rand::rng().
     pub(crate) rng: rand::rngs::SmallRng,
@@ -410,6 +414,7 @@ impl System {
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
             auto_merge_candidates: morphogenesis::AutoMergeCandidates::default(),
+            pending_merge_groups: Vec::new(),
             rng,
         };
 
@@ -1649,6 +1654,7 @@ impl System {
                 self.field.as_ref(),
                 self.config.governance.max_connectivity_per_morphon,
                 self.step_count,
+                &self.config.governance.mandatory_justification_for,
             );
             report.synapses_created = slow_report.synapses_created;
             report.synapses_pruned = slow_report.synapses_pruned;
@@ -1671,16 +1677,15 @@ impl System {
                 .filter(|m| m.fired)
                 .map(|m| m.id)
                 .collect();
-            let _merge_groups = morphogenesis::check_auto_merge(
+            let merge_groups = morphogenesis::check_auto_merge(
                 &fired_ids,
                 &self.morphons,
                 &mut self.auto_merge_candidates,
                 &self.config.morphogenesis,
                 self.step_count,
             );
-            // merge_groups contains confirmed groups — future work: route into fusion()
-            // For now they're tracked and can be inspected; the two-step filter alone
-            // gives useful signal about redundant spatial co-activations.
+            // Confirmed groups are queued for the next glacial fusion pass.
+            self.pending_merge_groups.extend(merge_groups);
 
             // V2: Update bioelectric field — write morphon states, diffuse
             if let Some(ref mut field) = self.field {
@@ -1748,6 +1753,7 @@ impl System {
             let mut glacial_params = self.config.morphogenesis.clone();
             glacial_params.division_threshold *= self.endo.channels.division_threshold_mult as f64;
 
+            let priority_groups = std::mem::take(&mut self.pending_merge_groups);
             let glacial_report = morphogenesis::step_glacial(
                 &mut self.morphons,
                 &mut self.topology,
@@ -1764,6 +1770,7 @@ impl System {
                 self.config.target_morphology.as_ref(),
                 self.step_count,
                 &self.config.homeostasis.competition_mode,
+                &priority_groups,
             );
             report.morphons_born = glacial_report.morphons_born;
             report.morphons_died = glacial_report.morphons_died;

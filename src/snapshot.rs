@@ -133,6 +133,7 @@ impl System {
             hot: crate::hot_arrays::HotArrays::new(),
             endo_threshold_bias: 0.0,
             auto_merge_candidates: crate::morphogenesis::AutoMergeCandidates::default(),
+            pending_merge_groups: Vec::new(),
             rng: {
                 use rand::SeedableRng;
                 match rng_seed {

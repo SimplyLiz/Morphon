@@ -89,6 +89,17 @@ pub fn check_cluster_size(
     (cluster.members.len() as f64 / total_morphons as f64) <= max_fraction
 }
 
+/// Returns `true` if a synapse targeting `cell_type` satisfies the mandatory-justification
+/// invariant — either the type is not in the mandatory list, or the synapse carries a
+/// justification record. Call this in synaptogenesis and pruning audit paths.
+pub fn check_mandatory_justification(
+    cell_type: CellType,
+    has_justification: bool,
+    mandatory_for: &[CellType],
+) -> bool {
+    !mandatory_for.contains(&cell_type) || has_justification
+}
+
 /// Clamp a morphon's energy to at least `floor`.
 pub fn enforce_energy_floor(morphon: &mut Morphon, floor: f64) {
     if morphon.energy < floor {

@@ -247,7 +247,7 @@ impl Default for MetabolicConfig {
             firing_cost: 0.002,    // reduced 2× — firing should be cheap
             cluster_overhead_per_tick: 0.0005,
             reward_for_successful_output: 0.05,
-            reward_for_verification: 0.02, // energy bonus when cluster reaches Supported
+            reward_for_verification: 0.0, // Phase 2 feature — disabled in Phase 1
             cluster_base_cost_reduction: 0.4,
             cluster_energy_draw_per_tick: 0.0003,
             reward_energy_coefficient: 0.0,
