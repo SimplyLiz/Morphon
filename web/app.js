@@ -3394,8 +3394,10 @@ async function main() {
   // Dramatic reveal: start camera further out, zoom in as loading fades
   camera.position.set(0, 12, 38);
   const loading = document.getElementById('loading');
-  loading.classList.add('hidden');
-  setTimeout(() => loading.remove(), 800);
+  setTimeout(() => {
+    loading.classList.add('hidden');
+    setTimeout(() => loading.remove(), 800);
+  }, 1500);
   // Smooth camera zoom-in over ~2 seconds
   const startPos = { y: 12, z: 38 };
   const endPos = { y: 8, z: 22 };

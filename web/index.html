@@ -30,6 +30,8 @@
     --novelty-color: #00d4ff;
     --arousal-color: #ef4444;
     --homeostasis-color: #34d399;
+
+    --panel-h: 160px;
   }
 
   body {
@@ -196,7 +198,7 @@
   /* === LEFT PANEL === */
   #left-panel {
     top: 64px; left: 16px;
-    bottom: 170px;
+    bottom: calc(var(--panel-h) + 10px);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -297,7 +299,7 @@
   /* === RIGHT PANEL === */
   #right-panel {
     top: 64px; right: 16px;
-    bottom: 170px;
+    bottom: calc(var(--panel-h) + 10px);
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -489,10 +491,19 @@
   }
 
   /* === BOTTOM TABBED PANEL === */
+  #panel-resize-handle {
+    position: fixed;
+    bottom: var(--panel-h);
+    left: 0; right: 0;
+    height: 6px;
+    cursor: ns-resize;
+    z-index: 11;
+  }
+  #panel-resize-handle:hover { background: rgba(80,140,255,0.15); }
   #bottom-panel {
     position: fixed;
     bottom: 0; left: 0; right: 0;
-    height: 160px;
+    height: var(--panel-h);
     z-index: 10;
     background: var(--panel);
     border-top: 1px solid var(--panel-border);
@@ -501,6 +512,7 @@
     flex-direction: column;
     transition: height 0.25s ease;
   }
+  #bottom-panel.no-transition { transition: none; }
   #bottom-panel.maximized { height: 45vh; }
   #bottom-panel .tab-bar {
     display: flex;
@@ -1217,6 +1229,54 @@
     .cell-type-row { padding: 6px 8px; }
     #tooltip { font-size: 11px; }
   }
+
+  /* === OBSERVER TAB === */
+  .observer-config {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 10px; border-bottom: 1px solid var(--panel-border);
+    flex-shrink: 0; flex-wrap: wrap;
+  }
+  .observer-status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-dim); flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .observer-status-dot.connected { background: #34d399; box-shadow: 0 0 6px #34d399; }
+  .observer-status-dot.error     { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+  .observer-status-dot.connecting { background: #fbbf24; animation: obs-pulse 0.8s infinite; }
+  @keyframes obs-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .observer-config input[type=text] {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 6px; padding: 3px 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    outline: none; width: 160px;
+  }
+  .observer-config select {
+    background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 6px; padding: 3px 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    outline: none; cursor: pointer;
+  }
+  .observer-log {
+    flex: 1; overflow-y: auto; padding: 6px 10px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    display: flex; flex-direction: column; gap: 4px;
+    scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.1) transparent;
+  }
+  .obs-entry { display: flex; gap: 8px; line-height: 1.5; }
+  .obs-ts { color: var(--text-dim); flex-shrink: 0; }
+  .obs-text { color: var(--text); white-space: pre-wrap; }
+  .obs-text.streaming::after { content: '▋'; animation: obs-blink 0.7s step-end infinite; }
+  @keyframes obs-blink { 0%,100%{opacity:1} 50%{opacity:0} }
+  .observer-input-strip {
+    display: flex; gap: 6px; padding: 4px 10px;
+    border-top: 1px solid var(--panel-border); flex-shrink: 0;
+  }
+  .observer-input-strip input {
+    flex: 1; background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border);
+    color: var(--text); border-radius: 6px; padding: 3px 8px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px; outline: none;
+  }
 </style>
 </head>
 <body>
@@ -1246,6 +1306,7 @@
     <div class="header-stat"><span class="label">STEP</span><span class="value" id="h-step">0</span></div>
     <div class="header-stat"><span class="label">FIRED</span><span class="value" id="h-fired" style="color:#fbbf24">0</span></div>
     <div class="header-stat"><span class="label">UPTIME</span><span class="value" id="h-uptime" style="color:var(--text-dim)">0:00</span></div>
+    <div class="header-stat"><span class="label">LOAD</span><span class="value" id="h-load" style="color:#34d399">0%</span></div>
   </div>
   <div class="header-controls">
     <button id="btn-pause" class="active" title="Play / Pause">&#9654;</button>
@@ -1420,7 +1481,10 @@
   </div>
 
   <div class="panel" id="detail-panel">
-    <div class="section-title">Selected Morphon</div>
+    <div class="section-title" id="detail-drag-bar" style="cursor:move;display:flex;justify-content:space-between;align-items:center;">
+      Selected Morphon
+      <button id="detail-close" style="background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:12px;padding:0 2px;line-height:1;">&#x2715;</button>
+    </div>
     <div class="detail-header">
       <span class="detail-id" id="d-id">#0</span>
       <span class="detail-type"><span class="cell-dot" id="d-dot"></span><span id="d-type">Stem</span></span>
@@ -1444,8 +1508,10 @@
 </div>
 
 <!-- BOTTOM TABBED PANEL -->
+<div id="panel-resize-handle"></div>
 <div id="bottom-panel">
   <div class="tab-bar">
+    <button class="tab-btn" data-tab="tab-observer">OBSERVER</button>
     <button class="tab-btn active" data-tab="tab-log">LOG</button>
     <button class="tab-btn" data-tab="tab-raster">HEATMAP</button>
     <button class="tab-btn" data-tab="tab-graph">GRAPH</button>
@@ -1478,6 +1544,33 @@
     <div class="events-scroll" id="events"></div>
     <div id="log-status"></div>
   </div>
+
+  <!-- OBSERVER TAB -->
+  <div id="tab-observer" class="tab-content" style="display:flex; flex-direction:column; height:100%; overflow:hidden;">
+    <div class="observer-config">
+      <div class="observer-status-dot" id="obs-status-dot"></div>
+      <span id="obs-status-label" style="font-size:10px;color:var(--text-dim);font-family:'JetBrains Mono',monospace;">disconnected</span>
+      <input type="text" id="obs-url" value="http://localhost:11434" placeholder="Ollama URL">
+      <select id="obs-model" disabled><option value="">— connect first —</option></select>
+      <button id="obs-connect-btn" onclick="window._obsConnect()">Connect</button>
+      <span style="color:var(--text-dim);font-size:10px;">AUTO</span>
+      <select id="obs-auto-interval">
+        <option value="0">Off</option>
+        <option value="30">30s</option>
+        <option value="60">1m</option>
+        <option value="120">2m</option>
+      </select>
+      <button id="obs-narrate-btn" onclick="window._obsNarrate(null)">NARRATE</button>
+      <button onclick="window._obsCopy()">COPY</button>
+      <button onclick="window._obsExport()">MD</button>
+    </div>
+    <div class="observer-log" id="obs-log"></div>
+    <div class="observer-input-strip">
+      <input type="text" id="obs-question" placeholder="Ask about the network…" onkeydown="if(event.key==='Enter') window._obsNarrate(this.value)">
+      <button id="obs-ask-btn" onclick="window._obsNarrate(document.getElementById('obs-question').value)">ASK</button>
+    </div>
+  </div>
+
   <div id="tab-raster" class="tab-content">
     <div class="heatmap-toolbar">
       <span style="color:var(--text-dim);font-size:9px">RES</span>
@@ -1638,5 +1731,29 @@
 }
 </script>
 <script type="module" src="app.js"></script>
+<script>
+// Panel resize via drag handle
+(function() {
+  const handle = document.getElementById('panel-resize-handle');
+  const panel  = document.getElementById('bottom-panel');
+  if (!handle || !panel) return;
+  let dragging = false, startY = 0, startH = 0;
+  handle.addEventListener('mousedown', e => {
+    dragging = true;
+    startY = e.clientY;
+    startH = panel.offsetHeight;
+    panel.classList.add('no-transition');
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const newH = Math.max(80, Math.min(window.innerHeight * 0.7, startH - (e.clientY - startY)));
+    document.documentElement.style.setProperty('--panel-h', newH + 'px');
+  });
+  window.addEventListener('mouseup', () => {
+    if (dragging) { dragging = false; panel.classList.remove('no-transition'); }
+  });
+})();
+</script>
 </body>
 </html>
