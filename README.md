@@ -6,7 +6,7 @@ Morphon-Core is a biologically-inspired, adaptive intelligence engine that imple
 
 > **⚠️ Research preprint codebase.** This is the reference implementation for the paper
 > [*Morphogenic Intelligence: Runtime Neural Development Beyond Static Architectures*](docs/paper/paper/Morphogenic_Intelligence.pdf)
-> (v3.0.0, April 2026). It is actively developed, APIs are not stable, and benchmark numbers are
+> (v2, April 2026). It is actively developed, APIs are not stable, and benchmark numbers are
 > not cross-version comparable. This is not production software. See [`CHANGELOG.md`](CHANGELOG.md)
 > for the version history and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues.
 
@@ -17,19 +17,23 @@ Morphon-Core is a biologically-inspired, adaptive intelligence engine that imple
 
 | Benchmark | Result | Notes |
 |-----------|--------|-------|
-| **CartPole-v1** | **SOLVED** avg=195.2 | v0.5.0 standard profile (1000 ep). v3.0.0 quick profile reaches avg=166 in 200 episodes — learning confirmed but SOLVED criterion not yet reproduced within shorter budget. |
-| **MNIST (intact)** | 30.0% | Quick profile, v3.0.0, seed=42 |
-| **MNIST (post-recovery)** | **48.0%** | After 30% damage + regrowth — exceeds intact baseline by **+18.0pp** |
+| **CartPole-v1** | **SOLVED** avg=195.2 | v0.5.0 standard profile (1000 ep). Reproduced at v4.1.0 (avg=195.5). |
+| **MNIST — stateless** | **87.0% mean** (87.7% peak) | V3-SL, standard profile, 5 seeds. Stateless = state reset before each test image. |
+| **MNIST — online** | ~43–45% | Standard profile sequential eval (stateful). |
+| **MNIST — post-recovery** | ~39–44% online | After 30% associative-morphon damage + 1-epoch regrowth. Consistent recovery across 4/5 seeds. |
+| **Drone3D — hover** | avg=91.5 steps | Standard profile (1000 ep, altitude waypoints), avg 3D position error 1.17m. |
 
 See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for the full benchmark guide.
 
 ## Key Findings
 
-### Self-Healing: Damage Improves Performance
+### Stateless Training (V3-SL)
 
-The MNIST post-damage result is the most striking finding: **the system improves after losing 30% of its hidden layer**. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage (plasticity_mult=2.16), and regrowth produces better-specialized morphons than the original training trajectory ever did. The +18pp gain is reproducible across runs (multiple seeds give recovery in the 48–53% range vs intact 28–31%).
+Training the readout without carrying system state between images — each sample presented to a freshly-reset network — decouples representation learning from sequential context. V3-SL lifts MNIST stateless accuracy from ~82% (V3) to **87%** (5-seed mean, standard profile) while running in ~60% of the wall time, because network state is never accumulated across the 5000-image training set.
 
-The mechanism: original training accumulated entrenched "hub" morphons — high-degree neurons that fire indiscriminately and dominate the readout. Damage removes some hubs at random, the regulator re-enables high plasticity, and the regrowth fills the gaps with fresh morphons that specialize under the right conditions. **The optimal training trajectory for MI is not a smooth ascent but a series of structural shocks followed by recovery.**
+### Self-Healing After Damage
+
+After losing 30% of associative morphons, the system recovers to near-intact online accuracy within one additional epoch. Damage forces Endoquilibrium back into the high-plasticity Differentiating stage (plasticity_mult=2.16), and regrowth produces better-specialized morphons than the original trajectory. Recovery consistently exceeds damaged baseline across seeds (mean +14.8pp recovery over damaged), confirming the mechanism is not random luck — the forced developmental restart is doing real work.
 
 ### The Spike-vs-Analog Gap
 
@@ -43,6 +47,8 @@ Morphon potentials carry discriminative representations that the spike pipeline 
 - **Structural Plasticity**: Runtime synaptogenesis, pruning, migration, division, differentiation, fusion, apoptosis
 - **Neuromodulation**: Four broadcast channels (Reward, Novelty, Arousal, Homeostasis)
 - **Developmental Programs**: Bootstrap cortical/hippocampal/cerebellar architectures with guaranteed I/O pathways
+- **Endoquilibrium**: Predictive neuroendocrine stage regulation — breaks firing-rate-zero deadlock, gates plasticity by developmental phase
+- **Limbic Circuit**: Confidence-based salience detection (amygdala), per-class RPE tracking (nucleus accumbens), episodic tagging (hippocampus)
 - **Triple Memory System**: Working (persistent activity), episodic (one-shot), procedural (topology snapshots)
 - **Bindings**: Python (via PyO3/maturin) and WebAssembly (via wasm-bindgen) support
 - **Parallel Processing**: Rayon-based parallelization on fast path (feature-gated)
@@ -84,8 +90,8 @@ where `e` is the eligibility trace (STDP coincidences), `M(t)` is the receptor-g
 ![Morphon network topology](docs/paper/paper/figures/topology_developed.jpg)
 *Morphon network after training. Purple = associative, cyan = sensory, orange = motor, green = modulatory. The 3D layout is the Poincaré ball embedding: origin = general/stem morphons, boundary = specialized. Orange motor morphons concentrate on one side and project through the synaptic web.*
 
-![Morphon network running](docs/paper/paper/figures/topology_running.jpg)
-*The same network during active inference. Dotted yellow trails are action potentials propagating along axons with learned delays.*
+![Morphon network running](docs/paper/paper/figures/visualizer_running.jpg)
+*The same network during active inference in the WASM visualizer. Dotted yellow trails are action potentials propagating along axons with learned delays.*
 
 ### Endoquilibrium — Predictive Neuroendocrine Regulation
 
@@ -99,9 +105,19 @@ Developmental stage detection (from relative reward trajectory, not absolute val
 |-------|---------|
 | **Proliferating** | history < 20 ticks (warmup) |
 | **Stressed** | reward trend < −0.05 · \|slow EMA\| |
-| **Mature** | reward stable, low cv, history ≥ 2000 ticks |
+| **Mature** | reward stable, low cv, RPE converged or history ≥ 8000 ticks |
 | **Consolidating** | reward near ceiling, stable, history ≥ 500 |
-| **Differentiating** | reward actively climbing (default healthy state) |
+| **Differentiating** | reward actively climbing (trend > 0.05 · \|slow EMA\|) |
+
+### Limbic Circuit — Salience, Motivation, Episodic Memory
+
+A three-component analog of the limbic system that modulates learning intensity based on per-stimulus salience and prediction error:
+
+- **SalienceDetector** (amygdala analog) — confidence-based salience: `1 − max_softmax_prob`. Stage-gated: suppressed during Proliferating where the model is uniformly uncertain.
+- **MotivationalDrive** (nucleus accumbens analog) — per-class RPE tracking. High-surprise correct predictions deliver amplified contrastive reward: `strength = 0.5 × (1 + RPE.clamp(0,1))`.
+- **EpisodicTagger** (hippocampus analog) — ring buffer of high-salience episodes for future replay, weighted by `salience × |RPE|`.
+
+Effect: +0.13pp mean stateless accuracy over 5 seeds (87.0% vs 86.87% baseline). Stage gate prevents early-training flooding; RPE-amp gives stronger imprint to genuinely surprising correct predictions.
 
 ### Epistemic Model — Four-State Knowledge Tracking
 
@@ -127,7 +143,7 @@ Four failure modes encountered during development — each has a biological para
 | **Modulatory explosion** | Positive feedback: high reward → strong dopamine → more activity → more reward → saturation | Hill-function receptor saturation, receptor downregulation, exponential decay ("reuptake") |
 | **Motor silencing** | After initial burst, motor morphons go silent; network produces zero output | Tonic baseline current injection + Endoquilibrium threshold-bias rule |
 | **LTD vicious cycle** | LTD > LTP at low firing rates → global weight decay → silence → apoptosis | Turrigiano synaptic scaling + BCM-style metaplasticity thresholds |
-| **Premature Mature** | Endo declares Mature at 26% accuracy; plasticity throttled to 0.60×; learning stops | History gate (≥2000 ticks) prevents premature Mature declaration on classification tasks |
+| **Premature Mature** | Endo declares Mature at 26% accuracy; plasticity throttled to 0.60×; learning stops | RPE convergence gate + history gate (≥8000 ticks) prevents premature Mature on classification tasks |
 
 The Premature Mature failure mode is, to our knowledge, novel: dense reward signals on classification tasks inflate the slow EMA before the system has learned anything, triggering Mature stage detection and locking learning out of the high-plasticity Differentiating regime.
 
@@ -145,12 +161,18 @@ The Premature Mature failure mode is, to our knowledge, novel: dense reward sign
 │   ├── neuromodulation.rs # Four broadcast channels
 │   ├── developmental.rs # Bootstrap programs
 │   ├── homeostasis.rs   # Stability mechanisms
+│   ├── endoquilibrium.rs # Predictive neuroendocrine regulation
+│   ├── limbic.rs        # Limbic circuit (salience, RPE, episodic tagging)
 │   ├── memory.rs        # Triple memory system
 │   ├── diagnostics.rs   # Learning pipeline observability
 │   ├── snapshot.rs      # System state serialization
 │   ├── python.rs        # PyO3 bindings (feature: python)
 │   └── wasm.rs          # WASM bindings (feature: wasm)
-├── examples/            # Runnable examples (cartpole, anomaly, mnist)
+├── examples/            # Runnable examples
+│   ├── cartpole.rs      # CartPole-v1 control
+│   ├── mnist_v2.rs      # MNIST supervised classification
+│   ├── drone.rs         # 3D quadrotor hover/navigate
+│   └── anomaly.rs       # Anomaly detection
 ├── benches/             # Criterion benchmarks
 ├── tests/               # Unit and integration tests
 ├── web/                 # Three.js web visualizer
@@ -181,7 +203,12 @@ cargo bench
 cargo run --example cartpole --release              # quick
 cargo run --example cartpole --release -- --standard
 cargo run --example cartpole --release -- --extended
-# Same for: anomaly, mnist (mnist requires ./data/ with MNIST files)
+# Same for: anomaly, drone
+
+# MNIST (requires ./data/ with MNIST files)
+cargo run --example mnist_v2 --release -- --standard
+cargo run --example mnist_v2 --release -- --standard --limbic   # with limbic circuit
+cargo run --example mnist_v2 --release -- --standard --seed=43  # specific seed
 
 # Python bindings
 maturin develop --features python
@@ -238,4 +265,4 @@ Apache-2.0
 
 ## Version
 
-3.0.0 (see Cargo.toml)
+4.9.0 (see Cargo.toml)
