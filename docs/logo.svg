@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="80" viewBox="0 0 320 80">
+  <defs>
+    <radialGradient id="mark-grad" cx="35%" cy="35%" r="65%">
+      <stop offset="0%"   stop-color="#00d4ff"/>
+      <stop offset="50%"  stop-color="#508cff"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </radialGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Mark circle -->
+  <circle cx="40" cy="40" r="32" fill="url(#mark-grad)" filter="url(#glow)" opacity="0.95"/>
+
+  <!-- M letterform -->
+  <text x="40" y="47" text-anchor="middle"
+        font-family="'Segoe UI', system-ui, sans-serif"
+        font-size="26" font-weight="700" fill="#ffffff" letter-spacing="-1">M</text>
+
+  <!-- MORPHON wordmark -->
+  <text x="88" y="36"
+        font-family="'Segoe UI', 'Outfit', system-ui, sans-serif"
+        font-size="26" font-weight="300" fill="#ffffff" letter-spacing="3">MORPHON</text>
+
+  <!-- ENGINE sub-label -->
+  <text x="90" y="57"
+        font-family="'Segoe UI', system-ui, sans-serif"
+        font-size="11" font-weight="600" fill="#508cff" letter-spacing="5">ENGINE</text>
+</svg>

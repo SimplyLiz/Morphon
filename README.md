@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.svg" alt="Morphon Engine" width="320"/>
+</p>
+
 # Morphon-Core
 
 **Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime**

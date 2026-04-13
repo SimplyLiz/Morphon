@@ -101,6 +101,20 @@ Concretely: synapses with high recent eligibility set a tag; tags accumulate at 
 
 Endoquilibrium gates the global capture rate via a dedicated \texttt{consolidation\_gain} channel. This separation matches the biology: \emph{tags are local and continuous} (driven by per-synapse STDP eligibility), \emph{capture is global and episodic} (driven by neuromodulatory protein-synthesis-related signals during salient events). The earlier design that combined them under a single ``endo\_tag\_factor'' was biologically incorrect and produced an unstable feedback loop.
 
+\subsection{ANCS-Core: Native Adaptive Memory Substrate}
+\label{sec:ancs}
+
+The Adaptive Node-Cluster System (ANCS) is implemented natively in Rust (\texttt{src/ancs.rs}) as the long-term memory substrate. It replaces an earlier architecture that forwarded memory operations to a separate HTTP/PostgreSQL service; ANCS runs entirely in-process with zero serialization overhead.
+
+\paragraph{Architecture.}
+The core abstraction is a \texttt{MemoryBackend} trait implemented by \texttt{InMemoryBackend}, which maintains a flat vector of \texttt{MemoryItem}s indexed by importance score. Items are organized into four \emph{VBC-lite tiers}: Verbatim (exact episode records), Structural (connectivity snapshots), Semantic (abstracted associations), and Procedural (morphon-count timelines). Item importance is scored by six factors following the SM-2 spaced-repetition model \cite{wozniak1990sm2}: centrality, novelty, reward correlation, consolidation level, recency, and access frequency.
+
+\paragraph{Epistemic lifecycle.}
+Each memory item carries an epistemic state through a six-stage lifecycle: Hypothesis $\to$ Supported $\to$ Stale $\to$ (Suspect $|$ Contested) $\to$ Outdated. Conflict detection (TruthKeeper) flags items as Contested when a new item shares Jaccard similarity $\geq 0.3$ with an existing item but carries an opposing reward sign. Conflicts trigger a cascade that re-evaluates dependent items (blast-radius propagation), maintaining a self-consistent episodic record.
+
+\paragraph{Integration with System.}
+\texttt{System} carries an \texttt{InMemoryBackend} and a \texttt{SystemHeartbeat} (a cache-line-aligned atomic counter at \texttt{\#[repr(C, align(64))]}). On each memory tick, ANCS advances, TruthKeeper reconsolidates disputed items, and the heartbeat updates. Episodic encoding creates ANCS items from the current firing pattern; \texttt{SynapticJustification.memory\_item\_ref} links individual synapses to the ANCS item that last updated them, enabling targeted weight-level episodic replay. \texttt{System::retrieve\_memory()} fuses TripleMemory and ANCS results via Reciprocal Rank Fusion (RRF); \texttt{dream\_cycle()} replays the top-5 highest-importance ANCS items to re-consolidate learned associations during quiescent periods.
+
 \subsection{Reproducibility}
 
 The full benchmark suite is reproducible from a clean checkout:

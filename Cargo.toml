@@ -3,7 +3,7 @@ name = "morphon-core"
 version = "4.9.0"
 edition = "2024"
 description = "Morphogenic Intelligence Engine — adaptive AI systems that grow, learn, and self-organize at runtime"
-license = "Apache-2.0"
+license = "LicenseRef-Morphon-NonCommercial"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
