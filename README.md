@@ -10,8 +10,8 @@ Morphon-Core is a biologically-inspired, adaptive intelligence engine that imple
 > not cross-version comparable. This is not production software. See [`CHANGELOG.md`](CHANGELOG.md)
 > for the version history and [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to report issues.
 
-![Morphon WASM Visualizer](docs/paper/paper/figures/visualizer_full.jpg)
-*The in-browser WASM visualizer. Spheres are morphons colored by cell type; dotted yellow trails are action potentials propagating along axons with learned delays. The 3D layout is the Poincaré ball embedding.*
+![Morphon WASM Visualizer](docs/screenshots/visualizer_consolidating.png)
+*The in-browser WASM visualizer during a MNIST training run (Consolidating stage, 4858 ticks, 14% firing rate). Spheres are morphons colored by cell type; lines are active synaptic connections; the bright cluster at center is a high-activity associative region. The 3D layout is the Poincaré ball embedding.*
 
 ## Headline Results
 
