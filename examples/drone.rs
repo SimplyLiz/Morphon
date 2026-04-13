@@ -125,13 +125,13 @@ struct Drone3D {
 }
 
 impl Drone3D {
-    fn reset(&mut self, tgt: (f64, f64, f64), rng: &mut impl Rng) {
+    fn reset(&mut self, tgt: (f64, f64, f64), rng: &mut impl Rng, alt_spread: f64) {
         let (tx, ty, tz) = tgt;
         self.x     = tx + rng.random_range(-0.3..0.3);
         self.y     = ty + rng.random_range(-0.3..0.3);
-        // Randomize starting altitude across the full flight envelope so the policy
-        // encounters both low-altitude ascents and high-altitude descents consistently.
-        self.z     = (tz + rng.random_range(-1.5..1.5)).clamp(0.5, 5.5);
+        // Curriculum: spread widens from 0.3m → 1.5m as training progresses.
+        // Starts near-target so the policy stabilises before facing large altitude gaps.
+        self.z     = (tz + rng.random_range(-alt_spread..alt_spread)).clamp(0.5, 5.5);
         self.vx    = rng.random_range(-0.2..0.2);
         self.vy    = rng.random_range(-0.2..0.2);
         self.vz    = rng.random_range(-0.1..0.1);
@@ -529,15 +529,16 @@ fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> usize {
 }
 
 fn run_episode(
-    system:   &mut System,
-    drone:    &mut Drone3D,
-    critic:   &mut Critic,
-    wind:     &mut Wind,
-    wps:      &[(f64,f64,f64)],
-    max_steps: usize,
-    epsilon:   f64,
-    gusts:     bool,
-    rng:       &mut impl Rng,
+    system:    &mut System,
+    drone:     &mut Drone3D,
+    critic:    &mut Critic,
+    wind:      &mut Wind,
+    wps:       &[(f64,f64,f64)],
+    max_steps:  usize,
+    epsilon:    f64,
+    gusts:      bool,
+    alt_spread: f64,
+    rng:        &mut impl Rng,
 ) -> (usize, f64, usize, Vec<TrajPoint>, &'static str, f64) {
     let mut wp_idx    = 0usize;
     let mut wp_steps  = 0usize;
@@ -545,7 +546,7 @@ fn run_episode(
     let mut wps_done  = 0usize;
     let mut tgt       = wps[0];
 
-    drone.reset(tgt, rng);
+    drone.reset(tgt, rng, alt_spread);
     system.reset_voltages();
     wind.vx = 0.0; wind.vy = 0.0;
 
@@ -714,9 +715,11 @@ fn main() {
 
     for ep in 0..num_eps {
         let epsilon = (0.5 * (1.0 - ep as f64 / num_eps as f64)).max(0.05);
+        // Curriculum: spread starts at 0.3m and widens linearly to 1.5m by ep800.
+        let alt_spread = (0.3 + 1.2 * (ep as f64 / (num_eps as f64 * 0.8)).min(1.0)).clamp(0.3, 1.5);
         let (steps, avg_err, n_wps, traj, crash_cause, near_pct) = run_episode(
             &mut system, &mut drone, &mut critic, &mut wind,
-            wps, max_steps, epsilon, gusts, &mut rng,
+            wps, max_steps, epsilon, gusts, alt_spread, &mut rng,
         );
 
         recent_steps.push(steps);

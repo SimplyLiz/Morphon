@@ -711,8 +711,18 @@ impl AllostasisPredictor {
         // Not "seeing new things" (PE rising) but "getting worse at the task."
         // Use max(0.01) not max(1.0) — for MNIST rewards in [0,1], max(1.0)
         // makes the threshold absolute and triggers Stressed on tiny dips.
+        //
+        // Hysteresis: enter Stressed only on a meaningful dip (-7% × slow_abs),
+        // but once in Stressed stay there until genuine recovery (-2% × slow_abs).
+        // Prevents the boundary oscillation where reward_trend sits exactly at
+        // the threshold and small noise causes rapid Consolidating↔Stressed cycling.
         let slow_abs = reward_slow.abs().max(0.01);
-        if reward_trend < -0.05 * slow_abs && self.reward_history.len() >= 50 {
+        let stress_threshold = if self.stage == DevelopmentalStage::Stressed {
+            -0.02 * slow_abs // exit only on clear recovery
+        } else {
+            -0.07 * slow_abs // enter only on meaningful dip
+        };
+        if reward_trend < stress_threshold && self.reward_history.len() >= 50 {
             return DevelopmentalStage::Stressed;
         }
 
@@ -1097,7 +1107,7 @@ impl Endoquilibrium {
             DevelopmentalStage::Differentiating => (2.0, 1.2),
             DevelopmentalStage::Consolidating => (1.0, 0.8),
             DevelopmentalStage::Mature => (0.5, 0.5),
-            DevelopmentalStage::Stressed => (0.5, 1.5),
+            DevelopmentalStage::Stressed => (0.70, 1.5), // raised from 0.50 — protects learned representations during dips
         };
         ch.consolidation_gain = cg;
         ch.plasticity_mult *= pm_stage;
