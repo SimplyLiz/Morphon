@@ -301,10 +301,16 @@ pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_f
         && synapse.usage_count < 5
         // V6: Protect synapses with high reward-correlated activity.
         && synapse.reward_correlation < params.reward_correlation_min
+        // Phase 4: Protect synapses with an active synaptic tag — they are in the
+        // "awaiting capture" state and must survive until delayed reward arrives or
+        // the tag decays. Pruning a tagged synapse before capture destroys the
+        // credit-assignment pathway that tag-and-capture depends on.
+        && synapse.tag_strength < params.forward_importance_min
 }
 
-/// Like `should_prune_with_cost` but counts what Phase 4 would rescue.
-/// Currently the diagnostic counter never fires — see docs/internal/ancs.md.
+/// Like `should_prune_with_cost` but WITHOUT the Phase 4 tag guard.
+/// Used for the diagnostic counter in `pruning()` to measure how many synapses
+/// the tag protection rescues each slow tick.
 pub fn should_prune_without_fwd(synapse: &Synapse, params: &LearningParams, cost_factor: f64) -> bool {
     let effective_weight_min = params.weight_min * cost_factor.max(1.0);
     !synapse.consolidated
