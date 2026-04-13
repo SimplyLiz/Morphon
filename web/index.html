@@ -101,20 +101,12 @@
   }
   .logo-mark {
     width: 30px; height: 30px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 35%, var(--sensory), var(--accent) 50%, var(--associative));
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 13px;
-    color: #fff;
-    font-weight: 600;
+    flex-shrink: 0;
     animation: logo-breathe 4s ease-in-out infinite;
-    box-shadow: 0 0 12px rgba(80, 140, 255, 0.25);
   }
   @keyframes logo-breathe {
-    0%, 100% { box-shadow: 0 0 12px rgba(80, 140, 255, 0.2); }
-    50% { box-shadow: 0 0 20px rgba(80, 140, 255, 0.4), 0 0 40px rgba(80, 140, 255, 0.1); }
+    0%, 100% { filter: drop-shadow(0 0 3px rgba(80, 140, 255, 0.2)); }
+    50%       { filter: drop-shadow(0 0 8px rgba(80, 140, 255, 0.45)); }
   }
   .logo h1 {
     font-family: 'Outfit', sans-serif;
@@ -1299,7 +1291,31 @@
 <!-- HEADER -->
 <div id="header" class="overlay">
   <div class="logo">
-    <div class="logo-mark">M</div>
+    <svg class="logo-mark" width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <filter id="hgc"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="hgp"><feGaussianBlur stdDeviation="1.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="hgo"><feGaussianBlur stdDeviation="1" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <radialGradient id="hcore" cx="50%" cy="50%" r="50%">
+          <stop offset="0%" stop-color="#508cff"/><stop offset="100%" stop-color="#508cff" stop-opacity="0"/>
+        </radialGradient>
+      </defs>
+      <!-- outer ring cyan -->
+      <circle cx="15" cy="15" r="13" fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="1"/>
+      <circle cx="15" cy="15" r="13" fill="none" stroke="#00d4ff" stroke-width="1"
+              stroke-dasharray="41 41" filter="url(#hgc)" opacity="0.9"/>
+      <!-- mid ring purple reversed -->
+      <circle cx="15" cy="15" r="9" fill="none" stroke="rgba(167,139,250,0.08)" stroke-width="0.9"/>
+      <circle cx="15" cy="15" r="9" fill="none" stroke="#a78bfa" stroke-width="0.9"
+              stroke-dasharray="28 28" stroke-dashoffset="-14" filter="url(#hgp)" opacity="0.85"/>
+      <!-- inner ring orange -->
+      <circle cx="15" cy="15" r="5" fill="none" stroke="rgba(255,107,53,0.08)" stroke-width="0.8"/>
+      <circle cx="15" cy="15" r="5" fill="none" stroke="#ff6b35" stroke-width="0.8"
+              stroke-dasharray="16 16" filter="url(#hgo)" opacity="0.8"/>
+      <!-- core -->
+      <circle cx="15" cy="15" r="2.5" fill="url(#hcore)" filter="url(#hgo)"/>
+      <circle cx="15" cy="15" r="1.2" fill="#508cff" opacity="0.95"/>
+    </svg>
     <h1>MORPHON<span>ENGINE</span></h1>
   </div>
   <div class="header-stats">
