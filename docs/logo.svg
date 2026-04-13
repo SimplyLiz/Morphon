@@ -1,19 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="420" height="84" viewBox="0 0 420 84">
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="52" viewBox="0 0 460 52">
   <defs>
     <filter id="gc">
-      <feGaussianBlur stdDeviation="2.5" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="gp">
       <feGaussianBlur stdDeviation="2" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <filter id="go">
+    <filter id="gp">
       <feGaussianBlur stdDeviation="1.5" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <filter id="go">
+      <feGaussianBlur stdDeviation="1.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
     <filter id="gcore">
-      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feGaussianBlur stdDeviation="3" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
     <radialGradient id="cg" cx="50%" cy="50%" r="50%">
@@ -22,32 +22,32 @@
     </radialGradient>
   </defs>
 
-  <!-- Ring mark, centered at (42, 42) -->
+  <!-- Ring mark, center (26,26), outer r=18 → diameter 36 ≈ cap-height of 50px text -->
 
   <!-- Outer ring — cyan -->
-  <circle cx="42" cy="42" r="36" fill="none" stroke="rgba(0,212,255,0.15)" stroke-width="1.5"/>
-  <circle cx="42" cy="42" r="36" fill="none" stroke="#00d4ff" stroke-width="1.5"
-          stroke-dasharray="113 113" filter="url(#gc)" opacity="0.9"/>
+  <circle cx="26" cy="26" r="22" fill="none" stroke="rgba(0,212,255,0.15)" stroke-width="1.3"/>
+  <circle cx="26" cy="26" r="22" fill="none" stroke="#00d4ff" stroke-width="1.3"
+          stroke-dasharray="69 69" filter="url(#gc)" opacity="0.9"/>
 
   <!-- Mid ring — purple, reversed -->
-  <circle cx="42" cy="42" r="26" fill="none" stroke="rgba(167,139,250,0.10)" stroke-width="1.3"/>
-  <circle cx="42" cy="42" r="26" fill="none" stroke="#a78bfa" stroke-width="1.3"
-          stroke-dasharray="82 82" stroke-dashoffset="-41"
+  <circle cx="26" cy="26" r="15" fill="none" stroke="rgba(167,139,250,0.10)" stroke-width="1.1"/>
+  <circle cx="26" cy="26" r="15" fill="none" stroke="#a78bfa" stroke-width="1.1"
+          stroke-dasharray="47 47" stroke-dashoffset="-24"
           filter="url(#gp)" opacity="0.85"/>
 
   <!-- Inner ring — orange -->
-  <circle cx="42" cy="42" r="15" fill="none" stroke="rgba(255,107,53,0.10)" stroke-width="1.1"/>
-  <circle cx="42" cy="42" r="15" fill="none" stroke="#ff6b35" stroke-width="1.1"
-          stroke-dasharray="47 47" filter="url(#go)" opacity="0.8"/>
+  <circle cx="26" cy="26" r="8" fill="none" stroke="rgba(255,107,53,0.10)" stroke-width="1"/>
+  <circle cx="26" cy="26" r="8" fill="none" stroke="#ff6b35" stroke-width="1"
+          stroke-dasharray="25 25" filter="url(#go)" opacity="0.8"/>
 
   <!-- Core -->
-  <circle cx="42" cy="42" r="5" fill="url(#cg)" filter="url(#gcore)"/>
-  <circle cx="42" cy="42" r="2.2" fill="#508cff" opacity="0.95"/>
+  <circle cx="26" cy="26" r="3.5" fill="url(#cg)" filter="url(#gcore)"/>
+  <circle cx="26" cy="26" r="1.6" fill="#508cff" opacity="0.95"/>
 
-  <!-- Wordmark: MORPHON + ENGINE -->
-  <text y="52"
+  <!-- Wordmark — font-size 50, cap-height ≈ 36px matches ring outer diameter 44 -->
+  <text y="42"
         font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-        font-size="28" letter-spacing="4">
-    <tspan x="96" font-weight="300" fill="#f0f4ff">MORPHON</tspan><tspan font-weight="600" fill="#508cff">ENGINE</tspan>
+        font-size="36" letter-spacing="3">
+    <tspan x="58" font-weight="300" fill="#f0f4ff">MORPHON</tspan><tspan font-weight="600" fill="#508cff">ENGINE</tspan>
   </text>
 </svg>
