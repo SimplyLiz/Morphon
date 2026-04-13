@@ -123,6 +123,40 @@ impl SalienceDetector {
         self.current_salience
     }
 
+    /// Evaluate salience from the model's readout output (post-cortical path).
+    ///
+    /// This is the "high road" salience signal — computed *after* the cortical path
+    /// has processed the input, using the model's own uncertainty as the salience proxy.
+    ///
+    /// **Why this works better than pixel-EMA for classification:**
+    /// Pixel-EMA novelty stays ~1.0 for MNIST (every sparse digit deviates from the
+    /// grey mean). Readout uncertainty correctly tracks per-sample difficulty: if the
+    /// model is confident (peaked output), the input is familiar → low salience.
+    /// If the model is uncertain (flat output), the input is hard/novel → high salience.
+    ///
+    /// salience = 1 − (max_output / softmax_sum) = 1 − confidence
+    ///
+    /// Updates `current_salience` and `novelty_component`. Returns salience ∈ [0, 1].
+    /// Call after `present_image()` / `read_output()` and before `inject_arousal()`.
+    pub fn evaluate_from_output(&mut self, readout: &[f64]) -> f64 {
+        if readout.is_empty() {
+            self.current_salience = 0.5;
+            return 0.5;
+        }
+        // Softmax-based confidence: numerically stable via max-subtraction.
+        let max_val = readout.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let exps: Vec<f64> = readout.iter().map(|&v| (v - max_val).exp()).collect();
+        let sum_exp: f64 = exps.iter().sum();
+        let confidence = if sum_exp > 0.0 { exps.iter().cloned().fold(f64::NEG_INFINITY, f64::max) / sum_exp } else { 1.0 / readout.len() as f64 };
+        // salience = uncertainty: confident model → low salience, uncertain → high
+        let salience = (1.0 - confidence).clamp(0.0, 1.0);
+        self.novelty_component = salience; // reuse field; reward_expectation_component unchanged
+        self.current_salience = salience
+            .max(self.reward_expectation_component)
+            .clamp(0.0, 1.0);
+        self.current_salience
+    }
+
     /// Record the reward outcome for an input after processing.
     /// Updates the reward association map so future similar inputs are recognised.
     pub fn record_outcome(&mut self, input: &[f64], reward: f64) {
@@ -298,6 +332,8 @@ pub struct EpisodicTagger {
 pub struct EpisodeRecord {
     /// Coarse hash of the input pattern (from SalienceDetector::hash_input).
     pub input_hash: u64,
+    /// Raw input snapshot for replay. Enables re-presenting the exact stimulus.
+    pub input: Vec<f64>,
     /// Morphon IDs that fired during this episode.
     pub active_morphons: Vec<u64>,
     /// Reward received.
@@ -342,6 +378,7 @@ impl EpisodicTagger {
 
         let record = EpisodeRecord {
             input_hash: SalienceDetector::hash_input(input),
+            input: input.to_vec(),
             active_morphons: active_morphons.to_vec(),
             reward,
             rpe,

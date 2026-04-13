@@ -3172,31 +3172,42 @@ impl System {
         self.read_output()
     }
 
-    /// Process one step with Limbic Circuit modulation.
+    /// Process one step, then apply confidence-based limbic salience modulation.
     ///
-    /// If `self.limbic.enabled`:
-    /// 1. Evaluates salience of `observation` and injects proportional arousal.
-    /// 2. Runs the standard `process()` cortical step.
+    /// If `self.limbic.enabled`, this is the preferred call for classification tasks:
+    /// 1. Run the cortical step (`process()`).
+    /// 2. Compute salience from readout uncertainty (high uncertainty = hard sample = salient).
+    /// 3. Inject a bounded arousal delta for the *next* step — attention boost
+    ///    for samples the model found difficult.
     ///
-    /// If limbic is disabled, falls back to plain `process()` — zero overhead.
+    /// "High road" signal: salience from cortical output, not raw input pixels.
+    /// Correctly differentiates hard digits (uncertain readout → high salience)
+    /// from easy ones (peaked readout → low salience), without flooding.
+    /// Arousal injection capped at `0.3 × salience` — never dominates Endo's baseline.
     ///
-    /// Call `deliver_limbic_reward()` after determining correctness.
+    /// If limbic is disabled, equivalent to plain `process()`.
     pub fn process_with_limbic(
         &mut self,
         observation: &[f64],
         _label: Option<usize>,
     ) -> Vec<f64> {
+        let output = self.process(observation);
         if !self.limbic.enabled {
-            return self.process(observation);
+            return output;
         }
-
-        // Fast path: evaluate salience and modulate arousal before cortical processing.
-        let salience = self.limbic.salience_detector.evaluate(observation);
-        // Inject salience-scaled arousal additively: low salience → quiet, high → alert.
-        let base_arousal = self.endo.channels.arousal_gain as f64;
-        self.modulation.inject_arousal(base_arousal * salience);
-
-        self.process(observation)
+        // High road: derive salience from readout uncertainty after cortical processing.
+        let salience = self.limbic.salience_detector.evaluate_from_output(&output);
+        // Gate arousal injection on Endo stage. During Proliferating the model hasn't
+        // formed representations yet — confidence is uniformly low for every input, so
+        // salience ≈ 0.9 constantly and arousal becomes noise (same failure mode as
+        // pixel-EMA flooding). Only inject once we're Consolidating or beyond, when
+        // confidence variance is real (easy classes confident, hard classes uncertain).
+        use crate::endoquilibrium::DevelopmentalStage;
+        let stage = self.endo.stage();
+        if stage != DevelopmentalStage::Proliferating {
+            self.modulation.inject_arousal(0.3 * salience);
+        }
+        output
     }
 
     /// Deliver reward through the Limbic Circuit after processing a sample.

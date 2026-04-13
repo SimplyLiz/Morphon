@@ -191,7 +191,21 @@ fn create_v2(istdp_rate: f64, initial_inh_weight: f64, rng_seed: u64, seed_size:
         },
         target_morphology: Some(tm),
         metabolic: MetabolicConfig::default(),
-        endoquilibrium: morphon_core::endoquilibrium::EndoConfig { enabled: true, ..Default::default() },
+        endoquilibrium: morphon_core::endoquilibrium::EndoConfig {
+            enabled: true,
+            // Defer Mature until well into supervised training. The default 2000-tick gate
+            // fires in early ep2 because 3 steps/image × 5000 images = 15k ticks in ep1
+            // alone. At that point reward_slow is stable but test accuracy is only ~40% —
+            // Mature's cg=0.5 pm=0.5 would lock in bad representations.
+            // 8000 ticks ≈ 2700 supervised images; by then the system has real signal.
+            mature_min_updates: 8000,
+            // Gentler threshold-bias response to excess firing. LocalInhibition's iSTDP
+            // adapts slowly at startup — the default 0.8 coefficient drives tb to +0.3
+            // before iSTDP can compensate, suppressing feature formation and creating
+            // a positive tb drift throughout ep2-3. 0.3 gives iSTDP time to equilibrate.
+            fr_excess_threshold_k: 0.3,
+            ..Default::default()
+        },
         dt: 1.0,
         working_memory_capacity: 7,
         episodic_memory_capacity: 500,
@@ -481,36 +495,46 @@ fn train_and_eval_from(
                 system.reset_transient_state();
             }
 
-            // Limbic fast path: evaluate salience and record for later RPE association.
-            // Arousal injection is skipped — pixel-EMA salience is ~constant for MNIST
-            // (every sparse digit deviates from the grey mean), flooding arousal channel.
-            if system.limbic.enabled {
-                system.limbic.salience_detector.evaluate(&train_images[idx]);
-            }
-
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
 
-            // Supervised readout + contrastive reward gated on correctness
             let correct = train_labels[idx];
             system.train_readout(correct, lr);
-            let predicted = system.read_output().iter().enumerate()
+            let readout = system.read_output();
+
+            // High-road limbic salience: confidence-based, stage-gated.
+            // During Proliferating the model is uniformly uncertain → constant salience
+            // → arousal noise. Only inject post-Proliferating when confidence variance
+            // is real (easy classes confident, hard classes uncertain).
+            if system.limbic.enabled {
+                let salience = system.limbic.salience_detector.evaluate_from_output(&readout);
+                use morphon_core::endoquilibrium::DevelopmentalStage;
+                if system.endo.stage() != DevelopmentalStage::Proliferating {
+                    system.inject_arousal(0.3 * salience);
+                }
+            }
+
+            let predicted = readout.iter().enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i).unwrap_or(0);
 
             if supervised {
-                // Only inject reward when correct — prevents reward_slow inflation
-                // that triggers premature Mature at 11% accuracy
-                if predicted == correct {
-                    system.reward_contrastive(correct, 0.5, 0.2);
-                }
-                // Limbic reward: call on every image (correct and incorrect) so RPE
-                // tracks per-class difficulty. Easy classes (high hit rate) develop high
-                // expectation → low RPE on correct. Hard classes stay low → high RPE on
-                // surprise correct → large metabolic energy boost for those morphons.
                 if system.limbic.enabled {
+                    // Deliver RPE first so current_rpe reflects this sample.
+                    // Then amplify contrastive reward by RPE: hard classes that get a
+                    // surprise correct (high RPE) receive a stronger synaptic imprint.
+                    // strength ∈ [0.5, 1.0] — at rpe=0 same as baseline, at rpe=1 doubles.
                     let reward = if predicted == correct { 0.5 } else { 0.0 };
                     system.deliver_limbic_reward(&train_images[idx], correct, reward);
+                    if predicted == correct {
+                        let rpe = system.limbic.motivational_drive.current_rpe;
+                        let strength = (0.5 * (1.0 + rpe.clamp(0.0, 1.0))).min(1.0);
+                        system.reward_contrastive(correct, strength, 0.2);
+                    }
+                } else {
+                    if predicted == correct {
+                        system.reward_contrastive(correct, 0.5, 0.2);
+                    }
                 }
             }
             window_buf[window_pos] = predicted == correct;

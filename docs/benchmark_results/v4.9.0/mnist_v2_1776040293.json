@@ -1,0 +1,41 @@
+{
+  "baseline_acc": 48.0,
+  "benchmark": "mnist_v2_supervised",
+  "config": {
+    "competition_mode": "LocalInhibition",
+    "initial_connectivity": 0.02,
+    "mature_threshold": 0.3,
+    "medium_period": 10,
+    "sa_connectivity": "hardcoded 30%",
+    "seed_size": 200,
+    "slow_period": 5000
+  },
+  "damaged_acc": 47.5,
+  "epochs": 3,
+  "local_inhibition_params": {
+    "inhibition_radius": 0.0,
+    "initial_inh_weight": -0.5,
+    "interneuron_ratio": 0.1,
+    "istdp_rate": 0.001,
+    "target_rate": 0.05
+  },
+  "n_train": 3000,
+  "profile": "quick",
+  "recovery_acc": 33.0,
+  "seed": 42,
+  "steps_per_image": 10,
+  "total_duration_s": 296,
+  "v3_acc": 49.0,
+  "v3_acc_stateless": 83.0,
+  "v3_competition_mode": "LocalInhibition",
+  "v3_duration_s": 176,
+  "v3_morphons": 1272,
+  "v3_synapses": 72925,
+  "v3sl_acc": 46.5,
+  "v3sl_acc_stateless": 88.5,
+  "v3sl_competition_mode": "LocalInhibition+StatelessTraining",
+  "v3sl_duration_s": 120,
+  "v3sl_morphons": 1272,
+  "v3sl_synapses": 58207,
+  "version": "4.9.0"
+}

@@ -62,7 +62,18 @@ pub struct EndoConfig {
     /// Set true only for ablation studies isolating the ng-collapse fix contribution.
     #[serde(default)]
     pub suppress_novelty_on_energy: bool,
+    /// Minimum total_updates before the Mature stage can be entered via the time-gate
+    /// fallback (`total_updates >= mature_min_updates`). Default 2000 (backward compat).
+    /// Raise for supervised tasks (e.g. MNIST) where early reward stability is misleading:
+    /// the training-window accuracy saturates before test accuracy converges, causing Endo
+    /// to declare Mature prematurely and lock in conservative parameters (cg=0.5, pm=0.5).
+    /// Set to e.g. 8000 (≈ first 2700 supervised images at 3 steps/image) to defer Mature
+    /// until the system has seen enough supervised signal to genuinely converge.
+    #[serde(default = "default_mature_min_updates")]
+    pub mature_min_updates: usize,
 }
+
+fn default_mature_min_updates() -> usize { 2000 }
 
 impl Default for EndoConfig {
     fn default() -> Self {
@@ -92,6 +103,7 @@ impl Default for EndoConfig {
             tag_capture_stale_ticks: 500,
             plasticity_floor: 0.0,
             suppress_novelty_on_energy: false,
+            mature_min_updates: default_mature_min_updates(), // 2000
         }
     }
 }
@@ -541,7 +553,7 @@ impl Default for AllostasisPredictor {
 }
 
 impl AllostasisPredictor {
-    fn update(&mut self, vitals: &VitalSigns, fast_alpha: f32, slow_alpha: f32) {
+    fn update(&mut self, vitals: &VitalSigns, fast_alpha: f32, slow_alpha: f32, mature_min_updates: usize) {
         // Update fast EMAs
         ema_update_f32(
             &mut self.fast_emas.fr_sensory,
@@ -656,7 +668,7 @@ impl AllostasisPredictor {
         // the Stressed threshold. Progressive transitions (Prolif→Diff→Consol→Mature)
         // are not guarded — they should respond immediately to genuine improvement.
         const MIN_CONSOL_DWELL: usize = 150;
-        let new_stage = self.detect_stage();
+        let new_stage = self.detect_stage(mature_min_updates);
         self.stage_age_ticks += 1;
         let thrash_guard = self.stage == DevelopmentalStage::Consolidating
             && new_stage == DevelopmentalStage::Stressed
@@ -681,7 +693,7 @@ impl AllostasisPredictor {
         }
     }
 
-    fn detect_stage(&self) -> DevelopmentalStage {
+    fn detect_stage(&self, mature_min_updates: usize) -> DevelopmentalStage {
         // Reward-based stage detection: relative to the system's own history.
         // Uses slow EMA as "what this system normally achieves" baseline.
         // No hardcoded absolute thresholds — works for CartPole, MNIST, any task.
@@ -734,7 +746,7 @@ impl AllostasisPredictor {
         if reward_slow > 0.3
             && reward_cv < 0.15
             && reward_trend.abs() < 0.005 * slow_abs
-            && (rpe_converged || self.total_updates >= 2000)
+            && (rpe_converged || self.total_updates >= mature_min_updates)
         {
             return DevelopmentalStage::Mature;
         }
@@ -753,8 +765,15 @@ impl AllostasisPredictor {
             return DevelopmentalStage::Consolidating;
         }
 
-        // Differentiating: reward actively climbing.
-        if reward_trend > 0.0 {
+        // Differentiating: reward actively climbing with a meaningful gradient.
+        // Threshold mirrors the Stressed condition (0.05 × slow_abs) but positive.
+        // Previously used `> 0.0` which fired on any noise — in late training when
+        // reward has plateaued, tiny fluctuations caused constant Consolidating↔
+        // Differentiating thrashing (cg oscillates 1.0↔2.0, pm 0.8↔1.2), destabilising
+        // the readout at exactly the measurement point. Requiring a proportional trend
+        // preserves the intentional theta/SWR explore-exploit rhythm during genuine
+        // improvement phases while suppressing noise-driven late-training oscillation.
+        if reward_trend > 0.05 * slow_abs {
             return DevelopmentalStage::Differentiating;
         }
 
@@ -899,7 +918,7 @@ impl Endoquilibrium {
 
         let fast_alpha = 1.0 / self.config.fast_tau;
         let slow_alpha = 1.0 / self.config.slow_tau;
-        self.predictor.update(&vitals, fast_alpha, slow_alpha);
+        self.predictor.update(&vitals, fast_alpha, slow_alpha, self.config.mature_min_updates);
 
         // Update setpoints for current developmental stage
         self.setpoints = DevelopmentalSetpoints::for_stage(self.predictor.stage);
