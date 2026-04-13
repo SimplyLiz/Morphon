@@ -10,7 +10,7 @@ Morphons are stored in a \texttt{HashMap} keyed by stable IDs. The topology is a
 \subsection{Pulse Kernel Lite: Cache-Resident Fast Path}
 \label{sec:pulse_kernel}
 
-The inner simulation loop (spike integration, threshold, refractory) must execute every tick for all active morphons. The naive array-of-structs (AoS) layout --- one \texttt{Morphon} struct per unit, $\sim$480 bytes each --- places the hot fields (voltage, threshold, fired, refractory) far apart in memory. At 300 morphons this scatters $\sim$60~KB across cache lines, causing frequent L1 misses on every tick.
+The inner simulation loop (spike integration, threshold, refractory) must execute every tick for all active morphons. The naive array-of-structs (AoS) layout - one \texttt{Morphon} struct per unit, $\sim$480 bytes each - places the hot fields (voltage, threshold, fired, refractory) far apart in memory. At 300 morphons this scatters $\sim$60~KB across cache lines, causing frequent L1 misses on every tick.
 
 \emph{Pulse Kernel Lite} separates the fast-path fields into seven dense \texttt{Vec<f32>}/\texttt{Vec<bool>} arrays that sit alongside the \texttt{Morphon} structs:
 
@@ -18,14 +18,14 @@ The inner simulation loop (spike integration, threshold, refractory) must execut
 \texttt{voltage} | \texttt{threshold} | \texttt{input\_current} | \texttt{fired} | \texttt{refractory} | \texttt{leak\_decay} | \texttt{energy}
 \end{center}
 
-At 300 morphons, all seven arrays fit in $\sim$9.6~KB --- within a typical 32~KB L1 data cache. The source of truth remains the \texttt{Morphon} structs; a lightweight sync protocol propagates changes bidirectionally:
+At 300 morphons, all seven arrays fit in $\sim$9.6~KB - within a typical 32~KB L1 data cache. The source of truth remains the \texttt{Morphon} structs; a lightweight sync protocol propagates changes bidirectionally:
 \begin{itemize}
   \item \textbf{Fast tick}: hot arrays only. Input currents extracted, voltage integrated, threshold checked, energy gated.
-  \item \textbf{Medium tick (every 10)}: \texttt{sync\_hot\_to\_structs()} before metabolic updates; \texttt{sync\_structs\_to\_hot()} after.
+  \item \textbf{Medium tick (every 10)}: \texttt{sync\_hot\_to\_structs()} before metabolic updates;\newline \texttt{sync\_structs\_to\_hot()} after.
   \item \textbf{Slow/glacial ticks}: \texttt{rebuild\_hot\_arrays()} after structural changes (synaptogenesis, division, apoptosis).
 \end{itemize}
 
-On the MNIST v2 workload (3000 images, 3 epochs, $\sim$1260 morphons), this reduces wall time from 568~s (V2, GlobalKWTA) to 130~s (V3, LocalInhibition) --- a \textbf{4.4$\times$ speedup} --- with no change in accuracy. The speedup compounds with network size because the fraction of time spent in the inner loop grows with $N$.
+On the MNIST v2 workload (3000 images, 3 epochs, $\sim$1260 morphons), this reduces wall time from 568~s (V2, GlobalKWTA) to 130~s (V3, LocalInhibition) - a \textbf{4.4$\times$ speedup} - with no change in accuracy. The speedup compounds with network size because the fraction of time spent in the inner loop grows with $N$.
 
 \subsection{The Main Loop}
 
@@ -75,7 +75,7 @@ where $x_j^{\text{post}}$ is the post-synaptic trace. An active excitatory neuro
 \end{equation}
 where $x_i^{\text{pre}}$ is the pre-synaptic trace of the inhibitory interneuron and $\rho_0$ is the target firing rate. When $x_i^{\text{pre}} > \alpha$ (inhibitory interneuron has been more active than the target rate warrants), inhibition strengthens; when $x_i^{\text{pre}} < \alpha$, it weakens. The $\alpha$ term sets the equilibrium point without requiring any global coordination.
 
-Weights are clamped to $[-5.0,\,-0.001]$ --- strictly negative, enforcing Dale's law for inhibitory connections.
+Weights are clamped to $[-5.0,\,-0.001]$ - strictly negative, enforcing Dale's law for inhibitory connections.
 
 The critical difference from the rate-based predecessor is \emph{temporal resolution}. Rate-based iSTDP (fired once per 10 medium ticks, using a 100-tick activity average) could not react to within-burst hub activity; spike-timing iSTDP responds on the timescale of individual spike arrivals, matching the biological timescale of inhibitory short-term plasticity \citep{vogels2011inhibitory}.
 
@@ -95,7 +95,7 @@ with weight-dependent bounds \cite{gilson2011stability} that make weak synapses 
 
 \subsection{Tag and Capture}
 
-We implement the synaptic tagging-and-capture model of Frey and Morris \cite{frey1997synaptic} with one critical departure: capture is \emph{episode-gated}, not per-tick. The naive per-tick rule (``capture when reward $>$ threshold'') fails on RL tasks because the reward signal saturates at 1.0 during \emph{any} successful CartPole step --- every alive step captures everything, the weight distribution collapses to uniformity (weight std drops from 1.5 to 0.15), and learning stops. The fix is to defer the capture decision to episode end and gate it on relative performance: if this episode beat the running average, capture the tagged synapses proportional to how much it beat the average; if it underperformed, decay the tags instead.
+We implement the synaptic tagging-and-capture model of Frey and Morris \cite{frey1997synaptic} with one critical departure: capture is \emph{episode-gated}, not per-tick. The naive per-tick rule (``capture when reward $>$ threshold'') fails on RL tasks because the reward signal saturates at 1.0 during \emph{any} successful CartPole step - every alive step captures everything, the weight distribution collapses to uniformity (weight std drops from 1.5 to 0.15), and learning stops. The fix is to defer the capture decision to episode end and gate it on relative performance: if this episode beat the running average, capture the tagged synapses proportional to how much it beat the average; if it underperformed, decay the tags instead.
 
 Concretely: synapses with high recent eligibility set a tag; tags accumulate at a fixed local rate (\texttt{tag\_accumulation\_rate}=0.3) and decay slowly ($\tau_{\text{tag}}=200$ steps). The \texttt{consolidation\_level} field on each synapse is a continuous $[0, 1]$ value (replacing the binary ``consolidated'' flag), and at episode end, tagged synapses gain consolidation proportional to performance delta. Consolidated synapses retain residual plasticity (10\% at \texttt{consolidation\_level}=1.0) so the network can still adapt without destroying learned features.
 
@@ -108,4 +108,4 @@ The full benchmark suite is reproducible from a clean checkout:
 cargo run --example cartpole --release
 cargo run --example mnist_v2 --release
 \end{verbatim}
-Each example saves a JSON record of its configuration and results to \texttt{docs/benchmark\_results/v\{version\}/}. All numbers reported in this paper are from these JSON records.
+Each example saves a JSON record of its configuration and results to \texttt{docs/\allowbreak benchmark\_results/\allowbreak v\{version\}/}. All numbers reported in this paper are from these JSON records.

@@ -220,6 +220,49 @@ mod bindings {
             self.inner.teach_supervised(correct_index, learning_rate);
         }
 
+        /// Enable the Limbic Circuit (salience, RPE, episodic tagging).
+        /// Call once after constructing the system, before the first step.
+        pub fn enable_limbic(&mut self) {
+            self.inner.limbic.enabled = true;
+        }
+
+        /// Process input through the Limbic Circuit before the cortical step.
+        /// Evaluates salience and injects proportional arousal, then runs process().
+        /// `label` is optional — pass usize::MAX to indicate no label.
+        pub fn process_with_limbic(&mut self, input: &[f64], label: u32) -> Vec<f64> {
+            let lbl = if label == u32::MAX { None } else { Some(label as usize) };
+            self.inner.process_with_limbic(input, lbl)
+        }
+
+        /// Deliver reward through the Limbic Circuit after process_with_limbic().
+        /// Computes RPE, applies RPE-scaled energy to fired morphons, records episode.
+        /// Call after reward_contrastive().
+        pub fn deliver_limbic_reward(&mut self, observation: &[f64], label: usize, reward: f64) {
+            self.inner.deliver_limbic_reward(observation, label, reward);
+        }
+
+        /// Limbic Circuit state as JSON: salience, rpe, drive_state, episodic_stats.
+        pub fn limbic_json(&self) -> String {
+            let lc = &self.inner.limbic;
+            let es = lc.episodic_tagger.stats();
+            let drive = match lc.drive_state() {
+                crate::limbic::DriveState::Seeking  => "Seeking",
+                crate::limbic::DriveState::Avoiding => "Avoiding",
+                crate::limbic::DriveState::Neutral  => "Neutral",
+            };
+            format!(
+                r#"{{"enabled":{enabled},"salience":{sal:.4},"rpe":{rpe:.4},"drive_state":"{drive}","episodes_stored":{ep},"mean_salience":{ms:.4},"mean_rpe":{mr:.4},"associations":{assoc}}}"#,
+                enabled = lc.enabled,
+                sal     = lc.current_salience(),
+                rpe     = lc.current_rpe(),
+                drive   = drive,
+                ep      = es.count,
+                ms      = es.mean_salience,
+                mr      = es.mean_rpe,
+                assoc   = lc.salience_detector.associations_stored(),
+            )
+        }
+
         /// Report task performance to the endo predictor.
         /// This drives developmental stage detection (Proliferating → Mature → Stressed).
         pub fn report_performance(&mut self, performance: f64) {

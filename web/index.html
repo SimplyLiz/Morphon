@@ -1465,6 +1465,32 @@
     <div class="endo-channel-row"><span class="label">Rollback PE</span><span class="value" id="homeo-rollback">—</span></div>
   </div>
 
+  <div class="panel" id="limbic-panel" style="display:none;">
+    <div class="section-title">Limbic Circuit</div>
+    <div class="endo-channel-row" style="margin-bottom:3px;">
+      <span class="label">Salience</span>
+      <span class="value" id="limbic-salience">—</span>
+    </div>
+    <div class="mod-bar-track" style="margin-bottom:6px;">
+      <div id="limbic-salience-bar" style="height:3px; width:0%; background:var(--accent); border-radius:2px; transition:width 0.15s;"></div>
+    </div>
+    <div class="endo-channel-row" style="margin-bottom:3px;">
+      <span class="label">RPE</span>
+      <span class="value" id="limbic-rpe">—</span>
+    </div>
+    <div class="mod-bar-track" style="margin-bottom:6px;">
+      <div id="limbic-rpe-bar" style="height:3px; width:0%; background:var(--modulatory); border-radius:2px; transition:width 0.15s;"></div>
+    </div>
+    <div class="endo-channel-row" style="margin-bottom:3px;">
+      <span class="label">Drive</span>
+      <span class="value" id="limbic-drive" style="font-family:'JetBrains Mono',monospace; font-size:10px;">—</span>
+    </div>
+    <div class="endo-channel-row">
+      <span class="label">Episodes</span>
+      <span class="value" id="limbic-episodes">—</span>
+    </div>
+  </div>
+
   <div class="panel">
     <div class="section-title">Motor Output</div>
     <div class="motor-bars" id="motor-output"></div>
@@ -1713,25 +1739,8 @@
     </div>
   </div>
 
-  <!-- TAB: DRONE 3D -->
-  <div id="tab-drone" class="tab-content" style="position:relative; overflow:hidden; padding:0; flex:1; display:flex; flex-direction:column;">
-    <div id="drone-scene-container" style="width:100%; flex:1; min-height:0; background:#040a14; position:relative;">
-    </div>
-    <div id="drone-hud" style="position:absolute; top:8px; right:8px; display:flex; flex-direction:column; gap:5px; pointer-events:none; font-family:'JetBrains Mono',monospace; font-size:10px;">
-      <div style="background:rgba(4,10,20,0.82); border:1px solid rgba(96,200,255,0.18); border-radius:4px; padding:8px 12px; min-width:130px; display:flex; flex-direction:column; gap:4px;">
-        <div style="font-size:9px; color:rgba(96,200,255,0.6); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Drone 3D</div>
-        <div class="endo-channel-row"><span class="label">Episode</span><span class="value" id="d-episodes" style="color:#60c8ff">0</span></div>
-        <div class="endo-channel-row"><span class="label">Steps</span><span class="value" id="d-steps" style="color:var(--text-bright)">0</span></div>
-        <div class="endo-channel-row"><span class="label">Best</span><span class="value" id="d-best" style="color:var(--modulatory)">0</span></div>
-        <div class="endo-channel-row"><span class="label">Action</span><span class="value" id="d-action" style="color:#fbbf24; font-size:9px;">—</span></div>
-        <div class="endo-channel-row"><span class="label">Pos err</span><span class="value" id="d-err" style="color:#f87171">—</span></div>
-        <div class="endo-channel-row"><span class="label">Waypoint</span><span class="value" id="d-wp" style="color:rgba(96,200,255,0.7)">—</span></div>
-      </div>
-    </div>
-    <div style="position:absolute; bottom:8px; left:8px; pointer-events:auto;">
-      <button id="btn-drone-wind" onclick="window._droneToggleWind()" style="background:rgba(4,10,20,0.82); border:1px solid rgba(96,200,255,0.25); border-radius:4px; color:rgba(96,200,255,0.6); font-size:9px; font-family:'JetBrains Mono',monospace; padding:4px 10px; cursor:pointer; letter-spacing:0.5px;">WIND: OFF</button>
-    </div>
-  </div>
+  <!-- TAB: DRONE 3D (hidden placeholder — actual scene lives in #drone-fullview) -->
+  <div id="tab-drone" class="tab-content" style="display:none !important;"></div>
 
   <!-- TAB: FIELDS -->
   <div id="tab-fields" class="tab-content">
@@ -1882,5 +1891,27 @@
   });
 })();
 </script>
+
+<!-- DRONE FULL-SCREEN OVERLAY -->
+<div id="drone-fullview" style="display:none; position:fixed; inset:0; z-index:50; background:#040a14; flex-direction:column;">
+  <div id="drone-scene-container" style="flex:1; min-height:0; position:relative; overflow:hidden;"></div>
+  <!-- Stats HUD top-right -->
+  <div id="drone-hud" style="position:absolute; top:12px; right:12px; pointer-events:none; font-family:'JetBrains Mono',monospace; font-size:10px;">
+    <div style="background:rgba(4,10,20,0.82); border:1px solid rgba(96,200,255,0.18); border-radius:6px; padding:10px 14px; min-width:140px; display:flex; flex-direction:column; gap:4px;">
+      <div style="font-size:9px; color:rgba(96,200,255,0.5); text-transform:uppercase; letter-spacing:0.8px; margin-bottom:3px;">DRONE 3D</div>
+      <div class="endo-channel-row"><span class="label">Episode</span><span class="value" id="d-episodes" style="color:#60c8ff">0</span></div>
+      <div class="endo-channel-row"><span class="label">Steps</span><span class="value" id="d-steps" style="color:var(--text-bright)">0</span></div>
+      <div class="endo-channel-row"><span class="label">Best</span><span class="value" id="d-best" style="color:var(--modulatory)">0</span></div>
+      <div class="endo-channel-row"><span class="label">Action</span><span class="value" id="d-action" style="color:#fbbf24; font-size:9px;">—</span></div>
+      <div class="endo-channel-row"><span class="label">Pos err</span><span class="value" id="d-err" style="color:#f87171">—</span></div>
+      <div class="endo-channel-row"><span class="label">Waypoint</span><span class="value" id="d-wp" style="color:rgba(96,200,255,0.7)">—</span></div>
+    </div>
+  </div>
+  <!-- Controls bottom-left -->
+  <div style="position:absolute; bottom:16px; left:16px; display:flex; gap:8px; pointer-events:auto;">
+    <button id="btn-drone-wind" onclick="window._droneToggleWind()" style="background:rgba(4,10,20,0.85); border:1px solid rgba(96,200,255,0.25); border-radius:5px; color:rgba(96,200,255,0.6); font-size:9px; font-family:'JetBrains Mono',monospace; padding:5px 12px; cursor:pointer; letter-spacing:0.5px;">WIND: OFF</button>
+    <button id="btn-drone-view-toggle" onclick="window._droneViewToggle()" style="background:rgba(4,10,20,0.85); border:1px solid rgba(96,200,255,0.35); border-radius:5px; color:rgba(96,200,255,0.85); font-size:9px; font-family:'JetBrains Mono',monospace; padding:5px 12px; cursor:pointer; letter-spacing:0.5px;">⬡ CORE</button>
+  </div>
+</div>
 </body>
 </html>

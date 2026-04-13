@@ -151,28 +151,30 @@ const _prevMorphonPos = new Map(); // id → {x,y,z} — previous frame position
 const D_GRAVITY   = 9.81;
 const D_MASS      = 0.5;
 const D_ARM       = 0.15;
-const D_IXX       = 0.010;
-const D_IYY       = 0.010;
-const D_IZZ       = 0.020;
-const D_DRAG      = 0.025;
+const D_IXX       = 0.030;   // larger inertia → slower, more stable rotations
+const D_IYY       = 0.030;
+const D_IZZ       = 0.055;
+const D_DRAG      = 0.018;
 const D_MAX_T     = D_MASS * D_GRAVITY / 2.0;
 const D_DT        = 0.02;
-const D_X_LIM     = 3.0;
-const D_Y_LIM     = 3.0;
+const D_X_LIM     = 3.5;
+const D_Y_LIM     = 3.5;
 const D_Z_MIN     = 0.1;
-const D_Z_MAX     = 6.0;
-const D_ANGLE_LIM = Math.PI / 4;
+const D_Z_MAX     = 7.0;
+const D_ANGLE_LIM = Math.PI / 3;  // 60° — more forgiving than 45°
 const D_V_MAX     = 4.0;
 const D_OMEGA_MAX = 5.0;
 const D_GAMMA     = 0.97;
+const D_ANG_DAMP  = 0.96;         // angular velocity damping per step
+const D_LIN_DAMP  = 0.995;        // gentle linear drag
 const D_ACTIONS   = [
   [0.50, 0.50, 0.50, 0.50], // 0 HOVER
-  [0.70, 0.70, 0.70, 0.70], // 1 ASCEND
-  [0.30, 0.30, 0.30, 0.30], // 2 DESCEND
-  [0.40, 0.40, 0.60, 0.60], // 3 FWD+X
-  [0.60, 0.60, 0.40, 0.40], // 4 BWD-X
-  [0.60, 0.40, 0.40, 0.60], // 5 RGT+Y
-  [0.40, 0.60, 0.60, 0.40], // 6 LFT-Y
+  [0.63, 0.63, 0.63, 0.63], // 1 ASCEND
+  [0.37, 0.37, 0.37, 0.37], // 2 DESCEND
+  [0.45, 0.45, 0.55, 0.55], // 3 FWD+X  (softer differential)
+  [0.55, 0.55, 0.45, 0.45], // 4 BWD-X
+  [0.55, 0.45, 0.45, 0.55], // 5 RGT+Y
+  [0.45, 0.55, 0.55, 0.45], // 6 LFT-Y
 ];
 const D_ACTION_NAMES = ['HOVER','ASCEND','DESCEND','FWD+X','BWD-X','RGT+Y','LFT-Y'];
 const D_WAYPOINTS_QUICK    = [[0.0, 0.0, 2.0]];
@@ -380,6 +382,7 @@ let cachedLearning = null;
 let cachedFieldMeta = null;
 let cachedMemory = null;
 let cachedHomeo = null;
+let cachedLimbic = null;
 
 // ============================================================
 // CUSTOM SHADERS
@@ -1254,6 +1257,7 @@ function updatePanels() {
   try { cachedLearning = JSON.parse(system.learning_json()); } catch(_) {}
   try { cachedFieldMeta = JSON.parse(system.field_meta_json()); } catch(_) {}
   try { cachedHomeo = JSON.parse(system.homeostasis_json()); } catch(_) {}
+  try { cachedLimbic = JSON.parse(system.limbic_json()); } catch(_) {}
   // Memory and field viz: only fetch when their tab is active (potentially expensive)
   const activeTab = document.querySelector('#bottom-panel .tab-content.active');
   if (activeTab) {
@@ -1312,6 +1316,7 @@ function updatePanels() {
   setModBarEl(dom.modHomeo, dom.modHomeoV, mod.homeostasis);
 
   updateHomeoPanel();
+  updateLimbicPanel();
 
   // Endoquilibrium panel
   if (!cachedEndo && dom.endoStage) {
@@ -1644,33 +1649,36 @@ function cartPoleStep() {
   // 2. Physics step with that action
   const done = cpPhysicsStep(action);
 
+  const cpObs = cpNormalizedState();
   if (done) {
     // Episode over
     cpHistory.push(cpSteps);
     if (cpSteps > cpBest) cpBest = cpSteps;
     cpEpisodes++;
     system.report_episode_end(cpSteps);
-    // Negative reward only on actual fall (not timeout success)
-    if (Math.abs(cpX) > CP_MAX_X || Math.abs(cpTheta) > CP_MAX_THETA) {
-      system.inject_reward(-0.4);
-    } else {
-      system.inject_reward(0.5); // survived 500 steps — positive signal
-    }
+    const fell = Math.abs(cpX) > CP_MAX_X || Math.abs(cpTheta) > CP_MAX_THETA;
+    const epReward = fell ? -0.4 : 0.5;
+    system.inject_reward(epReward);
+    try { system.deliver_limbic_reward(cpObs, action, epReward); } catch(_) {}
     system.reset_voltages();
-    // Reset state with a small random lean
     cpX = 0; cpXdot = 0;
     cpTheta = (Math.random() - 0.5) * 0.05;
     cpThetaDot = 0;
     cpSteps = 0;
   } else {
     cpSteps++;
-    // Continuous reward proportional to how centered the pole is
     const uprightness = 1.0 - Math.abs(cpTheta) / CP_MAX_THETA;
-    system.inject_reward(0.05 * uprightness);
+    const stepReward = 0.05 * uprightness;
+    system.inject_reward(stepReward);
+    try { system.deliver_limbic_reward(cpObs, action, stepReward); } catch(_) {}
   }
 
   // 3. Feed new state for next step
-  system.feed_input(cpNormalizedState());
+  try {
+    system.process_with_limbic(cpObs, action);
+  } catch(_) {
+    system.feed_input(cpObs);
+  }
 }
 
 function updateCartPoleStats() {
@@ -1824,6 +1832,40 @@ function drawCartPole() {
 // ============================================================
 // HOMEOSTASIS PANEL
 // ============================================================
+function updateLimbicPanel() {
+  const el = document.getElementById('limbic-panel');
+  if (!el) return;
+  if (!cachedLimbic || !cachedLimbic.enabled) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  const lc = cachedLimbic;
+  const salEl  = document.getElementById('limbic-salience');
+  const rpeEl  = document.getElementById('limbic-rpe');
+  const drvEl  = document.getElementById('limbic-drive');
+  const epEl   = document.getElementById('limbic-episodes');
+  const salBar = document.getElementById('limbic-salience-bar');
+  const rpeBar = document.getElementById('limbic-rpe-bar');
+  if (salEl) salEl.textContent = lc.salience.toFixed(3);
+  if (rpeEl) {
+    rpeEl.textContent = (lc.rpe >= 0 ? '+' : '') + lc.rpe.toFixed(3);
+    rpeEl.style.color = lc.rpe > 0 ? 'var(--modulatory)' : lc.rpe < -0.01 ? '#ef4444' : 'var(--text-dim)';
+  }
+  if (drvEl) {
+    drvEl.textContent = lc.drive_state;
+    drvEl.style.color = lc.drive_state === 'Seeking' ? 'var(--modulatory)'
+                      : lc.drive_state === 'Avoiding' ? '#ef4444' : 'var(--text-dim)';
+  }
+  if (epEl) epEl.textContent = lc.episodes_stored;
+  if (salBar) salBar.style.width = (lc.salience * 100).toFixed(1) + '%';
+  if (rpeBar) {
+    const pct = Math.min(Math.abs(lc.rpe) * 100, 100).toFixed(1);
+    rpeBar.style.width = pct + '%';
+    rpeBar.style.background = lc.rpe > 0 ? 'var(--modulatory)' : '#ef4444';
+  }
+}
+
 function updateHomeoPanel() {
   if (!cachedHomeo || !dom.homeoMode) return;
   const h = cachedHomeo;
@@ -2237,10 +2279,14 @@ function arenaTrainStep() {
   if (!system || arenaTrainingSet.length === 0) return;
 
   const sample = arenaTrainingSet[arenaTrainIdx % arenaTrainingSet.length];
-  system.feed_input(sample.pixels);
-  // Let it propagate for a few steps before reward
-  for (let s = 0; s < 3; s++) system.step();
+  try {
+    system.process_with_limbic(sample.pixels, sample.label);
+  } catch(_) {
+    system.feed_input(sample.pixels);
+    for (let s = 0; s < 3; s++) system.step();
+  }
   system.reward_contrastive(sample.label, 0.6, 0.2);
+  try { system.deliver_limbic_reward(sample.pixels, sample.label, 0.6); } catch(_) {}
   system.teach_supervised(sample.label, 0.03);
 
   arenaTrainSubStep++;
@@ -2397,6 +2443,7 @@ function switchOccupation(newOcc) {
     if (system) { try { system.free(); } catch(_) {} }
     system = WasmSystem.newWithIO(100, 'cerebellar', 3, 64, 4);
     system.enable_analog_readout();
+    try { system.enable_limbic(); } catch(_) {}
     // Warm up
     for (let i = 0; i < 30; i++) { makeInput('noise'); system.step(); }
     // Reset arena state
@@ -2419,6 +2466,7 @@ function switchOccupation(newOcc) {
     // CartPole: 4-state input, 2-action output
     if (system) { try { system.free(); } catch(_) {} }
     system = WasmSystem.newWithIO(60, 'cerebellar', 3, 4, 2);
+    try { system.enable_limbic(); } catch(_) {}
     // Warm up with a few zero steps
     const zeroInput = new Float64Array([0.5, 0.5, 0.5, 0.5]);
     for (let i = 0; i < 20; i++) { system.feed_input(zeroInput); system.step(); }
@@ -2452,27 +2500,24 @@ function switchOccupation(newOcc) {
     if (arenaTab) arenaTab.style.display = 'none';
     if (cartpoleTab) cartpoleTab.style.display = 'none';
     if (droneTab) droneTab.style.display = '';
-    activateTab('tab-drone');
-    // Expand panel to give the 3D scene real estate
-    const dPanel = document.getElementById('bottom-panel');
-    if (dPanel) {
-      dPanel.classList.add('no-transition');
-      document.documentElement.style.setProperty('--panel-h', '62vh');
-      dPanel.classList.remove('maximized');
-      requestAnimationFrame(() => dPanel.classList.remove('no-transition'));
-    }
+    // Show full-screen drone overlay (don't activate bottom tab at all)
+    const fv = document.getElementById('drone-fullview');
+    if (fv) fv.style.display = 'flex';
     initDroneScene();
     updateDroneStats();
     addEvent(0, 'Drone 3D activated [cerebellar, 96in/7out]', 'event-diff');
   } else {
-    // Back to idle — restore normal panel height
-    const dPanel = document.getElementById('bottom-panel');
-    if (dPanel) {
-      dPanel.classList.add('no-transition');
-      document.documentElement.style.setProperty('--panel-h', '160px');
-      dPanel.classList.remove('maximized');
-      requestAnimationFrame(() => dPanel.classList.remove('no-transition'));
-    }
+    // Back to idle — hide drone overlay, tear down scene so it rebuilds fresh next time
+    const fv = document.getElementById('drone-fullview');
+    if (fv) fv.style.display = 'none';
+    if (dRenderer) { try { dRenderer.dispose(); } catch(_) {} }
+    dRenderer = null; dScene = null; dCamera = null; dControls = null; dComposer = null;
+    droneGroup = null; dWaypointMesh = null; dWaypointRing = null; dWpLine = null;
+    dRotorMeshes.length = 0; dRotorGlows.length = 0;
+    dTrailPositions = null; dTrailGeom = null; dTrailLine = null; dWindArrow = null;
+    dSceneInited = false;
+    const container = document.getElementById('drone-scene-container');
+    if (container) container.innerHTML = '';
     if (system) { try { system.free(); } catch(_) {} }
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
@@ -3889,10 +3934,11 @@ function d3PhysicsStep(action, gx, gy) {
   const tau_yaw   = (r1 + r3 - r2 - r4) * D_DRAG * D_MAX_T;
 
   d3Vx  += D_DT * thrust_x; d3Vy  += D_DT * thrust_y; d3Vz  += D_DT * thrust_z;
+  d3Vx  *= D_LIN_DAMP;     d3Vy  *= D_LIN_DAMP;
   d3X   += D_DT * d3Vx;    d3Y   += D_DT * d3Vy;    d3Z   += D_DT * d3Vz;
-  d3Omx += D_DT * tau_roll  / D_IXX;
-  d3Omy += D_DT * tau_pitch / D_IYY;
-  d3Omz += D_DT * tau_yaw   / D_IZZ;
+  d3Omx += D_DT * tau_roll  / D_IXX; d3Omx *= D_ANG_DAMP;
+  d3Omy += D_DT * tau_pitch / D_IYY; d3Omy *= D_ANG_DAMP;
+  d3Omz += D_DT * tau_yaw   / D_IZZ; d3Omz *= D_ANG_DAMP;
   d3Phi   += D_DT * d3Omx;
   d3Theta += D_DT * d3Omy;
   d3Psi   += D_DT * d3Omz;
@@ -3984,6 +4030,7 @@ function d3ResetEpisode() {
   d3Omx   = 0; d3Omy = 0; d3Omz = 0; d3T = 0;
   d3WpIdx = 0; d3WpSteps = 0; d3WpNear = 0;
   d3WindVx = 0; d3WindVy = 0;
+  _dTrailBuf.length = 0;  // clear trail on each episode reset
 }
 
 function drone3DStep() {
@@ -4096,11 +4143,11 @@ function initDroneScene() {
 
   dScene = new THREE.Scene();
 
-  dCamera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100);
-  dCamera.position.set(3, 5, 9);
+  dCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 100);
+  dCamera.position.set(5, 4, 7);
 
   dControls = new OrbitControls(dCamera, dRenderer.domElement);
-  dControls.target.set(0, 2, 0);
+  dControls.target.set(0, 2.5, 0);
   dControls.enableDamping = true;
   dControls.dampingFactor = 0.08;
   dControls.update();
@@ -4119,49 +4166,39 @@ function initDroneScene() {
   dir.position.set(5, 10, 5);
   dScene.add(dir);
 
-  // Ground grid
-  const grid = new THREE.GridHelper(12, 24, 0x1a3060, 0x0d1a38);
+  // Ground grid — subtle
+  const grid = new THREE.GridHelper(16, 32, 0x0e1e3a, 0x081020);
   grid.position.y = 0;
   dScene.add(grid);
-
-  // Boundary box (±3 x/z, 0–6 y)
-  {
-    const boxGeo = new THREE.BufferGeometry();
-    const v = [];
-    const xs = [-D_X_LIM, D_X_LIM], ys = [0, D_Z_MAX], zs = [-D_Y_LIM, D_Y_LIM];
-    const corners = [];
-    for (let xi of xs) for (let yi of ys) for (let zi of zs) corners.push([xi,yi,zi]);
-    const edges = [
-      [0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]
-    ];
-    for (let [a,b] of edges) {
-      v.push(...corners[a], ...corners[b]);
-    }
-    boxGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(v), 3));
-    const boxMat = new THREE.LineBasicMaterial({ color: 0x1a3060, transparent: true, opacity: 0.35 });
-    dScene.add(new THREE.LineSegments(boxGeo, boxMat));
-  }
 
   // Build drone group
   droneGroup = new THREE.Group();
   dScene.add(droneGroup);
 
-  const ARM_VIS = 0.65;
-  const ROTOR_R = 0.38;
+  // X-config arms span: FL(-1,0,1) FR(1,0,1) BR(1,0,-1) BL(-1,0,-1) × ARM_VIS
+  const ARM_VIS = 0.55;
+  const ROTOR_R  = 0.20;  // fits well within 0.55*sqrt(2)=0.78 spacing
 
-  // Body
-  const bodyGeo = new THREE.BoxGeometry(0.22, 0.06, 0.22);
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a2035, emissive: 0x050818, metalness: 0.8, roughness: 0.3 });
-  droneGroup.add(new THREE.Mesh(bodyGeo, bodyMat));
+  // Central body — slightly taller boxy frame
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x151e2e, emissive: 0x050a14, metalness: 0.85, roughness: 0.25 });
+  droneGroup.add(new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.07, 0.18), bodyMat));
+  // Top plate (slightly wider, thinner)
+  const topPlate = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.018, 0.22), bodyMat);
+  topPlate.position.y = 0.044;
+  droneGroup.add(topPlate);
+  // Bottom camera pod
+  const camMat = new THREE.MeshStandardMaterial({ color: 0x0a0f1a, metalness: 0.9, roughness: 0.2 });
+  const camPod = new THREE.Mesh(new THREE.CylinderGeometry(0.038, 0.038, 0.05, 12), camMat);
+  camPod.position.y = -0.06;
+  droneGroup.add(camPod);
 
-  // Arms (2 crosses)
+  // Two diagonal arms (+ rotated ±45°)
   const armLen = ARM_VIS * 2 * Math.SQRT2;
-  const armGeo = new THREE.BoxGeometry(armLen, 0.035, 0.035);
-  const armMat = new THREE.MeshStandardMaterial({ color: 0x1e2535, metalness: 0.7, roughness: 0.4 });
-  const arm1 = new THREE.Mesh(armGeo, armMat);
+  const armMat = new THREE.MeshStandardMaterial({ color: 0x1a2330, metalness: 0.7, roughness: 0.5 });
+  const arm1 = new THREE.Mesh(new THREE.BoxGeometry(armLen, 0.024, 0.028), armMat);
   arm1.rotation.y = Math.PI / 4;
   droneGroup.add(arm1);
-  const arm2 = new THREE.Mesh(armGeo, armMat);
+  const arm2 = new THREE.Mesh(new THREE.BoxGeometry(armLen, 0.024, 0.028), armMat);
   arm2.rotation.y = -Math.PI / 4;
   droneGroup.add(arm2);
 
@@ -4172,57 +4209,68 @@ function initDroneScene() {
     [ ARM_VIS, 0, -ARM_VIS],
     [-ARM_VIS, 0, -ARM_VIS],
   ];
-  const motorMat = new THREE.MeshStandardMaterial({ color: 0x1e2535, metalness: 0.6, roughness: 0.4 });
-  const motorGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.06, 8);
+  const motorMat = new THREE.MeshStandardMaterial({ color: 0x222c3c, metalness: 0.75, roughness: 0.35 });
+  const motorGeo = new THREE.CylinderGeometry(0.055, 0.050, 0.048, 12);
 
   dRotorMeshes.length = 0; dRotorGlows.length = 0;
 
   for (let i = 0; i < 4; i++) {
     const [rx, ry, rz] = rotorPos[i];
 
+    // Motor casing
     const motor = new THREE.Mesh(motorGeo, motorMat);
     motor.position.set(rx, ry, rz);
     droneGroup.add(motor);
 
-    const ringGeo = new THREE.RingGeometry(ROTOR_R - 0.05, ROTOR_R + 0.015, 28);
+    // Rotor blade disk (thin spinning ring)
+    const ringGeo = new THREE.RingGeometry(ROTOR_R * 0.15, ROTOR_R, 32);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0x60c8ff, transparent: true, opacity: 0.6,
+      color: 0x60c8ff, transparent: true, opacity: 0.55,
       side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(rx, ry + 0.04, rz);
+    ring.position.set(rx, ry + 0.032, rz);
     droneGroup.add(ring);
     dRotorMeshes.push(ring);
 
-    const glowGeo = new THREE.CircleGeometry(ROTOR_R * 1.4, 24);
+    // Thrust glow (same size as ring, opacity driven by thrust)
+    const glowGeo = new THREE.CircleGeometry(ROTOR_R * 1.05, 24);
     const glowMat = new THREE.MeshBasicMaterial({
-      color: 0x80d0ff, transparent: true, opacity: 0,
+      color: 0x50aaff, transparent: true, opacity: 0,
       side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
     });
     const glow = new THREE.Mesh(glowGeo, glowMat);
     glow.rotation.x = -Math.PI / 2;
-    glow.position.set(rx, ry + 0.035, rz);
+    glow.position.set(rx, ry + 0.028, rz);
     droneGroup.add(glow);
     dRotorGlows.push(glow);
   }
 
-  // Waypoint marker
-  const wpGeo = new THREE.SphereGeometry(0.15, 12, 8);
-  const wpMat = new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
-  dWaypointMesh = new THREE.Mesh(wpGeo, wpMat);
-  dScene.add(dWaypointMesh);
+  // Waypoint — minimal diamond cross-hair, no big sphere
+  {
+    const wpLines = new THREE.BufferGeometry();
+    const S = 0.18;
+    wpLines.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+      -S,0,0, S,0,0,  0,S,0, 0,-S,0,  0,0,-S, 0,0,S
+    ]), 3));
+    const wpMat = new THREE.LineBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.7 });
+    dWaypointMesh = new THREE.LineSegments(wpLines, wpMat);
+    dScene.add(dWaypointMesh);
 
-  const wRingGeo = new THREE.TorusGeometry(0.35, 0.02, 8, 32);
-  const wRingMat = new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
-  dWaypointRing = new THREE.Mesh(wRingGeo, wRingMat);
-  dWaypointRing.rotation.x = -Math.PI / 2;
-  dScene.add(dWaypointRing);
+    // Thin horizontal ring around target
+    const wRingGeo = new THREE.RingGeometry(0.22, 0.24, 32);
+    const wRingMat = new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.30,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false });
+    dWaypointRing = new THREE.Mesh(wRingGeo, wRingMat);
+    dWaypointRing.rotation.x = -Math.PI / 2;
+    dScene.add(dWaypointRing);
+  }
 
-  // Line from drone to waypoint
+  // Dashed line from drone to waypoint
   const lineGeo = new THREE.BufferGeometry();
   lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.25 });
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x3070a0, transparent: true, opacity: 0.20 });
   dWpLine = new THREE.Line(lineGeo, lineMat);
   dScene.add(dWpLine);
 
@@ -4267,16 +4315,16 @@ function updateDroneScene() {
   droneGroup.position.set(d3X, d3Z, d3Y);
   droneGroup.rotation.set(d3Theta, -d3Psi, -d3Phi, 'YXZ');
 
-  // Rotor spin + glow
+  // Rotor spin + smoothed glow
   for (let i = 0; i < 4; i++) {
     const t = d3LastRotors[i] ?? 0.5;
     const dir = (i === 0 || i === 2) ? 1 : -1; // CCW: 0,2; CW: 1,3
-    d3RotorAngles[i] += 0.15 * t * dir * 8;
+    d3RotorAngles[i] += 0.12 * t * dir * 10;
     if (dRotorMeshes[i]) dRotorMeshes[i].rotation.z = d3RotorAngles[i];
     if (dRotorGlows[i]) {
-      dRotorGlows[i].material.opacity = t * 0.55;
-      const lo = new THREE.Color(0x1a4080), hi = new THREE.Color(0x80d0ff);
-      dRotorGlows[i].material.color.lerpColors(lo, hi, t);
+      // Smooth the glow opacity to avoid flicker
+      const targetOpacity = (t - 0.3) * 0.55;
+      dRotorGlows[i].material.opacity += (targetOpacity - dRotorGlows[i].material.opacity) * 0.15;
     }
   }
 
@@ -4330,6 +4378,15 @@ window._droneToggleWind = function() {
   d3WindVx = 0; d3WindVy = 0;
   const btn = document.getElementById('btn-drone-wind');
   if (btn) btn.textContent = 'WIND: ' + (d3WindEnabled ? 'ON' : 'OFF');
+};
+
+window._droneViewToggle = function() {
+  const fv  = document.getElementById('drone-fullview');
+  const btn = document.getElementById('btn-drone-view-toggle');
+  if (!fv) return;
+  const showing = fv.style.display !== 'none';
+  fv.style.display = showing ? 'none' : 'flex';
+  if (btn) btn.textContent = showing ? '⬡ DRONE' : '⬡ CORE';
 };
 
 // ============================================================
