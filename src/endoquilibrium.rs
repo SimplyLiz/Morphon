@@ -520,6 +520,9 @@ struct AllostasisPredictor {
     /// because the ring buffer is capped at 500 but Mature requires 2000 ticks.
     #[serde(default)]
     total_updates: usize,
+    /// Ticks spent in the current stage. Guards against rapid oscillation (thrashing).
+    #[serde(default)]
+    stage_age_ticks: usize,
 }
 
 impl Default for AllostasisPredictor {
@@ -532,6 +535,7 @@ impl Default for AllostasisPredictor {
             reward_history: VecDeque::with_capacity(500),
             stage: DevelopmentalStage::Proliferating,
             total_updates: 0,
+            stage_age_ticks: 0,
         }
     }
 }
@@ -646,9 +650,18 @@ impl AllostasisPredictor {
             }
         }
 
-        // Detect developmental stage — log on transition with triggering vitals
+        // Detect developmental stage — log on transition with triggering vitals.
+        // MIN_CONSOL_DWELL guards only the Consolidating→Stressed direction to prevent
+        // rapid thrashing at performance plateaus where reward_trend bounces near
+        // the Stressed threshold. Progressive transitions (Prolif→Diff→Consol→Mature)
+        // are not guarded — they should respond immediately to genuine improvement.
+        const MIN_CONSOL_DWELL: usize = 150;
         let new_stage = self.detect_stage();
-        if new_stage != self.stage {
+        self.stage_age_ticks += 1;
+        let thrash_guard = self.stage == DevelopmentalStage::Consolidating
+            && new_stage == DevelopmentalStage::Stressed
+            && self.stage_age_ticks < MIN_CONSOL_DWELL;
+        if new_stage != self.stage && !thrash_guard {
             let reward_slow = self.slow_emas.reward_avg;
             let reward_fast = self.fast_emas.reward_avg;
             let reward_std = self.std_f32(&self.reward_history);
@@ -659,11 +672,12 @@ impl AllostasisPredictor {
             };
             let reward_trend = self.trend_f32(&self.reward_history);
             let slow_abs = reward_slow.abs().max(0.01_f32);
-            eprintln!("[ENDO] {:?} → {:?} | reward_slow={:.4} reward_cv={:.4} trend={:.6} (slow_abs={:.4}) hist={}",
+            eprintln!("[ENDO] {:?} → {:?} | reward_slow={:.4} reward_cv={:.4} trend={:.6} (slow_abs={:.4}) hist={} age={}",
                 self.stage, new_stage,
                 reward_slow, reward_cv, reward_trend, slow_abs,
-                self.reward_history.len());
+                self.reward_history.len(), self.stage_age_ticks);
             self.stage = new_stage;
+            self.stage_age_ticks = 0;
         }
     }
 
