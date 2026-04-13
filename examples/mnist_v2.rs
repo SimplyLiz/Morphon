@@ -480,6 +480,14 @@ fn train_and_eval_from(
             if stateless_training {
                 system.reset_transient_state();
             }
+
+            // Limbic fast path: evaluate salience and record for later RPE association.
+            // Arousal injection is skipped — pixel-EMA salience is ~constant for MNIST
+            // (every sparse digit deviates from the grey mean), flooding arousal channel.
+            if system.limbic.enabled {
+                system.limbic.salience_detector.evaluate(&train_images[idx]);
+            }
+
             present_image(system, &train_images[idx]);
             system.inject_novelty(0.05);
 
@@ -495,6 +503,14 @@ fn train_and_eval_from(
                 // that triggers premature Mature at 11% accuracy
                 if predicted == correct {
                     system.reward_contrastive(correct, 0.5, 0.2);
+                }
+                // Limbic reward: call on every image (correct and incorrect) so RPE
+                // tracks per-class difficulty. Easy classes (high hit rate) develop high
+                // expectation → low RPE on correct. Hard classes stay low → high RPE on
+                // surprise correct → large metabolic energy boost for those morphons.
+                if system.limbic.enabled {
+                    let reward = if predicted == correct { 0.5 } else { 0.0 };
+                    system.deliver_limbic_reward(&train_images[idx], correct, reward);
                 }
             }
             window_buf[window_pos] = predicted == correct;
@@ -546,6 +562,7 @@ fn main() {
         else { "quick" };
 
     let fast = profile == "fast";
+    let use_limbic = args.iter().any(|a| a == "--limbic");
     let damage_sweep = args.iter().any(|a| a == "--damage-sweep");
     let ng_ablation = args.iter().any(|a| a == "--ng-ablation");
     let seed: u64 = args.iter()
@@ -927,6 +944,35 @@ fn main() {
     eprintln!("  V3-SL: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)\n",
         v3sl_acc, v3sl_stateless, v3sl_m, v3sl_s, v3sl_duration_s);
 
+    // === V3-SL+LIMBIC (LocalInhibition + Stateless + Limbic Circuit) ===
+    let (v3sl_limbic_acc, v3sl_limbic_stateless) = if use_limbic {
+        eprintln!("━━━ V3-SL+LIMBIC (LocalInhibition + Stateless + Limbic Circuit) ━━━");
+        let t_lim = Instant::now();
+        let mut lim = create_v2(0.001, -0.5, seed, seed_size);
+        lim.limbic.enabled = true;
+        eprintln!("  {} morphons, {} synapses (built in {:.1}s)",
+            lim.inspect().total_morphons, lim.inspect().total_synapses, t_lim.elapsed().as_secs_f64());
+        let mut rng_lim = rand::rngs::StdRng::seed_from_u64(seed);
+        let lim_acc = train_and_eval_stateless(&mut lim, &train_images, &train_labels,
+            &test_images, &test_labels, n_train, n_epochs, "LIM ", &mut rng_lim);
+        let lim_stateless = evaluate_stateless(&mut lim, &test_images, &test_labels, n_test);
+        let lim_m = lim.inspect().total_morphons;
+        let lim_s = lim.inspect().total_synapses;
+        let eps = lim.limbic.episodic_tagger.stats();
+        eprintln!("  V3-SL+LIM: {:.1}% (stateless: {:.1}%) | m={} s={} ({:.0}s)",
+            lim_acc, lim_stateless, lim_m, lim_s, t_lim.elapsed().as_secs());
+        eprintln!("  Limbic: salience={:.3} rpe={:.3} drive={:?} episodes={} mean_sal={:.3} mean_rpe={:.3}",
+            lim.limbic.salience_detector.current_salience,
+            lim.limbic.motivational_drive.current_rpe,
+            lim.limbic.motivational_drive.drive_state,
+            eps.count, eps.mean_salience, eps.mean_rpe);
+        eprintln!("  Δ vs V3-SL: online={:+.1}pp  stateless={:+.1}pp\n",
+            lim_acc - v3sl_acc, lim_stateless - v3sl_stateless);
+        (lim_acc, lim_stateless)
+    } else {
+        (0.0, 0.0)
+    };
+
     // === NG-FIX ABLATION (V3-SL with suppress_novelty_on_energy=true) ===
     // Isolates the contribution of stateless training alone, without the ng-collapse fix.
     // If this scores much lower than V3-SL, the ng fix was load-bearing; if roughly the same,
@@ -1117,6 +1163,9 @@ fn main() {
         },
         "damaged_acc": damaged_acc, "recovery_acc": recovery_acc,
         "total_duration_s": total_duration_s,
+        "limbic_enabled": use_limbic,
+        "v3sl_limbic_acc": v3sl_limbic_acc,
+        "v3sl_limbic_acc_stateless": v3sl_limbic_stateless,
     });
     let dir = format!("docs/benchmark_results/v{}", version);
     fs::create_dir_all(&dir).ok();
