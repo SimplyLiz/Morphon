@@ -3591,12 +3591,11 @@ function animate() {
       if (occupation === 'drone') {
         updateDroneStats();
       }
-      // Feed performance to endo so stage detection works.
+      // Feed performance to endo only when a task is active.
+      // In idle mode do NOT report — firing_rate as proxy causes iSTDP-driven
+      // rate decay to look like a reward drop, which triggers Stressed.
       if (occupation === 'arena' && arenaAccHistory.length > 0) {
         system.report_performance(arenaAccHistory[arenaAccHistory.length - 1] * 100);
-      } else if (system.report_performance && cachedStats) {
-        const perf = cachedStats.firing_rate * 100; // 0-100 scale
-        system.report_performance(perf);
       }
     }
   }
