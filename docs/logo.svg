@@ -1,60 +1,53 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="240" viewBox="0 0 480 240">
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="84" viewBox="0 0 420 84">
   <defs>
-    <filter id="glow-cyan">
+    <filter id="gc">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="gp">
+      <feGaussianBlur stdDeviation="2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="go">
+      <feGaussianBlur stdDeviation="1.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="gcore">
       <feGaussianBlur stdDeviation="4" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
-    <filter id="glow-purple">
-      <feGaussianBlur stdDeviation="3.5" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="glow-orange">
-      <feGaussianBlur stdDeviation="3" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <filter id="glow-core">
-      <feGaussianBlur stdDeviation="6" result="b"/>
-      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
-    <radialGradient id="core-grad" cx="50%" cy="50%" r="50%">
+    <radialGradient id="cg" cx="50%" cy="50%" r="50%">
       <stop offset="0%"   stop-color="#508cff"/>
-      <stop offset="70%"  stop-color="#508cff" stop-opacity="0.3"/>
       <stop offset="100%" stop-color="#508cff" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
-  <rect width="480" height="240" fill="#06080f" rx="12"/>
+  <!-- Ring mark, centered at (42, 42) -->
 
-  <!-- Outer ring — cyan, top-arc bright -->
-  <circle cx="240" cy="106" r="56" fill="none" stroke="rgba(0,212,255,0.12)" stroke-width="1.2"/>
-  <circle cx="240" cy="106" r="56" fill="none" stroke="#00d4ff" stroke-width="1.2"
-          stroke-dasharray="176 176" filter="url(#glow-cyan)" opacity="0.9"/>
+  <!-- Outer ring — cyan -->
+  <circle cx="42" cy="42" r="36" fill="none" stroke="rgba(0,212,255,0.15)" stroke-width="1.5"/>
+  <circle cx="42" cy="42" r="36" fill="none" stroke="#00d4ff" stroke-width="1.5"
+          stroke-dasharray="113 113" filter="url(#gc)" opacity="0.9"/>
 
-  <!-- Mid ring — purple, right-arc bright, reversed -->
-  <circle cx="240" cy="106" r="40" fill="none" stroke="rgba(167,139,250,0.08)" stroke-width="1.1"/>
-  <circle cx="240" cy="106" r="40" fill="none" stroke="#a78bfa" stroke-width="1.1"
-          stroke-dasharray="126 126" stroke-dashoffset="-63"
-          filter="url(#glow-purple)" opacity="0.85"/>
+  <!-- Mid ring — purple, reversed -->
+  <circle cx="42" cy="42" r="26" fill="none" stroke="rgba(167,139,250,0.10)" stroke-width="1.3"/>
+  <circle cx="42" cy="42" r="26" fill="none" stroke="#a78bfa" stroke-width="1.3"
+          stroke-dasharray="82 82" stroke-dashoffset="-41"
+          filter="url(#gp)" opacity="0.85"/>
 
-  <!-- Inner ring — orange, top-arc bright -->
-  <circle cx="240" cy="106" r="24" fill="none" stroke="rgba(255,107,53,0.08)" stroke-width="1"/>
-  <circle cx="240" cy="106" r="24" fill="none" stroke="#ff6b35" stroke-width="1"
-          stroke-dasharray="75 75" filter="url(#glow-orange)" opacity="0.8"/>
+  <!-- Inner ring — orange -->
+  <circle cx="42" cy="42" r="15" fill="none" stroke="rgba(255,107,53,0.10)" stroke-width="1.1"/>
+  <circle cx="42" cy="42" r="15" fill="none" stroke="#ff6b35" stroke-width="1.1"
+          stroke-dasharray="47 47" filter="url(#go)" opacity="0.8"/>
 
   <!-- Core -->
-  <circle cx="240" cy="106" r="8" fill="url(#core-grad)" filter="url(#glow-core)"/>
-  <circle cx="240" cy="106" r="3.5" fill="#508cff" opacity="0.95"/>
+  <circle cx="42" cy="42" r="5" fill="url(#cg)" filter="url(#gcore)"/>
+  <circle cx="42" cy="42" r="2.2" fill="#508cff" opacity="0.95"/>
 
-  <!-- Wordmark: MORPHON light + ENGINE accent, as one baseline -->
-  <text y="186" text-anchor="middle"
+  <!-- Wordmark: MORPHON + ENGINE -->
+  <text y="52"
         font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif"
-        font-size="20" letter-spacing="10">
-    <tspan x="240" font-weight="200" fill="#f0f4ff">MORPHON</tspan><tspan font-weight="500" fill="#508cff">ENGINE</tspan>
+        font-size="28" letter-spacing="4">
+    <tspan x="96" font-weight="300" fill="#f0f4ff">MORPHON</tspan><tspan font-weight="600" fill="#508cff">ENGINE</tspan>
   </text>
-
-  <!-- Subtitle -->
-  <text x="240" y="208" text-anchor="middle"
-        font-family="'Courier New', monospace"
-        font-size="7.5" font-weight="400"
-        fill="#5a6a88" letter-spacing="3.5">INITIALIZING MORPHOGENIC INTELLIGENCE</text>
 </svg>

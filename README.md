@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Morphon Engine" width="420"/>
+  <img src="docs/logo.svg" alt="Morphon Engine" width="420"/>
 </p>
 
 # Morphon-Core
