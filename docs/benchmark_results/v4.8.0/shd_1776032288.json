@@ -1,0 +1,25 @@
+{
+  "base_seed": 42,
+  "benchmark": "shd_synthetic",
+  "chance_level": 0.1,
+  "input_dim": 70,
+  "mean_accuracy": 0.35,
+  "n_channels": 700,
+  "n_classes": 10,
+  "n_epochs": 5,
+  "n_seeds": 1,
+  "n_test_per_class": 20,
+  "n_train_per_class": 50,
+  "profile": "quick",
+  "seeds": [
+    {
+      "accuracy": 0.35,
+      "morphons": 548,
+      "seed": 42,
+      "synapses": 29410,
+      "wall_s": 930
+    }
+  ],
+  "std_accuracy": 0.0,
+  "version": "4.8.0"
+}
