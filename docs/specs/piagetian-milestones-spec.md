@@ -68,7 +68,7 @@ M0–M3 map roughly to Piaget's **Sensorimotor Stage** (0–2yr). M4–M5 map to
 - `PE_habituated < 0.7 × PE_initial` (PE drops ≥30% over habituation)
 - `dishabituation_ratio > 1.5` (novel pattern causes ≥50% higher PE than habituated baseline)
 
-**Current status:** The PE signal exists (`prediction_error_mean` in `VitalSigns`, exported via `endo_json()`). No habituation protocol is written.
+**Current status (v4.9.0, seed=42):** PASS — 96.6% PE drop (criterion ≥30%), 12.49× dishabituation ratio (criterion ≥1.5×). Both margins are large — the PE mechanism is working as intended. `prediction_error_mean` is accessed via `system.inspect().avg_prediction_error`.
 
 **Implementation note:** Pure evaluation — runs `system.step()` in a loop and reads `endo_json()`. No new architecture needed. Could add `system.inject_novelty()` as a separate novelty injection to see if the system's own PE matches hand-labeled novelty.
 
@@ -82,18 +82,19 @@ M0–M3 map roughly to Piaget's **Sensorimotor Stage** (0–2yr). M4–M5 map to
 
 **Protocol:**
 1. **Encoding phase:** Present pattern X for `encoding_steps=30` steps (sufficient to engage working memory).
-2. **Occlusion phase:** Feed zero input for `occlusion_steps` steps (ranging from 5 to 100). At each occlusion step, read the output vector and classify (argmax).
-3. **Retrieval test:** At the end of occlusion, inject a "probe" (half-strength pattern X) and read the output.
-4. Measure: what is the longest occlusion across which the output stays classified as X?
+2. **Occlusion phase:** Feed zero input for up to 100 steps. At each step, classify the output (argmax).
+3. **Retrieval test:** At the end of occlusion, inject a "probe" (half-strength pattern X) and classify.
+4. Measure: `persist_steps` = length of the **consecutive** correct run starting from step 0.
+   - Note: `last_correct_step` (latest step where classification was ever correct) is a distinct and misleading metric — a system that briefly classifies correctly at step 95 but failed at steps 1–94 has `persist_steps=0`, not 95. The spec uses consecutive from step 0.
 
-**Success criterion (graded):**
-- Bronze: output maintains X-class across ≥10 occlusion steps (basic working memory)
-- Silver: maintains across ≥30 steps (robust short-term retention)  
-- Gold: maintains across ≥100 steps with probe recovery (consolidation-level persistence)
+**Success criterion (graded, majority vote: ≥50% of classes must achieve):**
+- Bronze: `persist_steps` ≥ 10 (basic working memory)
+- Silver: `persist_steps` ≥ 30 (robust short-term retention)
+- Gold: `persist_steps` ≥ 100 AND probe recovery (consolidation-level persistence)
 
 **Success distinguishes:** The system has truly formed a working-memory trace, not just output inertia from the last step. To verify: also test with pattern Y (different class) in occlusion to confirm the representation is stimulus-specific, not just "system hasn't fully reset."
 
-**Current status:** Not yet measured. The architecture (persistent activity in `memory.rs`, eligibility trace decay) should support at least Bronze. Whether the iSTDP regulation and threshold-bias dynamics allow 30+ step persistence is an open question.
+**Current status (v4.9.0, seed=42, pre-training):** None. Best single class: 2 consecutive steps. Pre-training, the readout has no class-specific representations to maintain, so there is nothing to persist. `last_correct_step` can give spuriously high values (up to 100) from noise — see metric note above. Next measurement: post-MNIST epoch 1. The architecture (persistent activity in `memory.rs`, eligibility trace carry-over) should support at least Bronze once the readout has learned class-specific targets.
 
 **Implementation note:** The test must be run on a freshly-reset system for each pattern to prevent interference. Use `system.reset_voltages()` between trials. The test is meaningful after the readout has been trained (post-MNIST epoch 1). A `--milestones` flag in `examples/mnist_v2.rs` could run this automatically after training.
 

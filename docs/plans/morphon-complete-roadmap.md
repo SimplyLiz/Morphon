@@ -298,6 +298,24 @@ rather than a separate subsystem.**
 
 ---
 
+## Design Note: Mission-Oriented Reward Structure
+
+When Morphon moves beyond episodic benchmarks (CartPole, MNIST) into open-ended or
+embodied scenarios — Drone3D extended, TasteHub long-horizon, multi-agent — the reward
+structure should shift from task-oriented (fixed terminal condition) to mission-oriented
+(continuous criteria: stay aloft, explore, return, survive, satisfy preference).
+
+Concretely: don't wire reward to episode termination. Wire it to ongoing mission criteria
+evaluated at each step. This keeps neuromodulatory channels (dopamine, noradrenaline)
+meaningful across arbitrarily long time horizons and avoids baking in task assumptions
+that make open-ended extension harder later.
+
+This is a design constraint to enforce at the benchmark/example level, not a code change.
+Revisit when designing the first open-ended Drone3D scenario or the TasteHub PoC reward
+signal.
+
+---
+
 ## Version Summary
 
 | Version | Phase | Key Feature | Status |

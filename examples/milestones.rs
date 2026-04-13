@@ -251,6 +251,7 @@ fn run_m1(system: &mut System, habituation_steps: usize, test_steps: usize) -> s
 
 fn run_m2(system: &mut System, encoding_steps: usize, max_occlusion: usize, n_classes: usize) -> serde_json::Value {
     eprintln!("\n[M2] Object Permanence — working memory across occlusion");
+    eprintln!("[M2] metric: consecutive correct steps from step 0 (spec: 'stays classified')");
     let t0 = Instant::now();
 
     let mut results_per_class = Vec::new();
@@ -267,56 +268,97 @@ fn run_m2(system: &mut System, encoding_steps: usize, max_occlusion: usize, n_cl
             system.process(&pattern);
         }
 
-        // Occlusion phase — measure how long the representation persists
-        let mut correct_steps = 0;
-        let mut last_correct_step = 0;
+        // Occlusion phase.
+        // persist_steps = consecutive correct steps starting from step 0.
+        // This matches the spec: "longest occlusion across which the output stays classified".
+        // last_correct_step tracks the latest step where classification was ever correct
+        // (useful to detect late recoveries — different from sustained persistence).
+        let mut persist_steps = 0usize;
+        let mut consecutive_broken = false;
+        let mut last_correct_step = 0usize;
         for t in 0..max_occlusion {
             let predicted = read_output_class(system, &zero);
             if predicted == class {
-                correct_steps += 1;
+                if !consecutive_broken {
+                    persist_steps = t + 1;
+                }
                 last_correct_step = t + 1;
+            } else {
+                consecutive_broken = true;
             }
         }
 
-        // Probe recovery: inject half-strength pattern at the end of occlusion
+        // Probe recovery: inject half-strength pattern at the end of occlusion.
+        // Tests whether the trace, even if faded, can be reactivated.
         let probe: Vec<f64> = pattern.iter().map(|x| x * 0.5).collect();
         let recovered = read_output_class(system, &probe) == class;
 
+        let tier = if persist_steps >= 100 && recovered { "Gold" }
+            else if persist_steps >= 30 { "Silver" }
+            else if persist_steps >= 10 { "Bronze" }
+            else { "—" };
+
         results_per_class.push(json!({
             "class": class,
-            "correct_occlusion_steps": correct_steps,
-            "last_correct_at_step": last_correct_step,
+            "persist_steps": persist_steps,
+            "last_correct_step": last_correct_step,
             "probe_recovery": recovered,
+            "tier": tier,
         }));
 
         eprintln!(
-            "[M2]   class={} persist={}steps (of {}) probe_recovery={}",
-            class, last_correct_step, max_occlusion, recovered
+            "[M2]   class={} consec={}  last={}  probe={}  {}",
+            class,
+            persist_steps,
+            last_correct_step,
+            if recovered { "✓" } else { "✗" },
+            tier,
         );
     }
 
-    // Score: what fraction of classes achieve each medal tier?
-    let bronze_threshold = 10;
-    let silver_threshold = 30;
+    // Medal: majority vote across classes at each tier.
+    // Gold requires both ≥100 consecutive steps AND probe recovery.
+    let bronze_threshold = 10usize;
+    let silver_threshold = 30usize;
+    let gold_threshold   = 100usize;
     let n = results_per_class.len() as f64;
+
     let bronze = results_per_class.iter()
-        .filter(|r| r["last_correct_at_step"].as_u64().unwrap_or(0) >= bronze_threshold as u64)
+        .filter(|r| r["persist_steps"].as_u64().unwrap_or(0) >= bronze_threshold as u64)
         .count() as f64 / n;
     let silver = results_per_class.iter()
-        .filter(|r| r["last_correct_at_step"].as_u64().unwrap_or(0) >= silver_threshold as u64)
+        .filter(|r| r["persist_steps"].as_u64().unwrap_or(0) >= silver_threshold as u64)
+        .count() as f64 / n;
+    let gold = results_per_class.iter()
+        .filter(|r| {
+            r["persist_steps"].as_u64().unwrap_or(0) >= gold_threshold as u64
+                && r["probe_recovery"].as_bool().unwrap_or(false)
+        })
         .count() as f64 / n;
     let probe_recovery_rate = results_per_class.iter()
         .filter(|r| r["probe_recovery"].as_bool().unwrap_or(false))
         .count() as f64 / n;
 
-    let medal = if silver >= 0.5 { "Silver" } else if bronze >= 0.5 { "Bronze" } else { "None" };
+    // Medal: majority (≥50%) of classes must achieve the tier.
+    let medal = if gold >= 0.5 { "Gold" }
+        else if silver >= 0.5 { "Silver" }
+        else if bronze >= 0.5 { "Bronze" }
+        else { "None" };
+
+    // Individual best (for reporting even when majority threshold not met)
+    let best_class = results_per_class.iter()
+        .max_by_key(|r| r["persist_steps"].as_u64().unwrap_or(0));
+    let best_persist = best_class
+        .and_then(|r| r["persist_steps"].as_u64())
+        .unwrap_or(0);
+    let best_tier = best_class
+        .and_then(|r| r["tier"].as_str())
+        .unwrap_or("—");
 
     eprintln!(
-        "[M2] bronze(≥{}steps)={:.0}% silver(≥{}steps)={:.0}% probe_recovery={:.0}% → {}",
-        bronze_threshold, bronze * 100.0,
-        silver_threshold, silver * 100.0,
-        probe_recovery_rate * 100.0,
-        medal
+        "[M2] bronze={:.0}% silver={:.0}% gold={:.0}% probe_recovery={:.0}%  medal={} (best: {}steps, {})",
+        bronze * 100.0, silver * 100.0, gold * 100.0, probe_recovery_rate * 100.0,
+        medal, best_persist, best_tier,
     );
 
     json!({
@@ -324,11 +366,18 @@ fn run_m2(system: &mut System, encoding_steps: usize, max_occlusion: usize, n_cl
         "medal": medal,
         "bronze_pct": bronze * 100.0,
         "silver_pct": silver * 100.0,
+        "gold_pct": gold * 100.0,
         "probe_recovery_pct": probe_recovery_rate * 100.0,
-        "bronze_threshold_steps": bronze_threshold,
-        "silver_threshold_steps": silver_threshold,
+        "best_single_class_persist_steps": best_persist,
+        "best_single_class_tier": best_tier,
+        "thresholds": {
+            "bronze_steps": bronze_threshold,
+            "silver_steps": silver_threshold,
+            "gold_steps": gold_threshold,
+            "gold_requires_probe_recovery": true,
+        },
         "per_class": results_per_class,
-        "criterion": "Bronze: ≥50% classes persist ≥10 steps; Silver: ≥30 steps",
+        "criterion": "medal = Bronze if ≥50% classes persist ≥10 steps consecutive; Silver ≥30; Gold ≥100 + probe_recovery",
         "duration_s": t0.elapsed().as_secs_f64(),
     })
 }
@@ -392,7 +441,10 @@ fn main() {
     eprintln!("║  M0 Sensorimotor: {}", if m0["passed"].as_bool().unwrap_or(false) { "PASS ✓" } else { "FAIL ✗" });
     eprintln!("║  M1 Habituation:  {}", if m1["passed"].as_bool().unwrap_or(false) { "PASS ✓" } else { "FAIL ✗" });
     if let Some(ref m2v) = m2 {
-        eprintln!("║  M2 Object Perm:  {}", m2v["medal"].as_str().unwrap_or("None"));
+        let medal = m2v["medal"].as_str().unwrap_or("None");
+        let best_steps = m2v["best_single_class_persist_steps"].as_u64().unwrap_or(0);
+        let best_tier = m2v["best_single_class_tier"].as_str().unwrap_or("—");
+        eprintln!("║  M2 Object Perm:  {} (best class: {}steps / {})", medal, best_steps, best_tier);
     }
     eprintln!("║  Total: {:.1}s", total_s);
     eprintln!("╚══════════════════════════════════════════════════╝");
