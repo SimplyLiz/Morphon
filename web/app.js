@@ -212,7 +212,7 @@ let dSceneInited=false;
 
 // Three.js objects
 let renderer, scene, camera, controls, composer, bloomPass;
-let nodesMesh, glowMesh, edgesMesh, diskMesh, fresnelBall;
+let nodesMesh, glowMesh, edgesMesh, arrowsMesh, diskMesh, fresnelBall;
 let ambientParticles; // floating dust motes inside the ball
 let nodePositions = new Float32Array(MAX_NODES * 3);
 let nodeData = [];
@@ -254,6 +254,13 @@ const _pulseColor = new THREE.Color(0.98, 0.75, 0.14);
 // Reusable vectors for edge hover raycast
 const _edgeVecA = new THREE.Vector3();
 const _edgeVecB = new THREE.Vector3();
+// Reusable objects for arrowhead placement (avoid per-frame allocation)
+const _arrowDir    = new THREE.Vector3();
+const _arrowPos    = new THREE.Vector3();
+const _arrowUp     = new THREE.Vector3(0, 1, 0);
+const _arrowQuat   = new THREE.Quaternion();
+const _arrowScale  = new THREE.Vector3(1, 1, 1);
+const _arrowMat4   = new THREE.Matrix4();
 
 // Cached DOM element references — populated once in initDOMCache()
 const dom = {};
@@ -605,6 +612,23 @@ function initScene() {
   });
   edgesMesh = new THREE.LineSegments(edgeGeo, edgeMat);
   scene.add(edgesMesh);
+
+  // === ARROWHEADS (direction indicators at the 'to' end of each edge) ===
+  // Small 4-sided pyramid cones, one per edge, oriented along the edge direction.
+  // ConeGeometry tip points +Y by default — we'll orient via setFromUnitVectors(+Y, dir)
+  const arrowGeo = new THREE.ConeGeometry(0.10, 0.30, 4);
+  const arrowMat = new THREE.MeshBasicMaterial({
+    transparent: true, opacity: 0.45,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  arrowsMesh = new THREE.InstancedMesh(arrowGeo, arrowMat, MAX_EDGES);
+  arrowsMesh.count = 0;
+  arrowsMesh.instanceColor = new THREE.InstancedBufferAttribute(
+    new Float32Array(MAX_EDGES * 3), 3
+  );
+  arrowsMesh.instanceColor.setUsage(THREE.DynamicDrawUsage);
+  arrowsMesh.frustumCulled = false;
+  scene.add(arrowsMesh);
 
   // === SPIKE PARTICLES ===
   const spikeGeo = new THREE.SphereGeometry(1, 6, 6);
@@ -1162,12 +1186,34 @@ function updateScene() {
     // V3: justified synapses get subtle gold tint
     if (e.justified && edgeDimFactor < 0.3) { r += 0.03; g += 0.025; }
 
-    // Apply same color to all 4 vertices
+    // Directional gradient: full brightness at source, fades to near-dark at target.
+    // Vertices: [from(0), mid-from(1), mid-to(2), to(3)]
+    // Fade curve: 1.0 → 0.55 → 0.20 → 0.04
+    const fade = [1.0, 0.55, 0.20, 0.04];
     for (let v = 0; v < 4; v++) {
-      colors[ei + v*3] = r;
-      colors[ei + v*3 + 1] = g;
-      colors[ei + v*3 + 2] = b;
+      const f = fade[v];
+      colors[ei + v*3]     = r * f;
+      colors[ei + v*3 + 1] = g * f;
+      colors[ei + v*3 + 2] = b * f;
     }
+
+    // Arrowhead: small cone placed at 82% along the edge, pointing toward 'to'.
+    // Direction derived from the curved midpoint so it follows the curve.
+    const ax = ox + (tx - ox) * 0.45;  // 82% overall ≈ midpoint + 45% of second half
+    const ay = oy + (ty - oy) * 0.45;
+    const az = oz + (tz - oz) * 0.45;
+    const adx = tx - ox, ady = ty - oy, adz = tz - oz;
+    const alen = Math.sqrt(adx*adx + ady*ady + adz*adz) || 1;
+    // Rotate default +Y cone tip to point along the edge direction.
+    // Guard: if edge is nearly vertical (parallel to +Y), nudge slightly to avoid
+    // setFromUnitVectors throwing on antiparallel vectors.
+    _arrowDir.set(adx / alen, ady / alen, adz / alen);
+    if (Math.abs(_arrowDir.y) > 0.9999) _arrowDir.x += 0.001;
+    _arrowQuat.setFromUnitVectors(_arrowUp, _arrowDir.normalize());
+    _arrowMat4.compose(_arrowPos.set(ax, ay, az), _arrowQuat, _arrowScale);
+    arrowsMesh.setMatrixAt(edgeIdx, _arrowMat4);
+    // Arrow color: source color at ~25% brightness (matches the faded end of the edge)
+    arrowsMesh.instanceColor.setXYZ(edgeIdx, r * 0.55, g * 0.55, b * 0.55);
 
     edgeIdx++;
   }
@@ -1175,6 +1221,9 @@ function updateScene() {
   edgesMesh.geometry.attributes.position.needsUpdate = true;
   edgesMesh.geometry.attributes.color.needsUpdate = true;
   edgesMesh.geometry.setDrawRange(0, edgeIdx * 4); // 4 verts per edge (2 segments)
+  arrowsMesh.count = edgeIdx;
+  arrowsMesh.instanceMatrix.needsUpdate = true;
+  arrowsMesh.instanceColor.needsUpdate = true;
 
   // V3: Cluster hulls
   updateClusterHulls(nodes, edges);
