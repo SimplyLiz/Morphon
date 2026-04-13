@@ -70,19 +70,21 @@ const OMEGA_MAX: f64 = 5.0;   // rad/s normalization
 //
 // Directional actions keep total thrust = 2×MAX_T = m×g (hover-neutral altitude).
 // Only ASCEND and DESCEND deviate from this.
-const ACTIONS: [(f64, f64, f64, f64); 9] = [
+const ACTIONS: [(f64, f64, f64, f64); 11] = [
     //               R1(fl) R2(fr) R3(br) R4(bl)
-    (0.50, 0.50, 0.50, 0.50), // 0 HOVER    — zero torque, hover thrust
-    (0.70, 0.70, 0.70, 0.70), // 1 ASCEND   — all high, +z
-    (0.30, 0.30, 0.30, 0.30), // 2 DESCEND  — all low, -z
-    (0.40, 0.40, 0.60, 0.60), // 3 FWD (+x) — back high → τ_pitch<0 → nose down → +x
-    (0.60, 0.60, 0.40, 0.40), // 4 BWD (-x) — front high → τ_pitch>0 → nose up → -x
-    (0.60, 0.40, 0.40, 0.60), // 5 RGT (+y) — left high → τ_roll>0 → roll right → +y
-    (0.40, 0.60, 0.60, 0.40), // 6 LFT (-y) — right high → τ_roll<0 → roll left → -y
-    (0.55, 0.65, 0.65, 0.55), // 7 ASC+RL   — ascend + left-roll (corrects phi>0 while climbing)
-    (0.65, 0.55, 0.55, 0.65), // 8 ASC+RR   — ascend + right-roll (corrects phi<0 while climbing)
+    (0.50, 0.50, 0.50, 0.50), // 0  HOVER     — zero torque, hover thrust
+    (0.70, 0.70, 0.70, 0.70), // 1  ASCEND    — all high, +0.40g
+    (0.30, 0.30, 0.30, 0.30), // 2  DESCEND   — all low,  -0.40g
+    (0.40, 0.40, 0.60, 0.60), // 3  FWD (+x)  — back high → τ_pitch<0 → nose down → +x
+    (0.60, 0.60, 0.40, 0.40), // 4  BWD (-x)  — front high → τ_pitch>0 → nose up → -x
+    (0.60, 0.40, 0.40, 0.60), // 5  RGT (+y)  — left high → τ_roll>0 → roll right → +y
+    (0.40, 0.60, 0.60, 0.40), // 6  LFT (-y)  — right high → τ_roll<0 → roll left → -y
+    (0.55, 0.65, 0.65, 0.55), // 7  ASC+RL    — ascend + left-roll (corrects phi>0 while climbing)
+    (0.65, 0.55, 0.55, 0.65), // 8  ASC+RR    — ascend + right-roll (corrects phi<0 while climbing)
+    (0.57, 0.57, 0.57, 0.57), // 9  SOFT_ASC  — +0.14g: gentle climb / decelerate descent
+    (0.43, 0.43, 0.43, 0.43), // 10 SOFT_DESC — -0.14g: gentle descent / decelerate ascent
 ];
-const ACTION_NAMES: [&str; 9] = ["HOVER  ", "ASCEND ", "DESCEND", "FWD+X  ", "BWD-X  ", "RGT+Y  ", "LFT-Y  ", "ASC+RL ", "ASC+RR "];
+const ACTION_NAMES: [&str; 11] = ["HOVER  ", "ASCEND ", "DESCEND", "FWD+X  ", "BWD-X  ", "RGT+Y  ", "LFT-Y  ", "ASC+RL ", "ASC+RR ", "SFTASC ", "SFTDSC "];
 
 // ─── Waypoints ────────────────────────────────────────────────────────────────
 
@@ -282,7 +284,7 @@ fn correct_action(d: &Drone3D, tgt: (f64, f64, f64)) -> usize {
             if d.theta > 0.0 { 3 } else { 4 } // FWD reduces theta, BWD raises
         }
     } else {
-        let proj_z = (tz - d.z) + d.vz * 0.40;
+        let proj_z = (tz - d.z) + d.vz * 0.70;
         let proj_x = (tx - d.x) + d.vx * 0.40;
         let proj_y = (ty - d.y) + d.vy * 0.40;
         let az = proj_z.abs();
@@ -290,7 +292,13 @@ fn correct_action(d: &Drone3D, tgt: (f64, f64, f64)) -> usize {
         let ay = proj_y.abs() * 0.65;
 
         if az >= ax.max(ay) && az > 0.22 {
-            if proj_z > 0.0 { 1 } else { 2 }
+            if proj_z > 0.0 {
+                // Close to target or already ascending fast → gentle climb to avoid ceiling overshoot
+                if proj_z < 0.6 || d.vz > 1.5 { 9 } else { 1 }
+            } else {
+                // Close to target OR already descending fast → soft descent to limit floor overshoot
+                if proj_z > -0.7 || d.vz < -1.0 { 10 } else { 2 }
+            }
         } else if ax >= ay && ax > 0.20 {
             if proj_x > 0.0 { 3 } else { 4 }
         } else if ay > 0.20 {
@@ -457,7 +465,7 @@ fn create_system() -> System {
             initial_connectivity: 0.20,
             proliferation_rounds: 2,
             target_input_size:  Some(96),
-            target_output_size: Some(9),
+            target_output_size: Some(11),
             ..DevelopmentalConfig::cerebellar()
         },
         scheduler: SchedulerConfig {
@@ -520,7 +528,7 @@ fn create_system() -> System {
 
 fn select_action(outputs: &[f64], epsilon: f64, rng: &mut impl Rng) -> usize {
     if outputs.is_empty() || rng.random_range(0.0..1.0) < epsilon {
-        return rng.random_range(0..9usize);
+        return rng.random_range(0..11usize);
     }
     outputs.iter().enumerate()
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
