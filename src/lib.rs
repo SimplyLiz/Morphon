@@ -61,6 +61,7 @@ pub mod justification;
 pub mod governance;
 pub mod epistemic;
 pub mod endoquilibrium;
+pub mod limbic;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "wasm")]

@@ -92,6 +92,7 @@ impl System {
             snapshot.config.developmental.target_output_size,
         );
         let rng_seed = snapshot.config.rng_seed;
+        let limbic_input_size = snapshot.config.developmental.target_input_size.unwrap_or(16);
 
         System {
             morphons: snapshot.morphons,
@@ -143,6 +144,7 @@ impl System {
             ancs: crate::ancs::InMemoryBackend::new(crate::ancs::AncsConfig::default()),
             heartbeat: crate::ancs::SystemHeartbeat::default(),
             current_ancs_item: None,
+            limbic: crate::limbic::LimbicCircuit::new(limbic_input_size),
         }
     }
 

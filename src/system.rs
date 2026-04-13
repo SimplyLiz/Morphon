@@ -322,6 +322,10 @@ pub struct System {
     /// Seeded RNG for deterministic runs. Initialized from config.rng_seed if set,
     /// otherwise from OS entropy. All rand calls in System use this — never rand::rng().
     pub(crate) rng: rand::rngs::SmallRng,
+
+    /// Limbic Circuit — per-stimulus salience detection, RPE computation, episodic tagging.
+    /// Disabled by default (`limbic.enabled = false`). Enable per-example to activate.
+    pub limbic: crate::limbic::LimbicCircuit,
 }
 
 impl System {
@@ -407,6 +411,7 @@ impl System {
 
         let endo = crate::endoquilibrium::Endoquilibrium::new(config.endoquilibrium.clone());
         let ancs_config = config.ancs.clone();
+        let limbic_input_size = config.developmental.target_input_size.unwrap_or(16);
         let mut system = System {
             morphons,
             topology,
@@ -448,6 +453,7 @@ impl System {
             auto_merge_candidates: morphogenesis::AutoMergeCandidates::default(),
             pending_merge_groups: Vec::new(),
             rng,
+            limbic: crate::limbic::LimbicCircuit::new(limbic_input_size),
             ancs: InMemoryBackend::new(ancs_config),
             heartbeat: SystemHeartbeat::default(),
             current_ancs_item: None,
@@ -3164,6 +3170,88 @@ impl System {
             self.step();
         }
         self.read_output()
+    }
+
+    /// Process one step with Limbic Circuit modulation.
+    ///
+    /// If `self.limbic.enabled`:
+    /// 1. Evaluates salience of `observation` and injects proportional arousal.
+    /// 2. Runs the standard `process()` cortical step.
+    ///
+    /// If limbic is disabled, falls back to plain `process()` — zero overhead.
+    ///
+    /// Call `deliver_limbic_reward()` after determining correctness.
+    pub fn process_with_limbic(
+        &mut self,
+        observation: &[f64],
+        _label: Option<usize>,
+    ) -> Vec<f64> {
+        if !self.limbic.enabled {
+            return self.process(observation);
+        }
+
+        // Fast path: evaluate salience and modulate arousal before cortical processing.
+        let salience = self.limbic.salience_detector.evaluate(observation);
+        // Inject salience-scaled arousal additively: low salience → quiet, high → alert.
+        let base_arousal = self.endo.channels.arousal_gain as f64;
+        self.modulation.inject_arousal(base_arousal * salience);
+
+        self.process(observation)
+    }
+
+    /// Deliver reward through the Limbic Circuit after processing a sample.
+    ///
+    /// If `self.limbic.enabled`:
+    /// 1. Computes RPE = received_reward − expected_reward_for_class.
+    /// 2. Applies RPE-scaled metabolic energy to fired morphons
+    ///    (replaces the flat reward-energy in reward_contrastive).
+    /// 3. Records outcome in the salience detector's reward-association map.
+    /// 4. Stores a high-salience episode in the episodic tagger.
+    ///
+    /// Call this **after** `reward_contrastive()`. The existing energy boost in
+    /// reward_contrastive still runs; this adds the RPE layer on top.
+    /// If limbic is disabled this is a no-op.
+    pub fn deliver_limbic_reward(
+        &mut self,
+        observation: &[f64],
+        label: usize,
+        reward: f64,
+    ) {
+        if !self.limbic.enabled { return; }
+
+        // Compute RPE and update reward expectation for this class.
+        let rpe = self.limbic.motivational_drive.compute_rpe_for_class(label, reward);
+
+        // Record outcome so salience_detector learns which patterns are rewarding.
+        self.limbic.salience_detector.record_outcome(observation, reward);
+
+        // RPE-scaled energy: morphons that fire during surprising successes earn more.
+        // High RPE (unexpected correct) → large energy boost.
+        // Low RPE (expected correct, or incorrect) → small or no boost.
+        let coeff = self.config.metabolic.reward_energy_coefficient;
+        if coeff > 0.0 && rpe > 0.0 {
+            for m in self.morphons.values_mut() {
+                if m.fired {
+                    m.energy = (m.energy + rpe * coeff).min(1.0);
+                }
+            }
+        }
+
+        // Store episode if salient enough.
+        let salience = self.limbic.salience_detector.current_salience;
+        let active_morphons: Vec<u64> = self.morphons.values()
+            .filter(|m| m.fired)
+            .map(|m| m.id)
+            .collect();
+        self.limbic.episodic_tagger.maybe_record(
+            observation,
+            &active_morphons,
+            reward,
+            rpe,
+            salience,
+            Some(label),
+            self.step_count,
+        );
     }
 
     /// V2: Explicitly trigger a dream cycle (e.g., between RL episodes).
