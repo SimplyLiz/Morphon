@@ -1323,6 +1323,7 @@
       <option value="idle">Idle</option>
       <option value="arena">Sketch Arena</option>
       <option value="cartpole">CartPole</option>
+      <option value="drone">Drone 3D</option>
     </select>
     <button id="btn-reset">RESET</button>
     <button id="btn-save" title="Save state">SAVE</button>
@@ -1535,6 +1536,7 @@
     <button class="tab-btn" data-tab="tab-memory">MEMORY</button>
     <button class="tab-btn" data-tab="tab-arena" id="tab-btn-arena" style="display:none">ARENA</button>
     <button class="tab-btn" data-tab="tab-cartpole" id="tab-btn-cartpole" style="display:none">CARTPOLE</button>
+    <button class="tab-btn" data-tab="tab-drone" id="tab-btn-drone" style="display:none">DRONE 3D</button>
     <div class="tab-actions">
       <button id="btn-panel-clear" title="Clear">CLEAR</button>
       <button id="btn-panel-maximize" title="Maximize / Restore">&#x25A1;</button>
@@ -1708,6 +1710,26 @@
         <div style="font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-top:4px;">Episode History</div>
         <canvas id="cp-history-spark" style="width:100%; height:40px; display:block;"></canvas>
       </div>
+    </div>
+  </div>
+
+  <!-- TAB: DRONE 3D -->
+  <div id="tab-drone" class="tab-content" style="position:relative; overflow:hidden; padding:0; flex:1; display:flex; flex-direction:column;">
+    <div id="drone-scene-container" style="width:100%; flex:1; min-height:0; background:#040a14; position:relative;">
+    </div>
+    <div id="drone-hud" style="position:absolute; top:8px; right:8px; display:flex; flex-direction:column; gap:5px; pointer-events:none; font-family:'JetBrains Mono',monospace; font-size:10px;">
+      <div style="background:rgba(4,10,20,0.82); border:1px solid rgba(96,200,255,0.18); border-radius:4px; padding:8px 12px; min-width:130px; display:flex; flex-direction:column; gap:4px;">
+        <div style="font-size:9px; color:rgba(96,200,255,0.6); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:2px;">Drone 3D</div>
+        <div class="endo-channel-row"><span class="label">Episode</span><span class="value" id="d-episodes" style="color:#60c8ff">0</span></div>
+        <div class="endo-channel-row"><span class="label">Steps</span><span class="value" id="d-steps" style="color:var(--text-bright)">0</span></div>
+        <div class="endo-channel-row"><span class="label">Best</span><span class="value" id="d-best" style="color:var(--modulatory)">0</span></div>
+        <div class="endo-channel-row"><span class="label">Action</span><span class="value" id="d-action" style="color:#fbbf24; font-size:9px;">—</span></div>
+        <div class="endo-channel-row"><span class="label">Pos err</span><span class="value" id="d-err" style="color:#f87171">—</span></div>
+        <div class="endo-channel-row"><span class="label">Waypoint</span><span class="value" id="d-wp" style="color:rgba(96,200,255,0.7)">—</span></div>
+      </div>
+    </div>
+    <div style="position:absolute; bottom:8px; left:8px; pointer-events:auto;">
+      <button id="btn-drone-wind" onclick="window._droneToggleWind()" style="background:rgba(4,10,20,0.82); border:1px solid rgba(96,200,255,0.25); border-radius:4px; color:rgba(96,200,255,0.6); font-size:9px; font-family:'JetBrains Mono',monospace; padding:4px 10px; cursor:pointer; letter-spacing:0.5px;">WIND: OFF</button>
     </div>
   </div>
 

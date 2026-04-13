@@ -147,6 +147,65 @@ const cpHistory = [];  // episode step counts for sparkline
 const migrationTrails = []; // [{x,y,z, age, maxAge, r,g,b}]
 const _prevMorphonPos = new Map(); // id → {x,y,z} — previous frame positions
 
+// === DRONE 3D STATE ===
+const D_GRAVITY   = 9.81;
+const D_MASS      = 0.5;
+const D_ARM       = 0.15;
+const D_IXX       = 0.010;
+const D_IYY       = 0.010;
+const D_IZZ       = 0.020;
+const D_DRAG      = 0.025;
+const D_MAX_T     = D_MASS * D_GRAVITY / 2.0;
+const D_DT        = 0.02;
+const D_X_LIM     = 3.0;
+const D_Y_LIM     = 3.0;
+const D_Z_MIN     = 0.1;
+const D_Z_MAX     = 6.0;
+const D_ANGLE_LIM = Math.PI / 4;
+const D_V_MAX     = 4.0;
+const D_OMEGA_MAX = 5.0;
+const D_GAMMA     = 0.97;
+const D_ACTIONS   = [
+  [0.50, 0.50, 0.50, 0.50], // 0 HOVER
+  [0.70, 0.70, 0.70, 0.70], // 1 ASCEND
+  [0.30, 0.30, 0.30, 0.30], // 2 DESCEND
+  [0.40, 0.40, 0.60, 0.60], // 3 FWD+X
+  [0.60, 0.60, 0.40, 0.40], // 4 BWD-X
+  [0.60, 0.40, 0.40, 0.60], // 5 RGT+Y
+  [0.40, 0.60, 0.60, 0.40], // 6 LFT-Y
+];
+const D_ACTION_NAMES = ['HOVER','ASCEND','DESCEND','FWD+X','BWD-X','RGT+Y','LFT-Y'];
+const D_WAYPOINTS_QUICK    = [[0.0, 0.0, 2.0]];
+const D_WAYPOINTS_STANDARD = [[0.0,0.0,2.0],[0.0,0.0,1.3],[0.0,0.0,3.5],[0.0,0.0,1.8],[0.0,0.0,2.8]];
+const D_WAYPOINTS_3D       = [[0.0,0.0,2.0],[1.5,0.0,2.5],[0.0,1.5,1.5],[-1.5,0.0,2.0],[0.0,-1.5,3.0],[1.2,1.2,2.0]];
+const D_WAYPOINT_STEPS = 100;
+const D_WAYPOINT_TOL   = 0.30;
+const D_INTERNAL_STEPS = 4;
+
+// drone physics state
+let d3X=0, d3Y=0, d3Z=2, d3Vx=0, d3Vy=0, d3Vz=0;
+let d3Phi=0, d3Theta=0, d3Psi=0, d3Omx=0, d3Omy=0, d3Omz=0, d3T=0;
+// wind (OU)
+let d3WindVx=0, d3WindVy=0;
+const D_WIND_THETA=0.20, D_WIND_SIGMA=1.6;
+let d3WindEnabled = false;
+// episode tracking
+let d3Episodes=0, d3Steps=0, d3Best=0, d3WpIdx=0, d3WpSteps=0, d3WpNear=0;
+let d3WpList = D_WAYPOINTS_QUICK;
+let d3LastAction=0, d3LastRotors=[0.5,0.5,0.5,0.5];
+// critic weights [24] + bias
+let d3CriticW = new Float64Array(24), d3CriticBias = 0;
+const D_CRITIC_LR = 0.06;
+// Three.js drone scene
+let dRenderer=null, dScene=null, dCamera=null, dControls=null, dComposer=null;
+let droneGroup=null, dWaypointMesh=null, dWaypointRing=null, dWpLine=null;
+const dRotorMeshes=[], dRotorGlows=[];
+const d3RotorAngles=[0,0,0,0];
+const D_TRAIL_MAX=100;
+let dTrailPositions=null, dTrailGeom=null, dTrailLine=null;
+let dWindArrow=null;
+let dSceneInited=false;
+
 
 
 // Three.js objects
@@ -2329,8 +2388,9 @@ function setArenaStatus(msg) {
 function switchOccupation(newOcc) {
   if (newOcc === occupation) return;
   occupation = newOcc;
-  const arenaTab = document.getElementById('tab-btn-arena');
+  const arenaTab    = document.getElementById('tab-btn-arena');
   const cartpoleTab = document.getElementById('tab-btn-cartpole');
+  const droneTab    = document.getElementById('tab-btn-drone');
 
   if (occupation === 'arena') {
     // Create arena-optimized system: 8x8=64 inputs, 4 outputs
@@ -2349,6 +2409,7 @@ function switchOccupation(newOcc) {
     // Show arena tab, switch to it
     if (arenaTab) arenaTab.style.display = '';
     if (cartpoleTab) cartpoleTab.style.display = 'none';
+    if (droneTab) droneTab.style.display = 'none';
     activateTab('tab-arena');
     drawArenaGrid();
     updateArenaStats();
@@ -2370,17 +2431,55 @@ function switchOccupation(newOcc) {
     // Show cartpole tab
     if (arenaTab) arenaTab.style.display = 'none';
     if (cartpoleTab) cartpoleTab.style.display = '';
+    if (droneTab) droneTab.style.display = 'none';
     activateTab('tab-cartpole');
     updateCartPoleStats();
     addEvent(0, 'CartPole activated [cerebellar, 4in/2out]', 'event-diff');
+  } else if (occupation === 'drone') {
+    if (system) { try { system.free(); } catch(_) {} }
+    system = WasmSystem.newWithIO(100, 'cerebellar', 4, 96, 7);
+    try { system.enable_analog_readout(); } catch(_) {}
+    // Warm up
+    d3ResetEpisode();
+    const warmObs = d3Observe(...d3WpList[0]);
+    for (let i = 0; i < 20; i++) {
+      for (let j = 0; j < D_INTERNAL_STEPS; j++) { system.feed_input(warmObs); system.step(); }
+    }
+    // Reset tracking
+    d3Episodes = 0; d3Steps = 0; d3Best = 0;
+    d3CriticW.fill(0); d3CriticBias = 0;
+    _dTrailBuf.length = 0;
+    if (arenaTab) arenaTab.style.display = 'none';
+    if (cartpoleTab) cartpoleTab.style.display = 'none';
+    if (droneTab) droneTab.style.display = '';
+    activateTab('tab-drone');
+    // Expand panel to give the 3D scene real estate
+    const dPanel = document.getElementById('bottom-panel');
+    if (dPanel) {
+      dPanel.classList.add('no-transition');
+      document.documentElement.style.setProperty('--panel-h', '62vh');
+      dPanel.classList.remove('maximized');
+      requestAnimationFrame(() => dPanel.classList.remove('no-transition'));
+    }
+    initDroneScene();
+    updateDroneStats();
+    addEvent(0, 'Drone 3D activated [cerebellar, 96in/7out]', 'event-diff');
   } else {
-    // Back to idle
+    // Back to idle — restore normal panel height
+    const dPanel = document.getElementById('bottom-panel');
+    if (dPanel) {
+      dPanel.classList.add('no-transition');
+      document.documentElement.style.setProperty('--panel-h', '160px');
+      dPanel.classList.remove('maximized');
+      requestAnimationFrame(() => dPanel.classList.remove('no-transition'));
+    }
     if (system) { try { system.free(); } catch(_) {} }
     const program = document.getElementById('program-select').value;
     system = new WasmSystem(60, program, 3);
     for (let i = 0; i < 20; i++) { makeInput('noise'); system.step(); }
     if (arenaTab) arenaTab.style.display = 'none';
     if (cartpoleTab) cartpoleTab.style.display = 'none';
+    if (droneTab) droneTab.style.display = 'none';
     activateTab('tab-log');
     addEvent(0, 'Returned to idle mode', 'event-diff');
   }
@@ -3357,6 +3456,8 @@ function animate() {
         arenaTrainStep();
       } else if (occupation === 'cartpole') {
         cartPoleStep();
+      } else if (occupation === 'drone') {
+        drone3DStep();
       } else if (frameCount % 3 === 0 && performance.now() - lastUserInputTime > 500) {
         // Auto-inject noise unless user sent input recently (500ms grace period)
         makeInput('noise');
@@ -3393,6 +3494,9 @@ function animate() {
         updateCartPoleStats();
         drawCartPole();
       }
+      if (occupation === 'drone') {
+        updateDroneStats();
+      }
       // Feed performance to endo so stage detection works.
       if (occupation === 'arena' && arenaAccHistory.length > 0) {
         system.report_performance(arenaAccHistory[arenaAccHistory.length - 1] * 100);
@@ -3405,6 +3509,7 @@ function animate() {
 
   updateSpikes();
   updateLearningPulses(); // V3: gold learning pulse particles
+  if (occupation === 'drone' && dSceneInited) { updateDroneScene(); dComposer.render(); }
   // Subtle ball rotation
   if (diskMesh) {
     diskMesh.rotation.y = elapsed * 0.02;
@@ -3722,6 +3827,510 @@ function updateLearningPulses() {
     }
   }
 }
+
+// ============================================================
+// DRONE 3D — Three.js scene + physics
+// ============================================================
+
+function d3NormalSample() {
+  const u1 = Math.max(1e-10, Math.random());
+  const u2 = Math.random();
+  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+}
+
+function d3WindStep() {
+  const sq = Math.sqrt(D_DT);
+  d3WindVx += -D_WIND_THETA * d3WindVx * D_DT + D_WIND_SIGMA * d3NormalSample() * sq;
+  d3WindVy += -D_WIND_THETA * d3WindVy * D_DT + D_WIND_SIGMA * d3NormalSample() * sq;
+  d3WindVx = Math.max(-4, Math.min(4, d3WindVx));
+  d3WindVy = Math.max(-4, Math.min(4, d3WindVy));
+}
+
+function d3Observe(tx, ty, tz) {
+  const raw = [
+    Math.max(-1.5, Math.min(1.5, (d3X - tx) / D_X_LIM)),
+    Math.max(-1.5, Math.min(1.5, (d3Y - ty) / D_Y_LIM)),
+    Math.max(-1.5, Math.min(1.5, (d3Z - tz) / D_Z_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Vx / D_V_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Vy / D_V_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Vz / D_V_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Phi   / D_ANGLE_LIM)),
+    Math.max(-1.5, Math.min(1.5, d3Theta / D_ANGLE_LIM)),
+    Math.max(-1.5, Math.min(1.5, d3Psi   / Math.PI)),
+    Math.max(-1.5, Math.min(1.5, d3Omx / D_OMEGA_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Omy / D_OMEGA_MAX)),
+    Math.max(-1.5, Math.min(1.5, d3Omz / D_OMEGA_MAX)),
+  ];
+  const centers = [-0.85, -0.60, -0.35, -0.10, 0.10, 0.35, 0.60, 0.85];
+  const width = 0.30, amp = 4.0;
+  const out = new Float64Array(96);
+  let idx = 0;
+  for (let v of raw) {
+    for (let c of centers) {
+      out[idx++] = Math.exp(-((v - c) ** 2) / (2 * width * width)) * amp;
+    }
+  }
+  return out;
+}
+
+function d3PhysicsStep(action, gx, gy) {
+  const [r1, r2, r3, r4] = D_ACTIONS[action];
+  const total_f = (r1 + r2 + r3 + r4) * D_MAX_T;
+  const sp = Math.sin(d3Phi),   cp = Math.cos(d3Phi);
+  const st = Math.sin(d3Theta), ct = Math.cos(d3Theta);
+  const sy = Math.sin(d3Psi),   cy = Math.cos(d3Psi);
+
+  const thrust_x = (cy * st * cp + sy * sp) * total_f / D_MASS + gx;
+  const thrust_y = (sy * st * cp - cy * sp) * total_f / D_MASS + gy;
+  const thrust_z = (ct * cp)               * total_f / D_MASS - D_GRAVITY;
+
+  const tau_roll  = (r1 + r4 - r2 - r3) * D_ARM  * D_MAX_T;
+  const tau_pitch = (r1 + r2 - r3 - r4) * D_ARM  * D_MAX_T;
+  const tau_yaw   = (r1 + r3 - r2 - r4) * D_DRAG * D_MAX_T;
+
+  d3Vx  += D_DT * thrust_x; d3Vy  += D_DT * thrust_y; d3Vz  += D_DT * thrust_z;
+  d3X   += D_DT * d3Vx;    d3Y   += D_DT * d3Vy;    d3Z   += D_DT * d3Vz;
+  d3Omx += D_DT * tau_roll  / D_IXX;
+  d3Omy += D_DT * tau_pitch / D_IYY;
+  d3Omz += D_DT * tau_yaw   / D_IZZ;
+  d3Phi   += D_DT * d3Omx;
+  d3Theta += D_DT * d3Omy;
+  d3Psi   += D_DT * d3Omz;
+  d3T     += D_DT;
+
+  const alive = d3Z > D_Z_MIN && d3Z < D_Z_MAX
+    && Math.abs(d3X) < D_X_LIM
+    && Math.abs(d3Y) < D_Y_LIM
+    && Math.abs(d3Phi)   < D_ANGLE_LIM
+    && Math.abs(d3Theta) < D_ANGLE_LIM;
+  return alive;
+}
+
+function d3CorrectAction(tx, ty, tz) {
+  const tilt = Math.max(Math.abs(d3Phi), Math.abs(d3Theta));
+  if (tilt > 0.10) {
+    if (Math.abs(d3Phi) > Math.abs(d3Theta)) {
+      return d3Phi > 0 ? 6 : 5;
+    } else {
+      return d3Theta > 0 ? 3 : 4;
+    }
+  }
+  const proj_z = (tz - d3Z) + d3Vz * 0.40;
+  const proj_x = (tx - d3X) + d3Vx * 0.40;
+  const proj_y = (ty - d3Y) + d3Vy * 0.40;
+  const az = Math.abs(proj_z);
+  const ax = Math.abs(proj_x) * 0.65;
+  const ay = Math.abs(proj_y) * 0.65;
+  if (az >= Math.max(ax, ay) && az > 0.22) return proj_z > 0 ? 1 : 2;
+  if (ax >= ay && ax > 0.20) return proj_x > 0 ? 3 : 4;
+  if (ay > 0.20) return proj_y > 0 ? 5 : 6;
+  return 0;
+}
+
+function d3CriticFeatures(tx, ty, tz) {
+  const s = [
+    (d3X - tx) / D_X_LIM, (d3Y - ty) / D_Y_LIM, (d3Z - tz) / D_Z_MAX,
+    d3Vx / D_V_MAX, d3Vy / D_V_MAX, d3Vz / D_V_MAX,
+    d3Phi / D_ANGLE_LIM, d3Theta / D_ANGLE_LIM,
+    d3Omx / D_OMEGA_MAX, d3Omy / D_OMEGA_MAX, d3Omz / D_OMEGA_MAX,
+    Math.sqrt((d3X-tx)**2 + (d3Y-ty)**2 + (d3Z-tz)**2) / 5.0,
+  ];
+  const f = new Float64Array(24);
+  for (let i = 0; i < 12; i++) { f[i] = s[i]; f[12+i] = s[i]*s[i]; }
+  return f;
+}
+
+function d3CriticPredict(tx, ty, tz) {
+  const f = d3CriticFeatures(tx, ty, tz);
+  let v = d3CriticBias;
+  for (let i = 0; i < 24; i++) v += f[i] * d3CriticW[i];
+  return v;
+}
+
+function d3CriticUpdate(preTx, preTy, preTz, preX, preY, preZ, preVx, preVy, preVz, prePhi, preTheta, prePsi, preOmx, preOmy, preOmz,
+                        tx, ty, tz, reward, done) {
+  // Compute features from pre-state
+  const s = [
+    (preX - preTx) / D_X_LIM, (preY - preTy) / D_Y_LIM, (preZ - preTz) / D_Z_MAX,
+    preVx / D_V_MAX, preVy / D_V_MAX, preVz / D_V_MAX,
+    prePhi / D_ANGLE_LIM, preTheta / D_ANGLE_LIM,
+    preOmx / D_OMEGA_MAX, preOmy / D_OMEGA_MAX, preOmz / D_OMEGA_MAX,
+    Math.sqrt((preX-preTx)**2 + (preY-preTy)**2 + (preZ-preTz)**2) / 5.0,
+  ];
+  const f = new Float64Array(24);
+  for (let i = 0; i < 12; i++) { f[i] = s[i]; f[12+i] = s[i]*s[i]; }
+  let v = d3CriticBias;
+  for (let i = 0; i < 24; i++) v += f[i] * d3CriticW[i];
+  const vn = done ? 0 : d3CriticPredict(tx, ty, tz);
+  const td = reward + D_GAMMA * vn - v;
+  for (let i = 0; i < 24; i++) {
+    d3CriticW[i] = Math.max(-10, Math.min(10, d3CriticW[i] + D_CRITIC_LR * td * f[i]));
+  }
+  d3CriticBias = Math.max(-10, Math.min(10, d3CriticBias + D_CRITIC_LR * td));
+  return td;
+}
+
+function d3ResetEpisode() {
+  const [tx, ty, tz] = d3WpList[0];
+  d3X     = tx + (Math.random() - 0.5) * 0.6;
+  d3Y     = ty + (Math.random() - 0.5) * 0.6;
+  d3Z     = tz + (Math.random() - 0.5) * 0.4;
+  d3Vx    = (Math.random() - 0.5) * 0.4;
+  d3Vy    = (Math.random() - 0.5) * 0.4;
+  d3Vz    = (Math.random() - 0.5) * 0.2;
+  d3Phi   = (Math.random() - 0.5) * 0.16;
+  d3Theta = (Math.random() - 0.5) * 0.16;
+  d3Psi   = (Math.random() - 0.5) * 0.2;
+  d3Omx   = 0; d3Omy = 0; d3Omz = 0; d3T = 0;
+  d3WpIdx = 0; d3WpSteps = 0; d3WpNear = 0;
+  d3WindVx = 0; d3WindVy = 0;
+}
+
+function drone3DStep() {
+  const [tx, ty, tz] = d3WpList[d3WpIdx];
+
+  const output = system.read_output();
+  let action = 0;
+  if (output.length >= 7) {
+    let best = -Infinity;
+    for (let i = 0; i < 7; i++) {
+      if ((output[i] ?? -Infinity) > best) { best = output[i]; action = i; }
+    }
+  }
+  d3LastAction = action;
+  d3LastRotors = D_ACTIONS[action];
+
+  const preX=d3X, preY=d3Y, preZ=d3Z;
+  const preVx=d3Vx, preVy=d3Vy, preVz=d3Vz;
+  const prePhi=d3Phi, preTheta=d3Theta, prePsi=d3Psi;
+  const preOmx=d3Omx, preOmy=d3Omy, preOmz=d3Omz;
+
+  const gx = d3WindEnabled ? d3WindVx : 0;
+  const gy = d3WindEnabled ? d3WindVy : 0;
+  if (d3WindEnabled) d3WindStep();
+
+  const alive = d3PhysicsStep(action, gx, gy);
+  d3Steps++;
+
+  const [ex, ey, ez] = [d3X - tx, d3Y - ty, d3Z - tz];
+  const pos_err = Math.sqrt(ex*ex + ey*ey + ez*ez);
+  const pos_n  = Math.min(pos_err / 4.0, 1.0);
+  const att_n  = Math.min((Math.abs(d3Phi) + Math.abs(d3Theta)) / (2 * D_ANGLE_LIM), 1.0);
+  const vel_n  = Math.min(Math.sqrt(d3Vx**2 + d3Vy**2 + d3Vz**2) / D_V_MAX, 1.0);
+  const reward = alive ? 1.0 - 0.45*pos_n - 0.35*att_n - 0.20*vel_n : -1.0;
+
+  system.inject_reward(reward * 0.1);
+
+  d3WpSteps++;
+  if (pos_err < D_WAYPOINT_TOL) d3WpNear++; else d3WpNear = 0;
+  if ((d3WpNear >= 15 || d3WpSteps >= D_WAYPOINT_STEPS) && d3WpIdx + 1 < d3WpList.length) {
+    d3WpIdx++;
+    d3WpSteps = 0; d3WpNear = 0;
+  }
+
+  const nxtTgt = d3WpList[d3WpIdx];
+  const td = d3CriticUpdate(tx,ty,tz, preX,preY,preZ, preVx,preVy,preVz,
+    prePhi,preTheta,prePsi, preOmx,preOmy,preOmz,
+    nxtTgt[0],nxtTgt[1],nxtTgt[2], reward, !alive);
+
+  const correct = d3CorrectAction(tx, ty, tz);
+  const base_lr = 0.05;
+  try {
+    if (td > 0) {
+      system.train_readout(action, Math.min(td, 1) * base_lr);
+      system.reward_contrastive(action, Math.min(td, 1) * 0.2, 0.1);
+    } else {
+      system.train_readout(correct, Math.min(Math.abs(td), 1) * base_lr * 0.5);
+    }
+  } catch(_) {}
+
+  const tilt = (Math.abs(d3Phi) + Math.abs(d3Theta)) / (2 * D_ANGLE_LIM);
+  if (tilt > 0.5) try { system.inject_novelty((tilt - 0.5) * 2); } catch(_) {}
+
+  if (!alive) {
+    if (d3Steps > d3Best) d3Best = d3Steps;
+    d3Episodes++;
+    try { system.inject_arousal(0.8); system.inject_novelty(0.5); system.reset_voltages(); } catch(_) {}
+    d3Steps = 0;
+    d3ResetEpisode();
+  }
+
+  const obs = d3Observe(...d3WpList[d3WpIdx]);
+  system.feed_input(obs);
+}
+
+function updateDroneStats() {
+  const ep = document.getElementById('d-episodes');
+  const st = document.getElementById('d-steps');
+  const be = document.getElementById('d-best');
+  const ac = document.getElementById('d-action');
+  const er = document.getElementById('d-err');
+  const wp = document.getElementById('d-wp');
+  if (ep) ep.textContent = d3Episodes;
+  if (st) st.textContent = d3Steps;
+  if (be) be.textContent = d3Best;
+  if (ac) ac.textContent = D_ACTION_NAMES[d3LastAction] || '—';
+  if (er) {
+    const [tx,ty,tz] = d3WpList[d3WpIdx] || [0,0,2];
+    const err = Math.sqrt((d3X-tx)**2 + (d3Y-ty)**2 + (d3Z-tz)**2);
+    er.textContent = err.toFixed(2) + 'm';
+  }
+  if (wp) wp.textContent = (d3WpIdx+1) + '/' + d3WpList.length;
+}
+
+function initDroneScene() {
+  if (dSceneInited) return;
+  const container = document.getElementById('drone-scene-container');
+  if (!container) return;
+
+  const w = container.clientWidth  || 800;
+  const h = container.clientHeight || 260;
+
+  dRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  dRenderer.setPixelRatio(window.devicePixelRatio);
+  dRenderer.setSize(w, h);
+  dRenderer.setClearColor(0x040a14, 1);
+  dRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  dRenderer.toneMappingExposure = 1.0;
+  container.appendChild(dRenderer.domElement);
+
+  dScene = new THREE.Scene();
+
+  dCamera = new THREE.PerspectiveCamera(55, w / h, 0.1, 100);
+  dCamera.position.set(3, 5, 9);
+
+  dControls = new OrbitControls(dCamera, dRenderer.domElement);
+  dControls.target.set(0, 2, 0);
+  dControls.enableDamping = true;
+  dControls.dampingFactor = 0.08;
+  dControls.update();
+
+  // Post-processing
+  dComposer = new EffectComposer(dRenderer);
+  dComposer.addPass(new RenderPass(dScene, dCamera));
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.8, 0.4, 0.5);
+  dComposer.addPass(bloom);
+  dComposer.addPass(new OutputPass());
+
+  // Lights
+  const hemi = new THREE.HemisphereLight(0x1a2a5a, 0x0a1a0a, 0.8);
+  dScene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffeedd, 0.6);
+  dir.position.set(5, 10, 5);
+  dScene.add(dir);
+
+  // Ground grid
+  const grid = new THREE.GridHelper(12, 24, 0x1a3060, 0x0d1a38);
+  grid.position.y = 0;
+  dScene.add(grid);
+
+  // Boundary box (±3 x/z, 0–6 y)
+  {
+    const boxGeo = new THREE.BufferGeometry();
+    const v = [];
+    const xs = [-D_X_LIM, D_X_LIM], ys = [0, D_Z_MAX], zs = [-D_Y_LIM, D_Y_LIM];
+    const corners = [];
+    for (let xi of xs) for (let yi of ys) for (let zi of zs) corners.push([xi,yi,zi]);
+    const edges = [
+      [0,1],[2,3],[4,5],[6,7],[0,2],[1,3],[4,6],[5,7],[0,4],[1,5],[2,6],[3,7]
+    ];
+    for (let [a,b] of edges) {
+      v.push(...corners[a], ...corners[b]);
+    }
+    boxGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(v), 3));
+    const boxMat = new THREE.LineBasicMaterial({ color: 0x1a3060, transparent: true, opacity: 0.35 });
+    dScene.add(new THREE.LineSegments(boxGeo, boxMat));
+  }
+
+  // Build drone group
+  droneGroup = new THREE.Group();
+  dScene.add(droneGroup);
+
+  const ARM_VIS = 0.65;
+  const ROTOR_R = 0.38;
+
+  // Body
+  const bodyGeo = new THREE.BoxGeometry(0.22, 0.06, 0.22);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a2035, emissive: 0x050818, metalness: 0.8, roughness: 0.3 });
+  droneGroup.add(new THREE.Mesh(bodyGeo, bodyMat));
+
+  // Arms (2 crosses)
+  const armLen = ARM_VIS * 2 * Math.SQRT2;
+  const armGeo = new THREE.BoxGeometry(armLen, 0.035, 0.035);
+  const armMat = new THREE.MeshStandardMaterial({ color: 0x1e2535, metalness: 0.7, roughness: 0.4 });
+  const arm1 = new THREE.Mesh(armGeo, armMat);
+  arm1.rotation.y = Math.PI / 4;
+  droneGroup.add(arm1);
+  const arm2 = new THREE.Mesh(armGeo, armMat);
+  arm2.rotation.y = -Math.PI / 4;
+  droneGroup.add(arm2);
+
+  // Rotor positions: FL, FR, BR, BL
+  const rotorPos = [
+    [-ARM_VIS, 0,  ARM_VIS],
+    [ ARM_VIS, 0,  ARM_VIS],
+    [ ARM_VIS, 0, -ARM_VIS],
+    [-ARM_VIS, 0, -ARM_VIS],
+  ];
+  const motorMat = new THREE.MeshStandardMaterial({ color: 0x1e2535, metalness: 0.6, roughness: 0.4 });
+  const motorGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.06, 8);
+
+  dRotorMeshes.length = 0; dRotorGlows.length = 0;
+
+  for (let i = 0; i < 4; i++) {
+    const [rx, ry, rz] = rotorPos[i];
+
+    const motor = new THREE.Mesh(motorGeo, motorMat);
+    motor.position.set(rx, ry, rz);
+    droneGroup.add(motor);
+
+    const ringGeo = new THREE.RingGeometry(ROTOR_R - 0.05, ROTOR_R + 0.015, 28);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x60c8ff, transparent: true, opacity: 0.6,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(rx, ry + 0.04, rz);
+    droneGroup.add(ring);
+    dRotorMeshes.push(ring);
+
+    const glowGeo = new THREE.CircleGeometry(ROTOR_R * 1.4, 24);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: 0x80d0ff, transparent: true, opacity: 0,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const glow = new THREE.Mesh(glowGeo, glowMat);
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.set(rx, ry + 0.035, rz);
+    droneGroup.add(glow);
+    dRotorGlows.push(glow);
+  }
+
+  // Waypoint marker
+  const wpGeo = new THREE.SphereGeometry(0.15, 12, 8);
+  const wpMat = new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
+  dWaypointMesh = new THREE.Mesh(wpGeo, wpMat);
+  dScene.add(dWaypointMesh);
+
+  const wRingGeo = new THREE.TorusGeometry(0.35, 0.02, 8, 32);
+  const wRingMat = new THREE.MeshBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false });
+  dWaypointRing = new THREE.Mesh(wRingGeo, wRingMat);
+  dWaypointRing.rotation.x = -Math.PI / 2;
+  dScene.add(dWaypointRing);
+
+  // Line from drone to waypoint
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x60c8ff, transparent: true, opacity: 0.25 });
+  dWpLine = new THREE.Line(lineGeo, lineMat);
+  dScene.add(dWpLine);
+
+  // Flight trail
+  dTrailPositions = new Float32Array(D_TRAIL_MAX * 6); // 2 verts per segment
+  dTrailGeom = new THREE.BufferGeometry();
+  dTrailGeom.setAttribute('position', new THREE.BufferAttribute(dTrailPositions, 3));
+  dTrailGeom.setDrawRange(0, 0);
+  const trailMat = new THREE.LineBasicMaterial({ color: 0x4090c0, transparent: true, opacity: 0.5, vertexColors: false });
+  dTrailLine = new THREE.LineSegments(dTrailGeom, trailMat);
+  dScene.add(dTrailLine);
+
+  // Wind arrow placeholder (shown when wind enabled)
+  dWindArrow = new THREE.ArrowHelper(
+    new THREE.Vector3(1, 0, 0), new THREE.Vector3(-3, 2, 0), 1.0, 0x33ff88, 0.3, 0.2
+  );
+  dWindArrow.visible = false;
+  dScene.add(dWindArrow);
+
+  // Resize observer
+  const ro = new ResizeObserver(() => {
+    const cw = container.clientWidth, ch = container.clientHeight;
+    if (!cw || !ch) return;
+    dRenderer.setSize(cw, ch);
+    dComposer.setSize(cw, ch);
+    dCamera.aspect = cw / ch;
+    dCamera.updateProjectionMatrix();
+  });
+  ro.observe(container);
+
+  dSceneInited = true;
+}
+
+// Trail circular buffer
+const _dTrailBuf = [];
+
+function updateDroneScene() {
+  if (!dSceneInited || !droneGroup) return;
+  const elapsed = clock.getElapsedTime();
+
+  // Map drone physics (x,y,z) → Three.js (x,z,y) where Three.js y = altitude
+  droneGroup.position.set(d3X, d3Z, d3Y);
+  droneGroup.rotation.set(d3Theta, -d3Psi, -d3Phi, 'YXZ');
+
+  // Rotor spin + glow
+  for (let i = 0; i < 4; i++) {
+    const t = d3LastRotors[i] ?? 0.5;
+    const dir = (i === 0 || i === 2) ? 1 : -1; // CCW: 0,2; CW: 1,3
+    d3RotorAngles[i] += 0.15 * t * dir * 8;
+    if (dRotorMeshes[i]) dRotorMeshes[i].rotation.z = d3RotorAngles[i];
+    if (dRotorGlows[i]) {
+      dRotorGlows[i].material.opacity = t * 0.55;
+      const lo = new THREE.Color(0x1a4080), hi = new THREE.Color(0x80d0ff);
+      dRotorGlows[i].material.color.lerpColors(lo, hi, t);
+    }
+  }
+
+  // Waypoint position
+  const [tx,ty,tz] = d3WpList[d3WpIdx] || [0,0,2];
+  const wpWorld = new THREE.Vector3(tx, tz, ty);
+  dWaypointMesh.position.copy(wpWorld);
+  dWaypointRing.position.copy(wpWorld);
+  const pulse = 0.85 + 0.2 * Math.sin(elapsed * 3);
+  dWaypointMesh.scale.setScalar(pulse);
+  dWaypointRing.scale.setScalar(pulse);
+
+  // Line to waypoint
+  {
+    const pa = dWpLine.geometry.attributes.position.array;
+    pa[0] = d3X; pa[1] = d3Z; pa[2] = d3Y;
+    pa[3] = tx;  pa[4] = tz;  pa[5] = ty;
+    dWpLine.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // Trail
+  _dTrailBuf.push([d3X, d3Z, d3Y]);
+  if (_dTrailBuf.length > D_TRAIL_MAX + 1) _dTrailBuf.shift();
+  {
+    const n = Math.max(0, _dTrailBuf.length - 1);
+    const pa = dTrailPositions;
+    for (let i = 0; i < n; i++) {
+      const a = _dTrailBuf[i], b = _dTrailBuf[i+1];
+      pa[i*6+0] = a[0]; pa[i*6+1] = a[1]; pa[i*6+2] = a[2];
+      pa[i*6+3] = b[0]; pa[i*6+4] = b[1]; pa[i*6+5] = b[2];
+    }
+    dTrailGeom.attributes.position.needsUpdate = true;
+    dTrailGeom.setDrawRange(0, n * 2);
+  }
+
+  // Wind arrow
+  if (d3WindEnabled && (Math.abs(d3WindVx) > 0.1 || Math.abs(d3WindVy) > 0.1)) {
+    const mag = Math.sqrt(d3WindVx**2 + d3WindVy**2);
+    dWindArrow.visible = true;
+    dWindArrow.setDirection(new THREE.Vector3(d3WindVx, 0, d3WindVy).normalize());
+    dWindArrow.setLength(Math.min(mag * 0.5, 2), 0.3, 0.2);
+  } else {
+    dWindArrow.visible = false;
+  }
+
+  dControls.update();
+}
+
+window._droneToggleWind = function() {
+  d3WindEnabled = !d3WindEnabled;
+  d3WindVx = 0; d3WindVy = 0;
+  const btn = document.getElementById('btn-drone-wind');
+  if (btn) btn.textContent = 'WIND: ' + (d3WindEnabled ? 'ON' : 'OFF');
+};
 
 // ============================================================
 // LEARNING PIPELINE PANEL
