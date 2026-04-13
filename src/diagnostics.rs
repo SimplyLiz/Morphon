@@ -116,6 +116,14 @@ pub struct Diagnostics {
     /// Computed at episode end; NaN between episodes.
     pub winner_diversity_entropy: f64,
 
+    // === Metabolic pressure validation ===
+    /// Mean energy of high-activity associative morphons (top quartile by lifetime activity).
+    /// Low value = hubs are being metabolically depleted (reward ±symmetric). Good.
+    pub hub_energy_mean: f64,
+    /// Mean energy of low-activity associative morphons (bottom quartile by lifetime activity).
+    /// High value = specialists are accumulating energy from class-aligned reward. Good.
+    pub specialist_energy_mean: f64,
+
     // === Morphogenesis rate counters (rolling, reset each glacial tick) ===
     /// Division events in the most recent glacial tick.
     pub division_events_recent: u32,
@@ -225,6 +233,27 @@ impl Diagnostics {
             else { assoc_activities.iter().sum::<f64>() / assoc_activities.len() as f64 };
         let avg_energy = energy_sum / morphons.len().max(1) as f64;
 
+        // Metabolic pressure validation: split associative morphons by activity quartile.
+        // Collect (activity, energy) for associatives only.
+        let mut assoc_ae: Vec<(f64, f64)> = morphons
+            .values()
+            .filter(|m| m.cell_type == CellType::Associative)
+            .map(|m| (m.activity_history.mean(), m.energy))
+            .collect();
+        let (hub_energy_mean, specialist_energy_mean) = if assoc_ae.len() >= 4 {
+            assoc_ae.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let q = assoc_ae.len() / 4;
+            let specialist_e: f64 = assoc_ae[..q].iter().map(|(_, e)| e).sum::<f64>() / q as f64;
+            let hub_e: f64 = assoc_ae[assoc_ae.len() - q..]
+                .iter()
+                .map(|(_, e)| e)
+                .sum::<f64>()
+                / q as f64;
+            (hub_e, specialist_e)
+        } else {
+            (0.0, 0.0)
+        };
+
         // Competition metrics: population sparsity (from current step firing)
         let assoc_fired: Vec<f64> = morphons.values()
             .filter(|m| m.cell_type == CellType::Associative || m.cell_type == CellType::Stem)
@@ -269,6 +298,8 @@ impl Diagnostics {
             max_frustration: frustration_max,
             population_sparsity,
             lifetime_sparsity,
+            hub_energy_mean,
+            specialist_energy_mean,
             winner_diversity_entropy: 0.0, // computed at episode end, not per-step
             ..Default::default()
         }

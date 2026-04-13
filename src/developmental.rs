@@ -289,6 +289,32 @@ pub fn develop(
             }
         }
 
+        // Coverage pass: guarantee every sensory morphon reaches at least one associative.
+        // The 30% fan-in loop above samples from the associative side — by random chance a
+        // small fraction of sensory morphons may end up with zero outgoing S→A edges and are
+        // effectively invisible to the network. Wire each uncovered sensory morphon to a
+        // random associative so no input pixel is ever dark to the learned representation.
+        if !associative.is_empty() {
+            let assoc_set: std::collections::HashSet<MorphonId> =
+                associative.iter().copied().collect();
+            for &s in &sensory {
+                let covered = topology.outgoing(s).iter().any(|(t, _)| assoc_set.contains(t));
+                if !covered {
+                    let a = associative[rng.random_range(0..associative.len())];
+                    if !topology.has_connection(s, a) {
+                        let w = rng.random_range(0.3..0.8);
+                        let j = crate::justification::SynapticJustification::new(
+                            crate::justification::FormationCause::External {
+                                source: "developmental".into(),
+                            },
+                            0,
+                        );
+                        topology.add_synapse(s, a, Synapse::new_justified(w, j).with_delay(0.1));
+                    }
+                }
+            }
+        }
+
         // Fan-in from associative → motor: each motor receives from ~30% of associative.
         // Small random Xavier-scaled weights — breaks symmetry so each motor class
         // starts with a unique receptive field. Zero init causes mode collapse
