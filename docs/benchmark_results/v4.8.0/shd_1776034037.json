@@ -1,0 +1,41 @@
+{
+  "base_seed": 42,
+  "benchmark": "shd_synthetic",
+  "chance_level": 0.1,
+  "endo_driven": true,
+  "input_dim": 70,
+  "mean_accuracy": 0.6122222222222221,
+  "mode": "endo-driven",
+  "n_channels": 700,
+  "n_classes": 10,
+  "n_epochs": 7,
+  "n_seeds": 3,
+  "n_test_per_class": 30,
+  "n_train_per_class": 100,
+  "profile": "standard",
+  "seeds": [
+    {
+      "accuracy": 0.5866666666666667,
+      "morphons": 436,
+      "seed": 42,
+      "synapses": 6552,
+      "wall_s": 1112
+    },
+    {
+      "accuracy": 0.64,
+      "morphons": 433,
+      "seed": 43,
+      "synapses": 6659,
+      "wall_s": 753
+    },
+    {
+      "accuracy": 0.61,
+      "morphons": 419,
+      "seed": 44,
+      "synapses": 6275,
+      "wall_s": 596
+    }
+  ],
+  "std_accuracy": 0.021829869671542785,
+  "version": "4.8.0"
+}

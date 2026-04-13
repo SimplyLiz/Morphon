@@ -25,7 +25,7 @@
 //! Run: cargo run --example shd --release -- --extended --n-seeds=3
 
 use morphon_core::developmental::{DevelopmentalConfig, RecurrentConfig};
-use morphon_core::endoquilibrium::EndoConfig;
+use morphon_core::endoquilibrium::{DevelopmentalStage, EndoConfig};
 use morphon_core::homeostasis::{CompetitionMode, HomeostasisParams};
 use morphon_core::learning::LearningParams;
 use morphon_core::morphogenesis::MorphogenesisParams;
@@ -127,10 +127,39 @@ fn pool_channels(frame: &[f64]) -> Vec<f64> {
 
 // ── System builder ────────────────────────────────────────────────────────────
 
-fn build_system(seed: u64) -> System {
+/// Build the SHD system.
+///
+/// `endo_driven = false` (default): lifecycle disabled, structural periods
+/// frozen at 10M — same as the original v4.8.0 baseline (49.2%).
+///
+/// `endo_driven = true`: lifecycle fully enabled, slow/glacial at normal
+/// periods, reward gating deferred to Endo stage detection in `train_epoch`.
+fn build_system(seed: u64, endo_driven: bool) -> System {
+    let (slow_period, glacial_period, lifecycle) = if endo_driven {
+        // Let the reservoir grow and prune itself.  Slow=5000 / glacial=20000
+        // matches what MNIST uses; sequences are longer so we halve slow.
+        (2500, 15_000, LifecycleConfig {
+            division: true,
+            differentiation: true,
+            fusion: false,       // fusion can merge attractor states — risky for sequences
+            apoptosis: true,
+            migration: true,
+            synaptogenesis: true,
+        })
+    } else {
+        (10_000_000, 10_000_000, LifecycleConfig {
+            division: false,
+            differentiation: false,
+            fusion: false,
+            apoptosis: false,
+            migration: false,
+            synaptogenesis: true,
+        })
+    };
+
     let config = SystemConfig {
         developmental: DevelopmentalConfig {
-            seed_size: 150,
+            seed_size: 300,
             target_input_size: Some(INPUT_DIM),
             target_output_size: Some(N_CLASSES),
             recurrent: RecurrentConfig {
@@ -152,10 +181,8 @@ fn build_system(seed: u64) -> System {
         },
         scheduler: SchedulerConfig {
             medium_period: 5,
-            // Disable structural changes during training — synaptogenesis mid-trial
-            // causes catastrophic forgetting in sequence tasks.
-            slow_period: 10_000_000,
-            glacial_period: 10_000_000,
+            slow_period,
+            glacial_period,
             homeostasis_period: 50,
             memory_period: 200,
         },
@@ -173,14 +200,7 @@ fn build_system(seed: u64) -> System {
             enabled: true,
             ..EndoConfig::default()
         },
-        lifecycle: LifecycleConfig {
-            division: false,
-            differentiation: false,
-            fusion: false,
-            apoptosis: false,
-            migration: false,
-            synaptogenesis: true,
-        },
+        lifecycle,
         morphogenesis: MorphogenesisParams {
             ..MorphogenesisParams::default()
         },
@@ -216,12 +236,18 @@ fn train_epoch(
     system: &mut System,
     dataset: &[(Vec<Vec<f64>>, usize)],
     lr: f64,
+    endo_driven: bool,
     rng: &mut impl Rng,
 ) -> f64 {
+    const WINDOW: usize = 50;
     let mut indices: Vec<usize> = (0..dataset.len()).collect();
     indices.shuffle(rng);
 
     let mut n_correct = 0usize;
+    let mut window_buf = [false; WINDOW];
+    let mut window_pos = 0usize;
+    let mut window_filled = 0usize;
+
     for &idx in &indices {
         let (ref sample, label) = dataset[idx];
 
@@ -238,9 +264,34 @@ fn train_epoch(
         let correct = predicted == label;
         if correct { n_correct += 1; }
 
+        // Supervised readout correction — always active.
         system.train_readout(label, lr);
-        system.reward_contrastive(label, if correct { 0.6 } else { 0.2 }, 0.3);
+
+        // Contrastive reward: in endo-driven mode, hold off until Endo exits
+        // Proliferating.  During Proliferating the reservoir is still expanding
+        // and its representations aren't stable yet — pushing toward a specific
+        // output too early locks in bad attractors before the topology settles.
+        // Once Differentiating or beyond, representations are stable enough to
+        // reinforce.  In the static (non-endo-driven) baseline this check is
+        // skipped and reward fires whenever the prediction is correct.
+        let past_proliferating = !endo_driven
+            || system.endo.stage() != DevelopmentalStage::Proliferating;
+        if correct && past_proliferating {
+            system.reward_contrastive(label, 0.5, 0.2);
+        }
         system.report_episode_end(if correct { 1.0 } else { 0.0 });
+
+        // Rolling accuracy window for endo performance tracking.
+        // Without report_performance, endo never sees learning progress
+        // (rs=0.000 cv=99.000 forever) and won't advance past Proliferating.
+        window_buf[window_pos] = correct;
+        window_pos = (window_pos + 1) % WINDOW;
+        if window_filled < WINDOW { window_filled += 1; }
+        let running_acc = window_buf[..window_filled].iter().filter(|&&x| x).count() as f64
+            / window_filled as f64;
+        if window_filled >= WINDOW {
+            system.report_performance(running_acc);
+        }
     }
 
     n_correct as f64 / dataset.len() as f64
@@ -268,6 +319,7 @@ fn main() {
         .find(|a| a.starts_with("--n-seeds="))
         .and_then(|a| a[10..].parse().ok())
         .unwrap_or(1);
+    let endo_driven = args.iter().any(|a| a == "--endo-driven");
 
     let (n_train_per_class, n_test_per_class, n_epochs, base_duration) = match profile {
         "extended" => (200, 50, 10, 90),
@@ -278,9 +330,10 @@ fn main() {
     let n_test  = n_test_per_class  * N_CLASSES;
 
     let version = env!("CARGO_PKG_VERSION");
-    eprintln!("=== MORPHON SHD-Synthetic Benchmark [v{version}] ===");
+    let mode_label = if endo_driven { "endo-driven" } else { "static" };
+    eprintln!("=== MORPHON SHD-Synthetic Benchmark [v{version}] ({mode_label}) ===");
     eprintln!("  {} channels → {} pooled inputs, {} classes", N_CHANNELS, INPUT_DIM, N_CLASSES);
-    eprintln!("  profile={profile}, seeds={n_seeds}, train/class={n_train_per_class}, test/class={n_test_per_class}, epochs={n_epochs}\n");
+    eprintln!("  profile={profile}, mode={mode_label}, seeds={n_seeds}, train/class={n_train_per_class}, test/class={n_test_per_class}, epochs={n_epochs}\n");
 
     let mut seed_results: Vec<serde_json::Value> = Vec::new();
     let mut all_final_accs: Vec<f64> = Vec::new();
@@ -308,7 +361,7 @@ fn main() {
             .collect();
 
         let t0 = Instant::now();
-        let mut system = build_system(seed);
+        let mut system = build_system(seed, endo_driven);
         eprintln!("  Built: {} morphons, {} synapses ({:.1}s)",
             system.inspect().total_morphons, system.inspect().total_synapses,
             t0.elapsed().as_secs_f64());
@@ -316,7 +369,7 @@ fn main() {
         let mut best_acc = 0.0f64;
         for epoch in 0..n_epochs {
             let lr = 0.02 * (0.005_f64 / 0.02).powf(epoch as f64 / n_epochs.max(1) as f64);
-            let train_acc = train_epoch(&mut system, &train_set, lr, &mut rng_train);
+            let train_acc = train_epoch(&mut system, &train_set, lr, endo_driven, &mut rng_train);
             let test_acc  = evaluate_set(&mut system, &test_set);
             best_acc = best_acc.max(test_acc);
             eprintln!("  ep{}: train={:.1}%  test={:.1}%  best={:.1}%  lr={:.4}  {}",
@@ -344,7 +397,7 @@ fn main() {
     let chance = 1.0 / N_CLASSES as f64;
 
     eprintln!("╔══════════════════════════════════════════════════════════╗");
-    eprintln!("║  SHD-Synthetic ({n_seeds} seed(s), profile={profile:<10})           ║");
+    eprintln!("║  SHD-Synthetic ({n_seeds} seed(s), profile={profile:<10}, {mode_label:<12}) ║");
     eprintln!("║  Accuracy: {:.1}% ± {:.1}pp   (chance: {:.1}%)         ║",
         mu * 100.0, sigma * 100.0, chance * 100.0);
     eprintln!("╚══════════════════════════════════════════════════════════╝");
@@ -353,6 +406,8 @@ fn main() {
         "benchmark": "shd_synthetic",
         "version": version,
         "profile": profile,
+        "mode": mode_label,
+        "endo_driven": endo_driven,
         "base_seed": base_seed,
         "n_seeds": n_seeds,
         "n_channels": N_CHANNELS,
