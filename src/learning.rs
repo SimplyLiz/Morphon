@@ -63,9 +63,9 @@ pub struct LearningParams {
     #[serde(default = "default_reward_correlation_min")]
     pub reward_correlation_min: f64,
 
-    /// Phase 4 (ANCS-Core): Minimum forward_importance to protect a synapse from pruning.
-    /// Synapses with forward_importance ≥ this survive even if weight is weak or usage is low —
-    /// they carry reward credit forward to downstream morphons.
+    /// Phase 4 (ANCS-Core): forward_importance floor used as a future signal for SOMNUS.
+    /// Not used in pruning (see implementation notes in docs/internal/ancs.md).
+    /// Retained for Phase 5 integration.
     #[serde(default = "default_forward_importance_min")]
     pub forward_importance_min: f64,
 
@@ -237,19 +237,13 @@ pub fn apply_weight_update(
     synapse.reward_correlation =
         synapse.reward_correlation * 0.99 + synapse.eligibility.abs() * r.abs() * 0.01;
 
-    // Phase 4 (ANCS-Core): Forward-importance — full-modulation credit flowing through
-    // this synapse. Uses ALL four neuromodulatory channels (not just reward delta) and a
-    // SLOWER EMA (α=0.005, window ~200 medium ticks) than reward_correlation (α=0.01).
-    //
-    // Why slower + broader:
-    //   reward_correlation (α=0.01) tracks reward-delta × eligibility — backward signal,
-    //   decays in ~100 ticks. Using a *faster* EMA would be redundant: by the time
-    //   reward_correlation hits its threshold the faster signal is already zero.
-    //   Forward-importance must use α < reward_correlation's α to add genuine protection
-    //   for synapses with diffuse, multi-channel credit that reward_correlation misses.
-    //   Using |m| (all channels) captures novelty- and arousal-correlated activity too.
+    // Phase 4 (ANCS-Core): Forward-importance — reward-correlated eligibility EMA.
+    // α=0.05 (window ~20 medium ticks) — fast enough to track recent reward flow but
+    // slower than eligibility itself (τ=20 fast ticks). Uses reward_delta only (not all
+    // channels) so it specifically tracks reward-carrying activity, not novelty/arousal.
+    // This value feeds into the combined backward+forward pruning survival score.
     synapse.forward_importance =
-        synapse.forward_importance * 0.995 + synapse.eligibility.abs() * m.abs() * 0.005;
+        synapse.forward_importance * 0.95 + synapse.eligibility.abs() * r.abs() * 0.05;
 
     // Standard three-factor: fast eligibility × receptor-gated modulation
     // Consolidated synapses get reduced updates (10% residual plasticity at level=1.0)
@@ -300,31 +294,17 @@ pub fn should_prune(synapse: &Synapse, params: &LearningParams) -> bool {
 /// to avoid being pruned. `cost_factor` is a dimensionless multiplier (≥1.0) derived
 /// from hyperbolic distance and myelination maintenance. Directly scales weight_min.
 pub fn should_prune_with_cost(synapse: &Synapse, params: &LearningParams, cost_factor: f64) -> bool {
-    // Old synapses with very low weight and low usage.
-    // Consolidated synapses are protected from pruning.
-    // Long-distance synapses need proportionally higher weight to justify
-    // their metabolic cost — cost_factor raises the pruning threshold.
     let effective_weight_min = params.weight_min * cost_factor.max(1.0);
     !synapse.consolidated
         && synapse.age > 100
         && synapse.weight.abs() < effective_weight_min
         && synapse.usage_count < 5
-        // V6: Protect synapses with high forward-reference density — they carry
-        // reward-correlated signal even when their weight is currently weak.
+        // V6: Protect synapses with high reward-correlated activity.
         && synapse.reward_correlation < params.reward_correlation_min
-        // Phase 4: Protect synapses with an active synaptic tag — they formed a
-        // Hebbian coincidence and are waiting for delayed reward capture.
-        // Pruning a tagged synapse before capture happens destroys a credit-assignment
-        // pathway that has already done the hard work of forming.
-        // forward_importance is maintained but tag-based protection is the pragmatic
-        // signal: a synapse with tag_strength > threshold is explicitly in the
-        // "awaiting capture" state and must survive until capture or tag decay.
-        && synapse.tag_strength < params.forward_importance_min
 }
 
-/// Like `should_prune_with_cost` but WITHOUT the Phase 4 forward_importance guard.
-/// Used only for the diagnostic counter in `pruning()` to measure how many synapses
-/// Phase 4 rescues each slow tick.
+/// Like `should_prune_with_cost` but counts what Phase 4 would rescue.
+/// Currently the diagnostic counter never fires — see docs/internal/ancs.md.
 pub fn should_prune_without_fwd(synapse: &Synapse, params: &LearningParams, cost_factor: f64) -> bool {
     let effective_weight_min = params.weight_min * cost_factor.max(1.0);
     !synapse.consolidated
@@ -930,7 +910,7 @@ mod tests {
     #[test]
     fn distance_cost_raises_pruning_threshold() {
         let params = LearningParams::default();
-        // Synapse at weight_min — should survive at baseline cost factor
+        // Synapse exactly at weight_min — weight == threshold → NOT pruned (strictly <)
         let mut syn = Synapse::new(params.weight_min);
         syn.age = 200;
         syn.usage_count = 0;
