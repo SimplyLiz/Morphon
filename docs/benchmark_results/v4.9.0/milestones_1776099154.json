@@ -1,0 +1,90 @@
+{
+  "benchmark": "milestones_piagetian",
+  "m0": {
+    "criterion": "mean_dist > 0.20 && min_dist > 0.05",
+    "duration_s": 0.014878541,
+    "mean_cosine_distance": 0.4359309813971892,
+    "milestone": "M0_sensorimotor",
+    "min_pairwise_distance": 0.0005600332500269589,
+    "n_classes": 8,
+    "passed": false
+  },
+  "m1": {
+    "criterion": "habituation_drop ≥ 30% AND dishabituation_ratio ≥ 1.5×",
+    "dishabituation_ratio": 13.955420998377745,
+    "duration_s": 0.023147917,
+    "habituation_drop_pct": 98.00501451751427,
+    "milestone": "M1_habituation",
+    "passed": true,
+    "passed_dishabituation": true,
+    "passed_habituation": true,
+    "pe_habituated": 0.012400976522927681,
+    "pe_initial": 0.6216073566348065,
+    "pe_novel": 0.1730608481684544
+  },
+  "m2": {
+    "bronze_pct": 25.0,
+    "bronze_threshold_steps": 10,
+    "criterion": "Bronze: ≥50% classes persist ≥10 steps; Silver: ≥30 steps",
+    "duration_s": 0.054329084,
+    "medal": "None",
+    "milestone": "M2_object_permanence",
+    "per_class": [
+      {
+        "class": 0,
+        "correct_occlusion_steps": 0,
+        "last_correct_at_step": 0,
+        "probe_recovery": false
+      },
+      {
+        "class": 1,
+        "correct_occlusion_steps": 0,
+        "last_correct_at_step": 0,
+        "probe_recovery": false
+      },
+      {
+        "class": 2,
+        "correct_occlusion_steps": 0,
+        "last_correct_at_step": 0,
+        "probe_recovery": false
+      },
+      {
+        "class": 3,
+        "correct_occlusion_steps": 0,
+        "last_correct_at_step": 0,
+        "probe_recovery": false
+      },
+      {
+        "class": 4,
+        "correct_occlusion_steps": 50,
+        "last_correct_at_step": 65,
+        "probe_recovery": false
+      },
+      {
+        "class": 5,
+        "correct_occlusion_steps": 4,
+        "last_correct_at_step": 4,
+        "probe_recovery": false
+      },
+      {
+        "class": 6,
+        "correct_occlusion_steps": 0,
+        "last_correct_at_step": 0,
+        "probe_recovery": false
+      },
+      {
+        "class": 7,
+        "correct_occlusion_steps": 58,
+        "last_correct_at_step": 100,
+        "probe_recovery": true
+      }
+    ],
+    "probe_recovery_pct": 12.5,
+    "silver_pct": 25.0,
+    "silver_threshold_steps": 30
+  },
+  "profile": "standard",
+  "seed": 42,
+  "total_duration_s": 0.092368625,
+  "version": "4.9.0"
+}

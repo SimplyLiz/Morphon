@@ -1,0 +1,29 @@
+{
+  "benchmark": "milestones_piagetian",
+  "m0": {
+    "criterion": "mean_dist > 0.20 && min_dist > 0.05",
+    "duration_s": 0.007110166,
+    "mean_cosine_distance": 0.14272384756317746,
+    "milestone": "M0_sensorimotor",
+    "min_pairwise_distance": 0.00020867012927139328,
+    "n_classes": 8,
+    "passed": false
+  },
+  "m1": {
+    "criterion": "habituation_drop ≥ 30% AND dishabituation_ratio ≥ 1.5×",
+    "dishabituation_ratio": 3.3317355863573668,
+    "duration_s": 0.016613667,
+    "habituation_drop_pct": 84.00157666700704,
+    "milestone": "M1_habituation",
+    "passed": true,
+    "passed_dishabituation": true,
+    "passed_habituation": true,
+    "pe_habituated": 0.06607585409459246,
+    "pe_initial": 0.4130147872654842,
+    "pe_novel": 0.22014727448591084
+  },
+  "profile": "quick",
+  "seed": 42,
+  "total_duration_s": 0.023726667,
+  "version": "4.9.0"
+}

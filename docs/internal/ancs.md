@@ -93,6 +93,25 @@ below weight_min while the tag persists). That's worth investigating when it occ
 
 ## Phase 5: SOMNUS — Why Deferred
 
+### Scope: what SOMNUS is and is not
+
+SOMNUS is **retrospective** — it replays stored episodic memories through the learning
+path to consolidate weights during an offline phase. The question it answers: *what
+happened, and how do we strengthen those pathways?* Biologically this maps to slow-wave
+sleep hippocampal replay and hippocampus → neocortex transfer.
+
+It is **not** prospective simulation. Generating novel internal rollouts over the current
+topology — imagining future states without environment interaction, analogous to the
+default mode network or mental time travel — is a separate capability. Blumberg & Miller
+(2025) call this "imaginative memory" in their cognitive architecture proposal and treat
+it as a distinct memory area from episodic consolidation [1]. That distinction is correct
+and applies here: if Morphon ever gains forward simulation (relevant first for the Drone3D
+benchmark, where internal trajectory planning would reduce costly real rollouts), it would
+sit alongside SOMNUS, not inside it.
+
+[1] Blumberg, M. & Miller, M.S.P. (2025). Building Sentient Beings.
+    DOI: 10.5281/zenodo.19234488
+
 ### The three reasons
 
 **1. Incompatible with continuous control.**
